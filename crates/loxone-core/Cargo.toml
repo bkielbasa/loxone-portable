@@ -1,0 +1,9 @@
+[package]
+name = "loxone-core"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+indexmap = "2.7"
+quick-xml = "0.37"
+thiserror = "2.0"

@@ -1,0 +1,10 @@
+[package]
+name = "loxone-gui"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+loxone-core = { path = "../loxone-core" }
+eframe = "0.31"
+egui = "0.31"
+rfd = "0.15"
