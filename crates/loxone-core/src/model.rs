@@ -123,7 +123,7 @@ pub struct TreeNode {
     pub children: Vec<TreeNode>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct LoxoneProject {
     pub metadata: ProjectMetadata,
     pub categories: IndexMap<String, Category>,
@@ -131,6 +131,7 @@ pub struct LoxoneProject {
     pub pages: Vec<Page>,
     pub periphery_tree: Vec<TreeNode>,
     pub system_tree: Vec<TreeNode>,
+    pub xref: crate::xref::XrefIndex,
 }
 
 pub fn parse_rgb_color(cl: &str) -> Option<[u8; 3]> {

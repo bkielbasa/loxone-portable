@@ -134,14 +134,17 @@ pub fn parse_loxone_xml(xml: &str) -> Result<LoxoneProject, LoxoneError> {
         }
     }
 
-    Ok(LoxoneProject {
+    let mut project = LoxoneProject {
         metadata,
         categories,
         places,
         pages,
         periphery_tree,
         system_tree,
-    })
+        xref: crate::xref::XrefIndex::default(),
+    };
+    project.xref = crate::xref::XrefIndex::build(&project);
+    Ok(project)
 }
 
 fn parse_raw_dom(xml: &str) -> Result<Vec<RawNode>, LoxoneError> {
