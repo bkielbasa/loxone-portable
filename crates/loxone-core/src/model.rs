@@ -32,6 +32,9 @@ pub struct ProjectMetadata {
     pub longitude: String,
     pub currency: String,
     pub app_id: String,
+    pub miniserver_ip: Option<String>,
+    pub miniserver_serial: Option<String>,
+    pub miniserver_hostname: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -132,6 +135,7 @@ pub struct LoxoneProject {
     pub periphery_tree: Vec<TreeNode>,
     pub system_tree: Vec<TreeNode>,
     pub xref: crate::xref::XrefIndex,
+    pub raw_xml: Option<String>,
 }
 
 pub fn parse_rgb_color(cl: &str) -> Option<[u8; 3]> {

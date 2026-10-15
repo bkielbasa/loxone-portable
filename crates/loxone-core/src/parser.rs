@@ -45,7 +45,7 @@ pub fn parse_loxone_xml(xml: &str) -> Result<LoxoneProject, LoxoneError> {
         .find(|n| n.tag == "C" && n.attr("Type") == Some("Document"))
         .ok_or(LoxoneError::MissingDocumentRoot)?;
 
-    let metadata = ProjectMetadata {
+    let mut metadata = ProjectMetadata {
         title: doc_node.attr("Title").unwrap_or_default().to_string(),
         uuid: doc_node.attr("U").unwrap_or_default().to_string(),
         config_version: doc_node.attr("ConfigVersion").unwrap_or_default().to_string(),
@@ -59,6 +59,9 @@ pub fn parse_loxone_xml(xml: &str) -> Result<LoxoneProject, LoxoneError> {
         longitude: doc_node.attr("Longitude").unwrap_or_default().to_string(),
         currency: doc_node.attr("Currency").unwrap_or_default().to_string(),
         app_id: doc_node.attr("APPID").unwrap_or_default().to_string(),
+        miniserver_ip: None,
+        miniserver_serial: None,
+        miniserver_hostname: None,
     };
 
     // First collect all wire source pin UUIDs across the entire document
@@ -118,6 +121,27 @@ pub fn parse_loxone_xml(xml: &str) -> Result<LoxoneProject, LoxoneError> {
                 }
             }
             "LoxLIVE" => {
+                if metadata.miniserver_ip.is_none() {
+                    metadata.miniserver_ip = child
+                        .attr("IntAddr")
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty())
+                        .map(str::to_string);
+                }
+                if metadata.miniserver_serial.is_none() {
+                    metadata.miniserver_serial = child
+                        .attr("Serial")
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty())
+                        .map(str::to_string);
+                }
+                if metadata.miniserver_hostname.is_none() {
+                    metadata.miniserver_hostname = child
+                        .attr("HoN")
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty())
+                        .map(str::to_string);
+                }
                 periphery_tree.push(parse_tree_node(
                     child,
                     TreeSectionKind::Periphery,
@@ -142,6 +166,7 @@ pub fn parse_loxone_xml(xml: &str) -> Result<LoxoneProject, LoxoneError> {
         periphery_tree,
         system_tree,
         xref: crate::xref::XrefIndex::default(),
+        raw_xml: Some(xml.to_string()),
     };
     project.xref = crate::xref::XrefIndex::build(&project);
     Ok(project)
@@ -425,6 +450,22 @@ mod tests {
         assert_eq!(project.metadata.title, "Klimczaki");
         assert_eq!(project.metadata.config_version, "17020828");
         assert_eq!(project.metadata.control_list_version, "274");
+        assert_eq!(
+            project.metadata.miniserver_ip.as_deref(),
+            Some("192.168.1.100")
+        );
+        assert_eq!(
+            project.metadata.miniserver_serial.as_deref(),
+            Some("504F94A0ECAD")
+        );
+        assert_eq!(
+            project.metadata.miniserver_hostname.as_deref(),
+            Some("miniserwer")
+        );
+        assert!(project
+            .raw_xml
+            .as_ref()
+            .is_some_and(|xml| xml.contains("<ControlList")));
         assert_eq!(project.pages.len(), 28);
         assert_eq!(project.places.len(), 16);
         assert_eq!(project.categories.len(), 33);

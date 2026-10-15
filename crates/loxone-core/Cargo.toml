@@ -7,3 +7,4 @@ edition.workspace = true
 indexmap = "2.7"
 quick-xml = "0.37"
 thiserror = "2.0"
+zip = { version = "2.2", default-features = false, features = ["deflate"] }
