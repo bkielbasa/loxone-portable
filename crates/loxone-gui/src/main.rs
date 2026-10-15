@@ -2,7 +2,9 @@ mod app;
 mod canvas;
 mod command_palette;
 mod inspector;
+mod miniserver_modal;
 mod theme;
+mod top_bar;
 mod tree_panel;
 
 use std::path::PathBuf;

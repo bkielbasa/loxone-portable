@@ -11,6 +11,10 @@ pub const TEXT_PRIMARY: Color32 = Color32::from_rgb(0xE6, 0xEA, 0xF2);
 pub const TEXT_MUTED: Color32 = Color32::from_rgb(0x8B, 0x95, 0xA7);
 pub const WIRE_DIGITAL: Color32 = Color32::from_rgb(0x38, 0xBD, 0xF8);
 pub const WIRE_ANALOG: Color32 = Color32::from_rgb(0xF5, 0x9E, 0x0B);
+pub const STATUS_DISCONNECTED: Color32 = Color32::from_rgb(0x8B, 0x95, 0xA7);
+pub const STATUS_CONNECTING: Color32 = Color32::from_rgb(0xF5, 0x9E, 0x0B);
+pub const STATUS_CONNECTED: Color32 = Color32::from_rgb(0x3E, 0xCF, 0x8E);
+pub const STATUS_ERROR: Color32 = Color32::from_rgb(0xE5, 0x53, 0x4B);
 
 pub fn apply_minimalist_theme(ctx: &Context) {
     let mut visuals = Visuals::dark();

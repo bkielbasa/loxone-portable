@@ -7,6 +7,8 @@ use crate::theme::{ACCENT_BLUE, BORDER_SUBTLE, CARD_BG, PANEL_BG, TEXT_MUTED, TE
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PaletteAction {
     OpenFile,
+    SaveFile,
+    ConnectMiniserver,
     FitPage,
     ResetZoom,
     ToggleCompactPins,
@@ -66,6 +68,27 @@ pub fn build_palette_entries(project: Option<&LoxoneProject>, query: &str) -> Ve
     let built_in_actions = [
         PaletteEntry {
             badge: PaletteBadge::Action,
+            title: "Connect to Miniserver / Download Project…".to_string(),
+            subtitle: "Test Miniserver connection or download project backup from /prog/".to_string(),
+            shortcut: Some("Ctrl+Shift+D"),
+            action: PaletteAction::ConnectMiniserver,
+        },
+        PaletteEntry {
+            badge: PaletteBadge::Action,
+            title: "Save Project as .Loxone File…".to_string(),
+            subtitle: "Export current project XML to disk".to_string(),
+            shortcut: Some("Ctrl+S"),
+            action: PaletteAction::SaveFile,
+        },
+        PaletteEntry {
+            badge: PaletteBadge::Action,
+            title: "Open .Loxone Project File…".to_string(),
+            subtitle: "Load another Loxone Config XML file from disk".to_string(),
+            shortcut: Some("Ctrl+O"),
+            action: PaletteAction::OpenFile,
+        },
+        PaletteEntry {
+            badge: PaletteBadge::Action,
             title: "Fit Active Page to View".to_string(),
             subtitle: "Center and scale all blocks on the current page".to_string(),
             shortcut: Some("F"),
@@ -98,13 +121,6 @@ pub fn build_palette_entries(project: Option<&LoxoneProject>, query: &str) -> Ve
             subtitle: "Show or hide Properties & Cross-References".to_string(),
             shortcut: Some("Ctrl+I"),
             action: PaletteAction::ToggleRightPanel,
-        },
-        PaletteEntry {
-            badge: PaletteBadge::Action,
-            title: "Open .Loxone Project File…".to_string(),
-            subtitle: "Load another Loxone Config XML file from disk".to_string(),
-            shortcut: Some("Ctrl+O"),
-            action: PaletteAction::OpenFile,
         },
     ];
 
@@ -395,6 +411,10 @@ mod tests {
         // Empty query returns built-in actions + pages
         let initial = build_palette_entries(Some(&project), "");
         assert!(initial.iter().any(|e| e.action == PaletteAction::FitPage));
+        assert!(initial
+            .iter()
+            .any(|e| e.action == PaletteAction::ConnectMiniserver));
+        assert!(initial.iter().any(|e| e.action == PaletteAction::SaveFile));
         assert!(initial.iter().any(|e| e.badge == PaletteBadge::Page));
 
         // Searching "audio" matches the "Audio centralne" page and CentralMusic block

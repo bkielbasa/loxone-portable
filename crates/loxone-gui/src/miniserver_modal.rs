@@ -1,0 +1,463 @@
+use egui::{Align2, Color32, Context, Frame, Id, Key, Margin, Order, RichText, ScrollArea, Stroke, Vec2};
+use loxone_core::miniserver::{
+    BackupSnapshot, ConnectionProfile, ConnectionStatus, MiniserverCredentials,
+};
+use loxone_core::model::LoxoneProject;
+
+use crate::theme::{ACCENT_BLUE, BORDER_SUBTLE, CARD_BG, PANEL_BG, TEXT_MUTED, TEXT_PRIMARY};
+use crate::top_bar::{paint_status_indicator, status_badge_visuals};
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MiniserverModalAction {
+    TestConnection(MiniserverCredentials),
+    RefreshBackups(MiniserverCredentials),
+    DownloadLatest(MiniserverCredentials),
+    DownloadSnapshot {
+        creds: MiniserverCredentials,
+        filename: String,
+    },
+    Close,
+}
+
+#[derive(Debug, Clone)]
+pub struct MiniserverModalState {
+    pub is_open: bool,
+    pub host: String,
+    pub username: String,
+    pub password: String,
+    pub remember_password: bool,
+    pub show_backups_browser: bool,
+    pub snapshots: Vec<BackupSnapshot>,
+    pub status_message: Option<String>,
+}
+
+impl Default for MiniserverModalState {
+    fn default() -> Self {
+        Self {
+            is_open: false,
+            host: String::new(),
+            username: "admin".to_string(),
+            password: String::new(),
+            remember_password: false,
+            show_backups_browser: false,
+            snapshots: Vec::new(),
+            status_message: None,
+        }
+    }
+}
+
+impl MiniserverModalState {
+    pub fn from_profile(profile: &ConnectionProfile) -> Self {
+        Self {
+            is_open: false,
+            host: profile.host.clone(),
+            username: if profile.username.trim().is_empty() {
+                "admin".to_string()
+            } else {
+                profile.username.clone()
+            },
+            password: profile.password.clone().unwrap_or_default(),
+            remember_password: profile.remember_password,
+            show_backups_browser: false,
+            snapshots: Vec::new(),
+            status_message: None,
+        }
+    }
+
+    pub fn apply_project_fallback_host(&mut self, project: Option<&LoxoneProject>) {
+        if !self.host.trim().is_empty() {
+            return;
+        }
+        if let Some(proj) = project {
+            if let Some(ip_or_host) = proj
+                .metadata
+                .miniserver_ip
+                .as_deref()
+                .or(proj.metadata.miniserver_hostname.as_deref())
+            {
+                self.host = ip_or_host.to_string();
+            }
+        }
+    }
+
+    pub fn credentials(&self) -> MiniserverCredentials {
+        MiniserverCredentials {
+            host: self.host.trim().to_string(),
+            username: self.username.trim().to_string(),
+            password: self.password.clone(),
+        }
+    }
+
+    pub fn to_profile(&self) -> ConnectionProfile {
+        ConnectionProfile {
+            host: self.host.trim().to_string(),
+            username: self.username.trim().to_string(),
+            password: if self.remember_password {
+                Some(self.password.clone())
+            } else {
+                None
+            },
+            remember_password: self.remember_password,
+        }
+    }
+}
+
+pub fn render_miniserver_modal(
+    ctx: &Context,
+    state: &mut MiniserverModalState,
+    connection_status: &ConnectionStatus,
+) -> Option<MiniserverModalAction> {
+    if !state.is_open {
+        return None;
+    }
+
+    if ctx.input(|i| i.key_pressed(Key::Escape)) {
+        return Some(MiniserverModalAction::Close);
+    }
+
+    let mut action = None;
+    let is_busy = connection_status.is_connecting();
+    let can_submit = !state.host.trim().is_empty() && !is_busy;
+    let badge = status_badge_visuals(connection_status, Some(&state.host));
+
+    // Backdrop dimmer
+    let screen_rect = ctx.screen_rect();
+    let backdrop_layer = egui::LayerId::new(Order::Foreground, Id::new("miniserver_modal_backdrop"));
+    ctx.layer_painter(backdrop_layer).rect_filled(
+        screen_rect,
+        0.0,
+        Color32::from_black_alpha(150),
+    );
+
+    egui::Area::new(Id::new("miniserver_modal_window"))
+        .order(Order::Foreground)
+        .anchor(Align2::CENTER_TOP, Vec2::new(0.0, 68.0))
+        .show(ctx, |ui| {
+            Frame::new()
+                .fill(PANEL_BG)
+                .stroke(Stroke::new(1.0_f32, ACCENT_BLUE))
+                .corner_radius(10)
+                .inner_margin(Margin::same(16))
+                .show(ui, |ui| {
+                    ui.set_width(540.0);
+
+                    // Header row: Title + Status Badge + Close button
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            RichText::new("Miniserver Connection & Project Download")
+                                .size(14.0)
+                                .color(TEXT_PRIMARY)
+                                .strong(),
+                        );
+
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui
+                                .button(RichText::new("✕").color(TEXT_MUTED))
+                                .on_hover_text("Close (Esc)")
+                                .clicked()
+                            {
+                                action = Some(MiniserverModalAction::Close);
+                            }
+
+                            Frame::new()
+                                .fill(CARD_BG)
+                                .stroke(Stroke::new(
+                                    1.0_f32,
+                                    badge.dot_color.gamma_multiply(0.65),
+                                ))
+                                .corner_radius(6)
+                                .inner_margin(Margin::symmetric(8, 3))
+                                .show(ui, |ui| {
+                                    ui.horizontal(|ui| {
+                                        ui.spacing_mut().item_spacing.x = 5.0;
+                                        paint_status_indicator(ui, &badge);
+                                        ui.label(
+                                            RichText::new(&badge.label)
+                                                .size(11.0)
+                                                .color(TEXT_PRIMARY),
+                                        );
+                                    });
+                                })
+                                .response
+                                .on_hover_text(&badge.tooltip);
+                        });
+                    });
+
+                    ui.add_space(6.0);
+                    ui.separator();
+                    ui.add_space(8.0);
+
+                    // Credentials grid
+                    egui::Grid::new("miniserver_creds_grid")
+                        .num_columns(2)
+                        .spacing([12.0, 8.0])
+                        .show(ui, |ui| {
+                            ui.label(RichText::new("Host / IP").color(TEXT_MUTED));
+                            ui.add(
+                                egui::TextEdit::singleline(&mut state.host)
+                                    .hint_text("192.168.1.100 or http://miniserwer:80")
+                                    .desired_width(400.0),
+                            );
+                            ui.end_row();
+
+                            ui.label(RichText::new("Username").color(TEXT_MUTED));
+                            ui.add(
+                                egui::TextEdit::singleline(&mut state.username)
+                                    .hint_text("admin")
+                                    .desired_width(400.0),
+                            );
+                            ui.end_row();
+
+                            ui.label(RichText::new("Password").color(TEXT_MUTED));
+                            ui.add(
+                                egui::TextEdit::singleline(&mut state.password)
+                                    .password(true)
+                                    .hint_text("Miniserver password")
+                                    .desired_width(400.0),
+                            );
+                            ui.end_row();
+                        });
+
+                    ui.add_space(6.0);
+                    ui.checkbox(
+                        &mut state.remember_password,
+                        RichText::new("Remember password on this computer").size(11.5).color(TEXT_MUTED),
+                    );
+
+                    if let Some(msg) = &state.status_message {
+                        ui.add_space(6.0);
+                        Frame::new()
+                            .fill(CARD_BG)
+                            .stroke(Stroke::new(1.0_f32, badge.dot_color.gamma_multiply(0.55)))
+                            .corner_radius(6)
+                            .inner_margin(Margin::symmetric(10, 6))
+                            .show(ui, |ui| {
+                                ui.set_width(512.0);
+                                ui.label(RichText::new(msg).size(11.5).color(TEXT_PRIMARY));
+                            });
+                    }
+
+                    ui.add_space(10.0);
+
+                    // Primary Actions Row
+                    ui.horizontal(|ui| {
+                        let test_btn = egui::Button::new(
+                            RichText::new("🔌 Test Connection")
+                                .size(12.0)
+                                .color(TEXT_PRIMARY),
+                        );
+                        if ui
+                            .add_enabled(can_submit, test_btn)
+                            .on_hover_text("Verify credentials and check /prog/ backups")
+                            .clicked()
+                        {
+                            action = Some(MiniserverModalAction::TestConnection(
+                                state.credentials(),
+                            ));
+                        }
+
+                        let dl_latest_btn = egui::Button::new(
+                            RichText::new("⬇ Download Latest Project")
+                                .size(12.0)
+                                .color(ACCENT_BLUE)
+                                .strong(),
+                        );
+                        if ui
+                            .add_enabled(can_submit, dl_latest_btn)
+                            .on_hover_text(
+                                "Download newest sps_<ver>_<timestamp>.zip from /prog/ and open in viewer",
+                            )
+                            .clicked()
+                        {
+                            action = Some(MiniserverModalAction::DownloadLatest(
+                                state.credentials(),
+                            ));
+                        }
+
+                        let browse_label = if state.show_backups_browser {
+                            "▾ Hide Backups"
+                        } else {
+                            "▸ Browse Backups…"
+                        };
+                        if ui
+                            .add_enabled(
+                                can_submit,
+                                egui::Button::new(
+                                    RichText::new(browse_label).size(11.5).color(TEXT_MUTED),
+                                ),
+                            )
+                            .clicked()
+                        {
+                            state.show_backups_browser = !state.show_backups_browser;
+                            if state.show_backups_browser && state.snapshots.is_empty() {
+                                action = Some(MiniserverModalAction::RefreshBackups(
+                                    state.credentials(),
+                                ));
+                            }
+                        }
+                    });
+
+                    // Expandable Backups Browser
+                    if state.show_backups_browser {
+                        ui.add_space(10.0);
+                        ui.separator();
+                        ui.add_space(6.0);
+
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                RichText::new(format!(
+                                    "Backups in /prog/ ({})",
+                                    state.snapshots.len()
+                                ))
+                                .size(11.5)
+                                .color(TEXT_MUTED)
+                                .strong(),
+                            );
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    if ui
+                                        .add_enabled(
+                                            can_submit,
+                                            egui::Button::new(
+                                                RichText::new("↻ Refresh")
+                                                    .size(11.0)
+                                                    .color(TEXT_PRIMARY),
+                                            ),
+                                        )
+                                        .clicked()
+                                    {
+                                        action = Some(MiniserverModalAction::RefreshBackups(
+                                            state.credentials(),
+                                        ));
+                                    }
+                                },
+                            );
+                        });
+
+                        ui.add_space(4.0);
+                        ScrollArea::vertical().max_height(220.0).show(ui, |ui| {
+                            if state.snapshots.is_empty() {
+                                ui.label(
+                                    RichText::new(
+                                        "No backups loaded yet. Click 'Refresh' or 'Test Connection' to list /prog/.",
+                                    )
+                                    .size(11.5)
+                                    .color(TEXT_MUTED),
+                                );
+                            }
+                            for snap in &state.snapshots {
+                                Frame::new()
+                                    .fill(CARD_BG)
+                                    .stroke(Stroke::new(1.0_f32, BORDER_SUBTLE))
+                                    .corner_radius(6)
+                                    .inner_margin(Margin::symmetric(10, 6))
+                                    .show(ui, |ui| {
+                                        ui.set_width(508.0);
+                                        ui.horizontal(|ui| {
+                                            ui.vertical(|ui| {
+                                                ui.label(
+                                                    RichText::new(&snap.filename)
+                                                        .size(12.0)
+                                                        .color(TEXT_PRIMARY)
+                                                        .strong(),
+                                                );
+                                                let size_kb = snap
+                                                    .size_bytes
+                                                    .map(|b| format!(" • {} KB", b / 1024))
+                                                    .unwrap_or_default();
+                                                let ver_str = snap
+                                                    .config_version
+                                                    .map(|v| format!("v{} • ", v))
+                                                    .unwrap_or_default();
+                                                ui.label(
+                                                    RichText::new(format!(
+                                                        "{}{}{}",
+                                                        ver_str, snap.formatted_date, size_kb
+                                                    ))
+                                                    .size(11.0)
+                                                    .color(TEXT_MUTED),
+                                                );
+                                            });
+                                            ui.with_layout(
+                                                egui::Layout::right_to_left(egui::Align::Center),
+                                                |ui| {
+                                                    if ui
+                                                        .add_enabled(
+                                                            can_submit,
+                                                            egui::Button::new(
+                                                                RichText::new("⬇ Download")
+                                                                    .size(11.5)
+                                                                    .color(ACCENT_BLUE),
+                                                            ),
+                                                        )
+                                                        .clicked()
+                                                    {
+                                                        action = Some(
+                                                            MiniserverModalAction::DownloadSnapshot {
+                                                                creds: state.credentials(),
+                                                                filename: snap.filename.clone(),
+                                                            },
+                                                        );
+                                                    }
+                                                },
+                                            );
+                                        });
+                                    });
+                                ui.add_space(4.0);
+                            }
+                        });
+                    }
+                });
+        });
+
+    action
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+    use loxone_core::parser::load_loxone_file;
+
+    #[test]
+    fn test_miniserver_modal_prefills_host_from_project_loxlive_and_renders() {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../Klimczaki.Loxone");
+        let project = load_loxone_file(&path).expect("Klimczaki.Loxone should parse");
+
+        let mut modal = MiniserverModalState::default();
+        assert!(modal.host.is_empty());
+
+        modal.apply_project_fallback_host(Some(&project));
+        assert_eq!(modal.host, "192.168.1.100");
+
+        // Does not overwrite an explicitly entered host
+        modal.host = "10.0.0.50".to_string();
+        modal.apply_project_fallback_host(Some(&project));
+        assert_eq!(modal.host, "10.0.0.50");
+
+        // Profile round-trip
+        let prof = modal.to_profile();
+        let restored = MiniserverModalState::from_profile(&prof);
+        assert_eq!(restored.host, "10.0.0.50");
+
+        modal.is_open = true;
+        modal.show_backups_browser = true;
+        modal.snapshots.push(BackupSnapshot {
+            filename: "sps_194_20260308182256.zip".to_string(),
+            config_version: Some(194),
+            timestamp_raw: Some("20260308182256".to_string()),
+            formatted_date: "2026-03-08 18:22:56".to_string(),
+            size_bytes: Some(158_262),
+        });
+
+        let ctx = egui::Context::default();
+        let status = ConnectionStatus::Connected {
+            host: "10.0.0.50".to_string(),
+            server_info: "1 backup(s) available".to_string(),
+        };
+        let _ = ctx.run(egui::RawInput::default(), |ctx| {
+            let _ = render_miniserver_modal(ctx, &mut modal, &status);
+        });
+    }
+}
