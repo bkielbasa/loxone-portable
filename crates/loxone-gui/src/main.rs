@@ -1,5 +1,6 @@
 #![allow(dead_code)]
 
+mod canvas;
 mod command_palette;
 mod theme;
 
