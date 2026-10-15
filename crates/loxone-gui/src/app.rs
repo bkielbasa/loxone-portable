@@ -584,7 +584,11 @@ impl eframe::App for LoxonePortableApp {
                             if let Some(block) =
                                 page.blocks.iter().find(|b| b.uuid == target_uuid)
                             {
-                                self.viewport.center_on_block(block, view_size);
+                                if block.has_position {
+                                    self.viewport.center_on_block(block, view_size);
+                                } else {
+                                    self.viewport.fit_to_page(page, view_size);
+                                }
                             }
                         }
                     }

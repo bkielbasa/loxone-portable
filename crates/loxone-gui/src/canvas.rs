@@ -1,9 +1,6 @@
 use std::collections::HashMap;
 
-use egui::{
-    epaint::CubicBezierShape, Align2, Color32, CornerRadius, FontId, Pos2, Rect, Sense, Stroke, Ui,
-    Vec2,
-};
+use egui::{Align2, Color32, CornerRadius, FontId, Pos2, Rect, Sense, Stroke, Ui, Vec2};
 use loxone_core::model::{ConnectorPin, LoxoneProject, Page, PageBlock};
 use loxone_core::xref::XrefIndex;
 
@@ -60,7 +57,7 @@ impl CanvasViewport {
     }
 
     pub fn fit_to_page(&mut self, page: &Page, view_size: Vec2) {
-        if page.blocks.is_empty() || view_size.x <= 10.0 || view_size.y <= 10.0 {
+        if view_size.x <= 10.0 || view_size.y <= 10.0 {
             self.pan = Vec2::new(40.0, 40.0);
             self.zoom = 1.0;
             return;
@@ -69,11 +66,18 @@ impl CanvasViewport {
         let mut min_y = f32::INFINITY;
         let mut max_x = f32::NEG_INFINITY;
         let mut max_y = f32::NEG_INFINITY;
-        for b in &page.blocks {
+        let mut has_positioned = false;
+        for b in page.blocks.iter().filter(|b| b.has_position) {
+            has_positioned = true;
             min_x = min_x.min(b.px);
             min_y = min_y.min(b.py);
             max_x = max_x.max(b.px2.max(b.px + 512.0));
             max_y = max_y.max(b.py2.max(b.py + 192.0));
+        }
+        if !has_positioned {
+            self.pan = Vec2::new(40.0, 40.0);
+            self.zoom = 1.0;
+            return;
         }
         let width_px = (max_x - min_x).max(512.0) / LOXONE_UNITS_PER_PX;
         let height_px = (max_y - min_y).max(192.0) / LOXONE_UNITS_PER_PX;
@@ -97,17 +101,35 @@ impl CanvasViewport {
     }
 }
 
+pub fn has_visible_outgoing_wires(pin_uuid: &str, xref: &XrefIndex) -> bool {
+    xref.outgoing_wires_by_pin_uuid
+        .get(pin_uuid)
+        .is_some_and(|targets| targets.iter().any(|t| !t.is_hidden))
+}
+
 pub fn classify_pin_side(block: &PageBlock, pin: &ConnectorPin, xref: &XrefIndex) -> PinSide {
-    if matches!(block.block_type.as_str(), "InputRef" | "Memory") {
+    if block.is_input_ref_bar() {
         return PinSide::Output;
     }
-    if block.block_type == "OutputRef" {
+    if block.is_output_ref_bar() {
         return PinSide::Input;
     }
-    if !pin.incoming_links.is_empty() || pin.default_value.is_some() {
+    if block.block_type == "Memory" {
+        if pin.key.eq_ignore_ascii_case("Input")
+            || pin.has_visible_incoming_links()
+            || pin.default_value.is_some()
+        {
+            return PinSide::Input;
+        }
+        return PinSide::Output;
+    }
+    if matches!(pin.key.as_str(), "API" | "OutputAPI") {
+        return PinSide::Output;
+    }
+    if pin.has_visible_incoming_links() || pin.default_value.is_some() {
         return PinSide::Input;
     }
-    if xref.outgoing_wires_by_pin_uuid.contains_key(&pin.uuid) {
+    if has_visible_outgoing_wires(&pin.uuid, xref) {
         return PinSide::Output;
     }
     if pin.pin_kind == loxone_core::model::PinKind::Output {
@@ -118,10 +140,227 @@ pub fn classify_pin_side(block: &PageBlock, pin: &ConnectorPin, xref: &XrefIndex
 }
 
 pub fn is_pin_connected(pin: &ConnectorPin, xref: &XrefIndex) -> bool {
-    !pin.incoming_links.is_empty()
+    if pin.key.ends_with("Hidden") {
+        return false;
+    }
+    pin.has_visible_incoming_links()
         || pin.default_value.is_some()
-        || xref.outgoing_wires_by_pin_uuid.contains_key(&pin.uuid)
+        || has_visible_outgoing_wires(&pin.uuid, xref)
 }
+
+fn truncate_text(text: &str, max_chars: usize) -> String {
+    let max_chars = max_chars.max(4);
+    let count = text.chars().count();
+    if count <= max_chars {
+        text.to_string()
+    } else {
+        let mut s: String = text.chars().take(max_chars - 1).collect();
+        s.push('…');
+        s
+    }
+}
+
+pub fn segment_hits_rect(a: Pos2, b: Pos2, rect: Rect) -> bool {
+    let min_x = a.x.min(b.x);
+    let max_x = a.x.max(b.x);
+    let min_y = a.y.min(b.y);
+    let max_y = a.y.max(b.y);
+    if max_x <= rect.min.x || min_x >= rect.max.x || max_y <= rect.min.y || min_y >= rect.max.y {
+        return false;
+    }
+    if (a.y - b.y).abs() < 0.5 {
+        a.y > rect.min.y && a.y < rect.max.y && max_x > rect.min.x && min_x < rect.max.x
+    } else if (a.x - b.x).abs() < 0.5 {
+        a.x > rect.min.x && a.x < rect.max.x && max_y > rect.min.y && min_y < rect.max.y
+    } else {
+        true
+    }
+}
+
+fn path_hits_obstacles(pts: &[Pos2], obstacles: &[Rect]) -> bool {
+    pts.windows(2)
+        .any(|w| obstacles.iter().any(|&r| segment_hits_rect(w[0], w[1], r)))
+}
+
+pub fn compute_wire_waypoints(
+    src: Pos2,
+    dst: Pos2,
+    src_block_idx: usize,
+    dst_block_idx: usize,
+    block_rects: &[Rect],
+    wire_slot: usize,
+    zoom: f32,
+) -> Vec<Pos2> {
+    let stub = 12.0 * zoom;
+    let p1 = Pos2::new(src.x + stub, src.y);
+    let p_end_stub = Pos2::new(dst.x - stub, dst.y);
+
+    let pad = 4.0 * zoom;
+    let obstacles: Vec<Rect> = block_rects
+        .iter()
+        .enumerate()
+        .filter(|&(idx, _)| idx != src_block_idx && idx != dst_block_idx)
+        .map(|(_, r)| r.expand(pad))
+        .collect();
+
+    let src_rect = block_rects
+        .get(src_block_idx)
+        .copied()
+        .unwrap_or(Rect::NOTHING)
+        .expand(pad);
+    let dst_rect = block_rects
+        .get(dst_block_idx)
+        .copied()
+        .unwrap_or(Rect::NOTHING)
+        .expand(pad);
+
+    let mut all_obstacles = obstacles.clone();
+    if src_rect != Rect::NOTHING {
+        all_obstacles.push(src_rect);
+    }
+    if dst_rect != Rect::NOTHING && dst_block_idx != src_block_idx {
+        all_obstacles.push(dst_rect);
+    }
+
+    let stagger = ((wire_slot % 7) as f32 - 3.0) * 4.5 * zoom;
+
+    if p1.x <= p_end_stub.x {
+        if (src.y - dst.y).abs() < 1.5 * zoom
+            && !obstacles.iter().any(|&r| segment_hits_rect(src, dst, r))
+        {
+            return vec![src, dst];
+        }
+
+        let base_mid_x = ((p1.x + p_end_stub.x) * 0.5 + stagger).clamp(p1.x, p_end_stub.x);
+        let mut candidate_xs = vec![base_mid_x, (p1.x + p_end_stub.x) * 0.5, p1.x, p_end_stub.x];
+        for r in &obstacles {
+            for &cx in &[r.min.x - 8.0 * zoom, r.max.x + 8.0 * zoom] {
+                if cx >= p1.x && cx <= p_end_stub.x {
+                    candidate_xs.push(cx);
+                }
+            }
+        }
+        for mid_x in candidate_xs {
+            let pts = vec![
+                src,
+                p1,
+                Pos2::new(mid_x, src.y),
+                Pos2::new(mid_x, dst.y),
+                p_end_stub,
+                dst,
+            ];
+            if !path_hits_obstacles(&pts[1..5], &all_obstacles) {
+                return pts;
+            }
+        }
+    }
+
+    let mut candidate_ys = Vec::new();
+    let min_x = p1.x.min(p_end_stub.x) - 8.0 * zoom;
+    let max_x = p1.x.max(p_end_stub.x) + 8.0 * zoom;
+    let mut band_top = src.y.min(dst.y);
+    let mut band_bottom = src.y.max(dst.y);
+    for r in &all_obstacles {
+        if r.max.x >= min_x && r.min.x <= max_x {
+            band_top = band_top.min(r.min.y);
+            band_bottom = band_bottom.max(r.max.y);
+            candidate_ys.push(r.min.y - (8.0 + (wire_slot % 4) as f32 * 4.0) * zoom);
+            candidate_ys.push(r.max.y + (8.0 + (wire_slot % 4) as f32 * 4.0) * zoom);
+        }
+    }
+    let clearance = (12.0 + (wire_slot % 5) as f32 * 4.5) * zoom;
+    candidate_ys.push(band_top - clearance);
+    candidate_ys.push(band_bottom + clearance);
+
+    let avg_y = (src.y + dst.y) * 0.5;
+    candidate_ys.sort_by(|a, b| {
+        (a - avg_y)
+            .abs()
+            .partial_cmp(&(b - avg_y).abs())
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+
+    for mid_y in &candidate_ys {
+        let pts = vec![
+            src,
+            p1,
+            Pos2::new(p1.x, *mid_y),
+            Pos2::new(p_end_stub.x, *mid_y),
+            p_end_stub,
+            dst,
+        ];
+        if !path_hits_obstacles(&pts[1..5], &all_obstacles) {
+            return pts;
+        }
+    }
+
+    let fallback_y = candidate_ys.first().copied().unwrap_or(band_top - clearance);
+    vec![
+        src,
+        p1,
+        Pos2::new(p1.x, fallback_y),
+        Pos2::new(p_end_stub.x, fallback_y),
+        p_end_stub,
+        dst,
+    ]
+}
+
+fn draw_rounded_orthogonal_wire(
+    painter: &egui::Painter,
+    waypoints: &[Pos2],
+    stroke: Stroke,
+    zoom: f32,
+) {
+    let mut clean: Vec<Pos2> = Vec::with_capacity(waypoints.len());
+    for &p in waypoints {
+        if clean.last().is_none_or(|&last| last.distance(p) > 0.5) {
+            clean.push(p);
+        }
+    }
+    if clean.len() < 2 {
+        return;
+    }
+    if clean.len() == 2 {
+        painter.line_segment([clean[0], clean[1]], stroke);
+        return;
+    }
+
+    let radius = (5.0 * zoom).clamp(2.5, 8.0);
+    let mut poly: Vec<Pos2> = Vec::with_capacity(clean.len() * 3);
+    poly.push(clean[0]);
+
+    for i in 1..(clean.len() - 1) {
+        let prev = clean[i - 1];
+        let curr = clean[i];
+        let next = clean[i + 1];
+        let v1 = curr - prev;
+        let v2 = next - curr;
+        let l1 = v1.length();
+        let l2 = v2.length();
+        if l1 < 1.0 || l2 < 1.0 {
+            poly.push(curr);
+            continue;
+        }
+        let d1 = v1 / l1;
+        let d2 = v2 / l2;
+        if (d1.x * d2.x + d1.y * d2.y).abs() > 0.98 {
+            continue;
+        }
+        let r = radius.min(l1 * 0.45).min(l2 * 0.45);
+        let p_in = curr - d1 * r;
+        let p_out = curr + d2 * r;
+        let p_mid = Pos2::new(
+            0.25 * p_in.x + 0.5 * curr.x + 0.25 * p_out.x,
+            0.25 * p_in.y + 0.5 * curr.y + 0.25 * p_out.y,
+        );
+        poly.push(p_in);
+        poly.push(p_mid);
+        poly.push(p_out);
+    }
+    poly.push(*clean.last().unwrap());
+    painter.add(egui::Shape::line(poly, stroke));
+}
+
 
 pub fn render_page_canvas(
     ui: &mut Ui,
@@ -178,15 +417,181 @@ pub fn render_page_canvas(
         gx += step;
     }
 
+    struct BlockLayout<'a> {
+        block: &'a PageBlock,
+        rect: Rect,
+        header_h: f32,
+        row_h: f32,
+        inputs: Vec<&'a ConnectorPin>,
+        outputs: Vec<&'a ConnectorPin>,
+    }
+
     let mut action: Option<CanvasAction> = None;
-    let mut pin_screen_positions: HashMap<String, Pos2> = HashMap::new();
+    let mut pin_screen_positions: HashMap<String, (Pos2, usize)> = HashMap::new();
     let pointer_pos = response.interact_pointer_pos();
     let clicked = response.clicked();
     let mut clicked_any_block = false;
 
-    // Pass 1: Draw blocks and record pin anchor coordinates
-    for block in &page.blocks {
-        let rect = viewport.loxone_rect_to_screen(origin, block);
+    let positioned_blocks: Vec<&PageBlock> =
+        page.blocks.iter().filter(|b| b.has_position).collect();
+    let mut layouts: Vec<BlockLayout> = Vec::with_capacity(positioned_blocks.len());
+    let mut block_rects: Vec<Rect> = Vec::with_capacity(positioned_blocks.len());
+
+    // Pass 1: Precompute positioned block rects and pin screen coordinates
+    for (block_idx, &block) in positioned_blocks.iter().enumerate() {
+        let mut rect = viewport.loxone_rect_to_screen(origin, block);
+
+        if block.is_note() {
+            layouts.push(BlockLayout {
+                block,
+                rect,
+                header_h: 0.0,
+                row_h: 0.0,
+                inputs: Vec::new(),
+                outputs: Vec::new(),
+            });
+            block_rects.push(rect);
+            continue;
+        }
+
+        if block.is_ref_bar() {
+            let v_pad = (1.5 * viewport.zoom).min(rect.height() * 0.18);
+            rect = Rect::from_min_max(
+                Pos2::new(rect.min.x, rect.min.y + v_pad),
+                Pos2::new(rect.max.x, rect.max.y - v_pad),
+            );
+            for pin in &block.pins {
+                let side = classify_pin_side(block, pin, &project.xref);
+                let anchor = match side {
+                    PinSide::Output => Pos2::new(rect.max.x, rect.center().y),
+                    PinSide::Input => Pos2::new(rect.min.x, rect.center().y),
+                };
+                pin_screen_positions.insert(pin.uuid.clone(), (anchor, block_idx));
+            }
+            layouts.push(BlockLayout {
+                block,
+                rect,
+                header_h: 0.0,
+                row_h: 0.0,
+                inputs: Vec::new(),
+                outputs: Vec::new(),
+            });
+            block_rects.push(rect);
+            continue;
+        }
+
+        let mut inputs = Vec::new();
+        let mut outputs = Vec::new();
+        for pin in &block.pins {
+            if viewport.compact_pins && !is_pin_connected(pin, &project.xref) {
+                continue;
+            }
+            match classify_pin_side(block, pin, &project.xref) {
+                PinSide::Input => inputs.push(pin),
+                PinSide::Output => outputs.push(pin),
+            }
+        }
+
+        let header_h = (18.0 * viewport.zoom).clamp(6.0, 26.0);
+        let row_h = (11.5 * viewport.zoom).clamp(4.0, 17.0);
+        let body_pad = 4.0 * viewport.zoom;
+        let max_rows = inputs.len().max(outputs.len());
+        let needed_h = header_h + body_pad * 2.0 + (max_rows as f32) * row_h;
+        if needed_h > rect.height() {
+            rect.max.y = rect.min.y + needed_h;
+        }
+
+        let body_top = rect.min.y + header_h + body_pad;
+        for (i, pin) in inputs.iter().enumerate() {
+            let py = body_top + (i as f32 + 0.5) * row_h;
+            let anchor = Pos2::new(rect.min.x, py);
+            pin_screen_positions.insert(pin.uuid.clone(), (anchor, block_idx));
+        }
+        for (i, pin) in outputs.iter().enumerate() {
+            let py = body_top + (i as f32 + 0.5) * row_h;
+            let anchor = Pos2::new(rect.max.x, py);
+            pin_screen_positions.insert(pin.uuid.clone(), (anchor, block_idx));
+        }
+
+        layouts.push(BlockLayout {
+            block,
+            rect,
+            header_h,
+            row_h,
+            inputs,
+            outputs,
+        });
+        block_rects.push(rect);
+    }
+
+    // Pass 2: Draw on-page direct wires BEHIND blocks using obstacle-avoiding orthogonal routing
+    let mut wire_slot = 0usize;
+    for (dst_block_idx, layout) in layouts.iter().enumerate() {
+        let block = layout.block;
+        if block.is_input_ref_bar() {
+            continue;
+        }
+        for pin in &block.pins {
+            let Some(&(dst_pos, _)) = pin_screen_positions.get(&pin.uuid) else {
+                continue;
+            };
+            for link in &pin.incoming_links {
+                if link.is_hidden() || link.is_detached_ref() {
+                    continue;
+                }
+                if let Some(&(src_pos, src_block_idx)) =
+                    pin_screen_positions.get(&link.source_pin_uuid)
+                {
+                    let is_highlighted = selected_uuid == Some(block.uuid.as_str())
+                        || selected_uuid
+                            == Some(positioned_blocks[src_block_idx].uuid.as_str());
+                    let base_color = if pin.key.starts_with("AI")
+                        || pin.key.starts_with("AQ")
+                        || project
+                            .xref
+                            .pins_by_uuid
+                            .get(&link.source_pin_uuid)
+                            .is_some_and(|m| m.pin_key.starts_with("AQ"))
+                    {
+                        WIRE_ANALOG
+                    } else {
+                        WIRE_DIGITAL
+                    };
+                    let wire_color = if is_highlighted {
+                        ACCENT_BLUE
+                    } else {
+                        base_color.gamma_multiply(0.82)
+                    };
+                    let wire_width = if is_highlighted {
+                        (2.2 * viewport.zoom).clamp(1.3, 3.2)
+                    } else {
+                        (1.4 * viewport.zoom).clamp(0.9, 2.2)
+                    };
+                    let waypoints = compute_wire_waypoints(
+                        src_pos,
+                        dst_pos,
+                        src_block_idx,
+                        dst_block_idx,
+                        &block_rects,
+                        wire_slot,
+                        viewport.zoom,
+                    );
+                    draw_rounded_orthogonal_wire(
+                        &painter,
+                        &waypoints,
+                        Stroke::new(wire_width, wire_color),
+                        viewport.zoom,
+                    );
+                    wire_slot += 1;
+                }
+            }
+        }
+    }
+
+    // Pass 3: Draw blocks, reference bars, and notes ON TOP of wires
+    for layout in &layouts {
+        let block = layout.block;
+        let rect = layout.rect;
         let is_selected = selected_uuid == Some(block.uuid.as_str());
         let (header_fill, accent_color) = blend_block_header_color(block.color_rgb);
 
@@ -205,39 +610,49 @@ pub fn render_page_canvas(
             Stroke::new(1.0_f32, CARD_BORDER)
         };
 
-        // Sticky Note
-        if matches!(block.block_type.as_str(), "Note" | "Text") {
+        if block.is_note() {
             let note_bg = Color32::from_rgb(0x28, 0x24, 0x18);
-            painter.rect(rect, CornerRadius::same(6), note_bg, border_stroke, egui::StrokeKind::Inside);
+            painter.rect(
+                rect,
+                CornerRadius::same(6),
+                note_bg,
+                border_stroke,
+                egui::StrokeKind::Inside,
+            );
             let note_text = block
                 .text_content
                 .as_deref()
                 .filter(|s| !s.is_empty())
                 .unwrap_or(&block.title);
-            painter.text(
+            let clipped = painter.with_clip_rect(rect.shrink(4.0 * viewport.zoom));
+            clipped.text(
                 rect.min + Vec2::new(8.0 * viewport.zoom, 6.0 * viewport.zoom),
                 Align2::LEFT_TOP,
                 note_text,
-                FontId::proportional((11.0 * viewport.zoom).clamp(8.0, 16.0)),
+                FontId::proportional((10.5 * viewport.zoom).clamp(7.0, 15.0)),
                 TEXT_PRIMARY,
             );
             continue;
         }
 
-        // Reference Bar (InputRef, OutputRef, Memory)
-        let is_ref_bar = matches!(
-            block.block_type.as_str(),
-            "InputRef" | "OutputRef" | "Memory"
-        );
-        if is_ref_bar {
-            painter.rect(rect, CornerRadius::same(5), header_fill, border_stroke, egui::StrokeKind::Inside);
+        if block.is_ref_bar() {
+            painter.rect(
+                rect,
+                CornerRadius::same(4),
+                header_fill,
+                border_stroke,
+                egui::StrokeKind::Inside,
+            );
             let strip = Rect::from_min_max(
                 rect.min,
-                Pos2::new((rect.min.x + 3.0 * viewport.zoom).min(rect.max.x), rect.max.y),
+                Pos2::new(
+                    (rect.min.x + 3.0 * viewport.zoom).min(rect.max.x),
+                    rect.max.y,
+                ),
             );
             painter.rect_filled(strip, CornerRadius::same(2), accent_color);
 
-            let label = if !block.title.is_empty() {
+            let raw_label = if !block.title.is_empty() {
                 block.title.clone()
             } else if let Some(ref_uuid) = &block.ref_uuid {
                 project
@@ -249,170 +664,193 @@ pub fn render_page_canvas(
             } else {
                 block.block_type.clone()
             };
+            let max_chars = ((rect.width() - 14.0 * viewport.zoom)
+                / (5.8 * viewport.zoom).max(3.5))
+            .max(6.0) as usize;
+            let label = truncate_text(&raw_label, max_chars);
 
-            painter.text(
-                Pos2::new(rect.min.x + 8.0 * viewport.zoom, rect.center().y),
+            let text_clip = painter.with_clip_rect(rect.shrink(2.0));
+            text_clip.text(
+                Pos2::new(rect.min.x + 7.0 * viewport.zoom, rect.center().y),
                 Align2::LEFT_CENTER,
                 label,
-                FontId::proportional((11.0 * viewport.zoom).clamp(8.0, 14.0)),
+                FontId::proportional((10.0 * viewport.zoom).clamp(6.5, 13.0)),
                 TEXT_PRIMARY,
             );
 
             for pin in &block.pins {
-                let side = classify_pin_side(block, pin, &project.xref);
-                let anchor = match side {
-                    PinSide::Output => Pos2::new(rect.max.x, rect.center().y),
-                    PinSide::Input => Pos2::new(rect.min.x, rect.center().y),
-                };
-                painter.circle_filled(anchor, (3.2 * viewport.zoom).clamp(2.0, 5.0), WIRE_DIGITAL);
-                pin_screen_positions.insert(pin.uuid.clone(), anchor);
+                if let Some(&(anchor, _)) = pin_screen_positions.get(&pin.uuid) {
+                    painter.circle_filled(
+                        anchor,
+                        (2.8 * viewport.zoom).clamp(1.8, 4.5),
+                        WIRE_DIGITAL,
+                    );
+                }
             }
             continue;
         }
 
         // Standard Function Block Card
-        let header_h = (22.0 * viewport.zoom).clamp(14.0, 32.0).min(rect.height());
-        let header_rect = Rect::from_min_max(rect.min, Pos2::new(rect.max.x, rect.min.y + header_h));
+        let header_h = layout.header_h.min(rect.height());
+        let header_rect =
+            Rect::from_min_max(rect.min, Pos2::new(rect.max.x, rect.min.y + header_h));
 
-        painter.rect(rect, CornerRadius::same(6), CARD_BG, border_stroke, egui::StrokeKind::Inside);
+        painter.rect(
+            rect,
+            CornerRadius::same(6),
+            CARD_BG,
+            border_stroke,
+            egui::StrokeKind::Inside,
+        );
         painter.rect_filled(header_rect, CornerRadius::same(6), header_fill);
         let strip = Rect::from_min_max(
             header_rect.min,
-            Pos2::new((header_rect.min.x + 3.0 * viewport.zoom).min(header_rect.max.x), header_rect.max.y),
+            Pos2::new(
+                (header_rect.min.x + 3.0 * viewport.zoom).min(header_rect.max.x),
+                header_rect.max.y,
+            ),
         );
         painter.rect_filled(strip, CornerRadius::same(2), accent_color);
 
-        let title = if block.title.is_empty() {
+        let raw_title = if block.title.is_empty() {
             &block.block_type
         } else {
             &block.title
         };
-        painter.text(
-            Pos2::new(header_rect.min.x + 8.0 * viewport.zoom, header_rect.center().y),
+        let title_max_chars = ((header_rect.width() - 14.0 * viewport.zoom)
+            / (6.0 * viewport.zoom).max(3.5))
+        .max(6.0) as usize;
+        let title = truncate_text(raw_title, title_max_chars);
+        let header_clip = painter.with_clip_rect(header_rect.shrink(1.5));
+        header_clip.text(
+            Pos2::new(
+                header_rect.min.x + 7.0 * viewport.zoom,
+                header_rect.center().y,
+            ),
             Align2::LEFT_CENTER,
             title,
-            FontId::proportional((11.5 * viewport.zoom).clamp(8.0, 15.0)),
+            FontId::proportional((10.5 * viewport.zoom).clamp(6.5, 14.0)),
             TEXT_PRIMARY,
         );
 
-        let mut inputs = Vec::new();
-        let mut outputs = Vec::new();
-        for pin in &block.pins {
-            if viewport.compact_pins && !is_pin_connected(pin, &project.xref) {
-                continue;
-            }
-            match classify_pin_side(block, pin, &project.xref) {
-                PinSide::Input => inputs.push(pin),
-                PinSide::Output => outputs.push(pin),
-            }
-        }
+        let body_top = header_rect.max.y + 4.0 * viewport.zoom;
+        let row_h = layout.row_h;
+        let has_both_sides = !layout.inputs.is_empty() && !layout.outputs.is_empty();
+        let avail_label_w = if has_both_sides {
+            rect.width() * 0.46 - 8.0 * viewport.zoom
+        } else {
+            rect.width() - 16.0 * viewport.zoom
+        };
+        let pin_max_chars =
+            (avail_label_w / (5.4 * viewport.zoom).max(3.2)).max(4.0) as usize;
+        let pin_font = FontId::monospace((8.8 * viewport.zoom).clamp(5.5, 11.5));
 
-        let body_top = header_rect.max.y + 6.0 * viewport.zoom;
-        let row_h = (14.0 * viewport.zoom).clamp(9.0, 20.0);
-
-        for (i, pin) in inputs.iter().enumerate() {
-            let py = (body_top + (i as f32 + 0.5) * row_h).min(rect.max.y - 4.0);
+        for (i, pin) in layout.inputs.iter().enumerate() {
+            let py = body_top + (i as f32 + 0.5) * row_h;
             let anchor = Pos2::new(rect.min.x, py);
-            painter.circle_filled(anchor, (3.0 * viewport.zoom).clamp(2.0, 4.5), WIRE_DIGITAL);
+            painter.circle_filled(anchor, (2.6 * viewport.zoom).clamp(1.6, 4.0), WIRE_DIGITAL);
             painter.text(
-                Pos2::new(rect.min.x + 6.0 * viewport.zoom, py),
+                Pos2::new(rect.min.x + 5.5 * viewport.zoom, py),
                 Align2::LEFT_CENTER,
-                &pin.key,
-                FontId::monospace((9.5 * viewport.zoom).clamp(7.0, 12.0)),
+                truncate_text(&pin.key, pin_max_chars),
+                pin_font.clone(),
                 TEXT_MUTED,
             );
-            pin_screen_positions.insert(pin.uuid.clone(), anchor);
         }
 
-        for (i, pin) in outputs.iter().enumerate() {
-            let py = (body_top + (i as f32 + 0.5) * row_h).min(rect.max.y - 4.0);
+        for (i, pin) in layout.outputs.iter().enumerate() {
+            let py = body_top + (i as f32 + 0.5) * row_h;
             let anchor = Pos2::new(rect.max.x, py);
-            painter.circle_filled(anchor, (3.0 * viewport.zoom).clamp(2.0, 4.5), WIRE_ANALOG);
+            painter.circle_filled(anchor, (2.6 * viewport.zoom).clamp(1.6, 4.0), WIRE_ANALOG);
             painter.text(
-                Pos2::new(rect.max.x - 6.0 * viewport.zoom, py),
+                Pos2::new(rect.max.x - 5.5 * viewport.zoom, py),
                 Align2::RIGHT_CENTER,
-                &pin.key,
-                FontId::monospace((9.5 * viewport.zoom).clamp(7.0, 12.0)),
+                truncate_text(&pin.key, pin_max_chars),
+                pin_font.clone(),
                 TEXT_MUTED,
             );
-            pin_screen_positions.insert(pin.uuid.clone(), anchor);
         }
     }
 
-    // Pass 2: Draw wires (on-page cubic beziers + off-page/periphery clickable pill tags)
-    for block in &page.blocks {
-        let block_rect = viewport.loxone_rect_to_screen(origin, block);
-        for (pin_idx, pin) in block.pins.iter().enumerate() {
-            if pin.incoming_links.is_empty() {
+    // Pass 4: Draw consolidated clickable pill tags for detached (FLG=2) and cross-page/periphery links
+    for layout in &layouts {
+        let block = layout.block;
+        if block.is_input_ref_bar() {
+            continue;
+        }
+        for pin in &block.pins {
+            let Some(&(dst_pos, _)) = pin_screen_positions.get(&pin.uuid) else {
+                continue;
+            };
+            let mut pill_sources = Vec::new();
+            for link in &pin.incoming_links {
+                if link.is_hidden() {
+                    continue;
+                }
+                let is_on_page_direct = !link.is_detached_ref()
+                    && pin_screen_positions.contains_key(&link.source_pin_uuid);
+                if !is_on_page_direct {
+                    if let Some(src_meta) = project.xref.pins_by_uuid.get(&link.source_pin_uuid) {
+                        pill_sources.push(src_meta);
+                    }
+                }
+            }
+            if pill_sources.is_empty() {
                 continue;
             }
-            let dst_pos = pin_screen_positions
-                .get(&pin.uuid)
-                .copied()
-                .unwrap_or_else(|| {
-                    Pos2::new(
-                        block_rect.min.x,
-                        block_rect.min.y + 24.0 + (pin_idx as f32) * 12.0,
-                    )
-                });
 
-            for link in &pin.incoming_links {
-                if let Some(&src_pos) = pin_screen_positions.get(&link.source_pin_uuid) {
-                    let dx = ((dst_pos.x - src_pos.x).abs() * 0.45).max(28.0 * viewport.zoom);
-                    let bezier = CubicBezierShape::from_points_stroke(
-                        [
-                            src_pos,
-                            Pos2::new(src_pos.x + dx, src_pos.y),
-                            Pos2::new(dst_pos.x - dx, dst_pos.y),
-                            dst_pos,
-                        ],
-                        false,
-                        Color32::TRANSPARENT,
-                        Stroke::new((1.6 * viewport.zoom).clamp(1.0, 2.5), WIRE_DIGITAL),
-                    );
-                    painter.add(bezier);
-                } else if let Some(src_meta) = project.xref.pins_by_uuid.get(&link.source_pin_uuid) {
-                    // Off-page or direct periphery link pill tag
-                    let pill_w = (96.0 * viewport.zoom).clamp(60.0, 140.0);
-                    let pill_h = (14.0 * viewport.zoom).clamp(10.0, 18.0);
-                    let pill_rect = Rect::from_min_max(
-                        Pos2::new(dst_pos.x - pill_w - 6.0, dst_pos.y - pill_h * 0.5),
-                        Pos2::new(dst_pos.x - 6.0, dst_pos.y + pill_h * 0.5),
-                    );
-                    painter.line_segment(
-                        [Pos2::new(pill_rect.max.x, dst_pos.y), dst_pos],
-                        Stroke::new(1.2_f32, BORDER_SUBTLE),
-                    );
-                    painter.rect(
-                        pill_rect,
-                        CornerRadius::same(4),
-                        CARD_BG,
-                        Stroke::new(1.0_f32, BORDER_SUBTLE),
-                        egui::StrokeKind::Inside,
-                    );
-                    let tag = format!("🔗 {}:{}", src_meta.owner_title, src_meta.pin_key);
-                    painter.text(
-                        pill_rect.center(),
-                        Align2::CENTER_CENTER,
-                        tag,
-                        FontId::proportional((9.0 * viewport.zoom).clamp(7.0, 11.0)),
-                        ACCENT_BLUE,
-                    );
-                    if clicked {
-                        if let Some(pos) = pointer_pos {
-                            if pill_rect.contains(pos) {
-                                clicked_any_block = true;
-                                if let Some(src_page_idx) = src_meta.page_index {
-                                    action = Some(CanvasAction::NavigateToBlock {
-                                        page_index: src_page_idx,
-                                        block_uuid: src_meta.owner_uuid.clone(),
-                                    });
-                                } else {
-                                    action = Some(CanvasAction::SelectObject(
-                                        src_meta.owner_uuid.clone(),
-                                    ));
-                                }
-                            }
+            let first_meta = pill_sources[0];
+            let extra_count = pill_sources.len() - 1;
+            let owner_short = truncate_text(&first_meta.owner_title, 14);
+            let pin_short = truncate_text(&first_meta.pin_key, 6);
+            let tag = if extra_count > 0 {
+                format!("🔗 {}:{} (+{})", owner_short, pin_short, extra_count)
+            } else {
+                format!("🔗 {}:{}", owner_short, pin_short)
+            };
+
+            let char_w = (5.2 * viewport.zoom).clamp(3.6, 6.8);
+            let pill_w = ((tag.chars().count() as f32) * char_w + 10.0 * viewport.zoom)
+                .clamp(46.0 * viewport.zoom, 138.0 * viewport.zoom);
+            let pill_h = (11.0 * viewport.zoom).clamp(7.0, 15.0);
+            let gap = 5.0 * viewport.zoom;
+            let pill_rect = Rect::from_min_max(
+                Pos2::new(dst_pos.x - pill_w - gap, dst_pos.y - pill_h * 0.5),
+                Pos2::new(dst_pos.x - gap, dst_pos.y + pill_h * 0.5),
+            );
+
+            painter.line_segment(
+                [Pos2::new(pill_rect.max.x, dst_pos.y), dst_pos],
+                Stroke::new(1.1_f32, BORDER_SUBTLE),
+            );
+            painter.rect(
+                pill_rect,
+                CornerRadius::same(3),
+                CARD_BG,
+                Stroke::new(1.0_f32, BORDER_SUBTLE),
+                egui::StrokeKind::Inside,
+            );
+            let pill_clip = painter.with_clip_rect(pill_rect.shrink(1.0));
+            pill_clip.text(
+                pill_rect.center(),
+                Align2::CENTER_CENTER,
+                tag,
+                FontId::proportional((8.2 * viewport.zoom).clamp(5.5, 10.5)),
+                ACCENT_BLUE,
+            );
+
+            if clicked {
+                if let Some(pos) = pointer_pos {
+                    if pill_rect.contains(pos) {
+                        clicked_any_block = true;
+                        if let Some(src_page_idx) = first_meta.page_index {
+                            action = Some(CanvasAction::NavigateToBlock {
+                                page_index: src_page_idx,
+                                block_uuid: first_meta.owner_uuid.clone(),
+                            });
+                        } else {
+                            action =
+                                Some(CanvasAction::SelectObject(first_meta.owner_uuid.clone()));
                         }
                     }
                 }
@@ -473,4 +911,56 @@ mod tests {
             assert_eq!(classify_pin_side(output_ref, pin, &project.xref), PinSide::Input);
         }
     }
+
+    #[test]
+    fn test_alarm2_layout_excludes_unpositioned_blocks_and_routes_around_obstacles() {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../Klimczaki.Loxone");
+        let project = load_loxone_file(&path).expect("Klimczaki.Loxone should parse");
+        let alarm2 = project
+            .pages
+            .iter()
+            .find(|p| p.title == "Alarm 2")
+            .expect("Alarm 2 page should exist");
+
+        let positioned: Vec<&PageBlock> = alarm2.blocks.iter().filter(|b| b.has_position).collect();
+        let unpositioned_count = alarm2.blocks.iter().filter(|b| !b.has_position).count();
+        assert_eq!(positioned.len(), 18);
+        assert_eq!(unpositioned_count, 51);
+
+        let centrala = positioned
+            .iter()
+            .find(|b| b.title == "Centrala pożarowa")
+            .expect("Centrala pożarowa should be positioned");
+        let api_pin = centrala
+            .pins
+            .iter()
+            .find(|p| p.key == "OutputAPI")
+            .expect("OutputAPI pin should exist");
+        assert_eq!(
+            classify_pin_side(centrala, api_pin, &project.xref),
+            PinSide::Output
+        );
+        assert!(!is_pin_connected(api_pin, &project.xref));
+
+        // Verify obstacle-avoiding orthogonal wire routing around an intermediate block
+        let src_rect = Rect::from_min_max(Pos2::new(100.0, 100.0), Pos2::new(180.0, 220.0));
+        let mid_obstacle = Rect::from_min_max(Pos2::new(220.0, 90.0), Pos2::new(320.0, 230.0));
+        let dst_rect = Rect::from_min_max(Pos2::new(380.0, 100.0), Pos2::new(460.0, 220.0));
+        let rects = vec![src_rect, mid_obstacle, dst_rect];
+
+        let src_pin = Pos2::new(180.0, 150.0);
+        let dst_pin = Pos2::new(380.0, 150.0);
+        let waypoints = compute_wire_waypoints(src_pin, dst_pin, 0, 2, &rects, 0, 1.0);
+        assert!(waypoints.len() >= 2);
+        for seg in waypoints.windows(2) {
+            assert!(
+                !segment_hits_rect(seg[0], seg[1], mid_obstacle),
+                "Wire segment {:?} -> {:?} should not cross intermediate block {:?}",
+                seg[0],
+                seg[1],
+                mid_obstacle
+            );
+        }
+    }
 }
+

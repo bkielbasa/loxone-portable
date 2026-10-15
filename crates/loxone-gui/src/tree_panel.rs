@@ -89,8 +89,10 @@ pub fn render_left_explorer(
                                 ui.with_layout(
                                     egui::Layout::right_to_left(egui::Align::Center),
                                     |ui| {
+                                        let visible_count =
+                                            page.blocks.iter().filter(|b| b.has_position).count();
                                         ui.label(
-                                            RichText::new(format!("{}", page.blocks.len()))
+                                            RichText::new(format!("{}", visible_count))
                                                 .size(11.0)
                                                 .color(TEXT_MUTED),
                                         );
@@ -127,6 +129,9 @@ pub fn render_left_explorer(
                     .show(ui, |ui| {
                         for (p_idx, page) in project.pages.iter().enumerate() {
                             for block in &page.blocks {
+                                if !block.has_position {
+                                    continue;
+                                }
                                 let eff_room = block
                                     .room_uuid
                                     .as_deref()

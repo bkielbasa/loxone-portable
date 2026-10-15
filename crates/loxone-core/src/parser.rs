@@ -233,7 +233,7 @@ fn start_to_raw_node(e: &BytesStart<'_>) -> Result<RawNode, LoxoneError> {
 }
 
 fn collect_wire_sources(node: &RawNode, sources: &mut HashSet<String>) {
-    if node.tag == "In" {
+    if node.tag == "In" && node.attr("FLG") != Some("1") {
         if let Some(src) = node.attr("Input") {
             sources.insert(src.to_string());
         }
@@ -273,10 +273,11 @@ fn parse_pins(node: &RawNode, wire_sources: &HashSet<String>) -> Vec<ConnectorPi
                 }
             }
             let is_wire_source = wire_sources.contains(&uuid);
+            let has_visible_incoming = incoming_links.iter().any(|l| !l.is_hidden());
             let pin_kind = classify_pin_kind(
                 &key,
                 default_value.as_deref(),
-                !incoming_links.is_empty(),
+                has_visible_incoming,
                 is_wire_source,
             );
             pins.push(ConnectorPin {
@@ -337,11 +338,13 @@ fn parse_page_block(node: &RawNode, wire_sources: &HashSet<String>) -> PageBlock
         .filter(|c| c.tag != "Co")
         .cloned()
         .collect();
+    let has_position = node.attr("Px").is_some() && node.attr("Py").is_some();
 
     PageBlock {
         uuid: node.attr("U").unwrap_or_default().to_string(),
         block_type: node.attr("Type").unwrap_or_default().to_string(),
         title: node.attr("Title").unwrap_or_default().to_string(),
+        has_position,
         px: node.attr("Px").and_then(|v| v.parse().ok()).unwrap_or(0.0),
         py: node.attr("Py").and_then(|v| v.parse().ok()).unwrap_or(0.0),
         px2: node.attr("Px2").and_then(|v| v.parse().ok()).unwrap_or(0.0),

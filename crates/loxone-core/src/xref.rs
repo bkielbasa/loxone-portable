@@ -41,6 +41,8 @@ pub struct OutgoingWireTarget {
     pub target_block_title: String,
     pub target_page_index: usize,
     pub target_page_title: String,
+    pub is_hidden: bool,
+    pub is_detached_ref: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -228,6 +230,10 @@ impl XrefIndex {
                                 target_block_title: block.title.clone(),
                                 target_page_index: page_index,
                                 target_page_title: page.title.clone(),
+                                is_hidden: link.is_hidden()
+                                    || !block.has_position
+                                    || block.is_input_ref_bar(),
+                                is_detached_ref: link.is_detached_ref(),
                             });
 
                         if let Some(src_pin) = index.pins_by_uuid.get(&link.source_pin_uuid).cloned()

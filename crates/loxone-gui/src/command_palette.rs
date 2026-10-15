@@ -135,7 +135,8 @@ pub fn build_palette_entries(project: Option<&LoxoneProject>, query: &str) -> Ve
 
     if let Some(proj) = project {
         for (idx, page) in proj.pages.iter().enumerate() {
-            let subtitle = format!("Page • {} blocks", page.blocks.len());
+            let visible_count = page.blocks.iter().filter(|b| b.has_position).count();
+            let subtitle = format!("Page • {} blocks", visible_count);
             if q.is_empty()
                 || page.title.to_lowercase().contains(&q)
                 || page.uuid.to_lowercase().contains(&q)
@@ -174,9 +175,18 @@ pub fn build_palette_entries(project: Option<&LoxoneProject>, query: &str) -> Ve
                 match &summary.location {
                     ObjectLocation::PageBlock {
                         page_index,
+                        block_index,
                         page_title,
                         ..
                     } => {
+                        let is_positioned = proj
+                            .pages
+                            .get(*page_index)
+                            .and_then(|p| p.blocks.get(*block_index))
+                            .is_some_and(|b| b.has_position);
+                        if !is_positioned {
+                            continue;
+                        }
                         let title = if summary.title.is_empty() {
                             summary.object_type.clone()
                         } else {

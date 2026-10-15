@@ -68,6 +68,18 @@ pub struct WireLink {
     pub flags: Option<String>,
 }
 
+impl WireLink {
+    /// Returns true if this link is marked `FLG="1"` (hidden internal object link or reverse API link).
+    pub fn is_hidden(&self) -> bool {
+        self.flags.as_deref() == Some("1")
+    }
+
+    /// Returns true if this link is marked `FLG="2"` (detached / wireless reference in Loxone Config).
+    pub fn is_detached_ref(&self) -> bool {
+        self.flags.as_deref() == Some("2")
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct ConnectorPin {
     pub uuid: String,
@@ -77,11 +89,19 @@ pub struct ConnectorPin {
     pub incoming_links: Vec<WireLink>,
 }
 
+impl ConnectorPin {
+    /// Returns true if this pin has at least one non-hidden (`FLG != "1"`) incoming wire link.
+    pub fn has_visible_incoming_links(&self) -> bool {
+        self.incoming_links.iter().any(|l| !l.is_hidden())
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct PageBlock {
     pub uuid: String,
     pub block_type: String,
     pub title: String,
+    pub has_position: bool,
     pub px: f32,
     pub py: f32,
     pub px2: f32,
@@ -95,6 +115,24 @@ pub struct PageBlock {
     pub pins: Vec<ConnectorPin>,
     pub raw_attributes: Vec<(String, String)>,
     pub extra_children: Vec<RawNode>,
+}
+
+impl PageBlock {
+    pub fn is_input_ref_bar(&self) -> bool {
+        self.block_type.starts_with("InputRef")
+    }
+
+    pub fn is_output_ref_bar(&self) -> bool {
+        self.block_type.starts_with("OutputRef") || self.block_type == "Memory"
+    }
+
+    pub fn is_ref_bar(&self) -> bool {
+        self.is_input_ref_bar() || self.is_output_ref_bar()
+    }
+
+    pub fn is_note(&self) -> bool {
+        matches!(self.block_type.as_str(), "Note" | "Text")
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -155,7 +193,7 @@ pub fn classify_pin_kind(
     has_incoming_links: bool,
     is_wire_source: bool,
 ) -> PinKind {
-    if is_wire_source {
+    if matches!(key, "API" | "OutputAPI") || is_wire_source {
         return PinKind::Output;
     }
     if has_incoming_links {
@@ -228,6 +266,7 @@ mod tests {
         assert_eq!(classify_pin_kind("AQ1", None, false, false), PinKind::Output);
         assert_eq!(classify_pin_kind("OutAlarm", None, false, false), PinKind::Output);
         assert_eq!(classify_pin_kind("OutputAPI", None, false, false), PinKind::Output);
+        assert_eq!(classify_pin_kind("OutputAPI", None, true, false), PinKind::Output);
         assert_eq!(classify_pin_kind("Level1", None, false, false), PinKind::Output);
         assert_eq!(classify_pin_kind("CustomPin", None, false, true), PinKind::Output);
     }
