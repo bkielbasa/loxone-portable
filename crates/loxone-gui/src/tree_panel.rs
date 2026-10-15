@@ -1,7 +1,7 @@
 use egui::{Color32, RichText, ScrollArea, Ui};
 use loxone_core::model::{LoxoneProject, TreeNode};
 
-use crate::theme::{ACCENT_BLUE, BORDER_SUBTLE, CARD_BG, TEXT_MUTED, TEXT_PRIMARY};
+use crate::theme::{ACCENT_BLUE, TEXT_MUTED, TEXT_PRIMARY};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum LeftTab {
@@ -247,7 +247,6 @@ fn render_tree_node(
         }
     }
 
-    let _ = (CARD_BG, BORDER_SUBTLE);
     action
 }
 

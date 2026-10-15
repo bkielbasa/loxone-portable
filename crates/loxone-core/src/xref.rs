@@ -340,16 +340,6 @@ impl XrefIndex {
         page_title: Option<&str>,
     ) {
         for raw in raw_nodes {
-            let (cur_uuid, cur_title, cur_type) = if raw.tag == "C" {
-                (
-                    raw.attr("U").unwrap_or(owner_uuid),
-                    raw.attr("Title").unwrap_or(owner_title),
-                    raw.attr("Type").unwrap_or(owner_type),
-                )
-            } else {
-                (owner_uuid, owner_title, owner_type)
-            };
-
             if raw.tag == "Co" {
                 let pin_uuid = raw.attr("U").unwrap_or_default();
                 let pin_key = raw.attr("K").unwrap_or_default();
@@ -359,9 +349,9 @@ impl XrefIndex {
                         PinLocation {
                             pin_uuid: pin_uuid.to_string(),
                             pin_key: pin_key.to_string(),
-                            owner_uuid: cur_uuid.to_string(),
-                            owner_title: cur_title.to_string(),
-                            owner_type: cur_type.to_string(),
+                            owner_uuid: owner_uuid.to_string(),
+                            owner_title: owner_title.to_string(),
+                            owner_type: owner_type.to_string(),
                             page_index,
                             page_title: page_title.map(str::to_string),
                         },
@@ -372,9 +362,9 @@ impl XrefIndex {
             Self::index_raw_nodes(
                 index,
                 &raw.children,
-                cur_uuid,
-                cur_title,
-                cur_type,
+                owner_uuid,
+                owner_title,
+                owner_type,
                 page_index,
                 page_title,
             );
@@ -394,6 +384,15 @@ mod tests {
 
         // All 5,433 <Co> pins across pages and periphery/system trees are indexed
         assert_eq!(project.xref.pins_by_uuid.len(), 5433);
+
+        for (pin_uuid, pin_loc) in &project.xref.pins_by_uuid {
+            assert!(
+                project.xref.objects_by_uuid.contains_key(&pin_loc.owner_uuid),
+                "Pin {} owner_uuid {} should exist in objects_by_uuid",
+                pin_uuid,
+                pin_loc.owner_uuid
+            );
+        }
 
         // Verify a peripheral referenced by an InputRef on Page 0 ("Alarm 1") has recorded page usages
         let page0 = &project.pages[0];

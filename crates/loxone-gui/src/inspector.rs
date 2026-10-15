@@ -198,16 +198,31 @@ fn render_block_details(
 
     render_pins_list(ui, &block.pins);
 
-    if !block.raw_attributes.is_empty() || !block.extra_children.is_empty() {
+    if !block.raw_attributes.is_empty() {
         ui.add_space(8.0);
-        ui.collapsing("Raw Attributes & Children", |ui| {
+        egui::CollapsingHeader::new(
+            RichText::new(format!("Attributes ({})", block.raw_attributes.len()))
+                .size(11.5)
+                .color(TEXT_MUTED),
+        )
+        .default_open(false)
+        .show(ui, |ui| {
             for (k, v) in &block.raw_attributes {
                 kv_row(ui, k, v);
             }
-            if !block.extra_children.is_empty() {
-                ui.add_space(4.0);
-                render_raw_nodes(ui, &block.extra_children);
-            }
+        });
+    }
+
+    if !block.extra_children.is_empty() {
+        ui.add_space(8.0);
+        egui::CollapsingHeader::new(
+            RichText::new(format!("Raw Children ({})", block.extra_children.len()))
+                .size(11.5)
+                .color(TEXT_MUTED),
+        )
+        .default_open(false)
+        .show(ui, |ui| {
+            render_raw_nodes(ui, &block.extra_children);
         });
     }
 
@@ -234,11 +249,15 @@ fn render_tree_node_details(ui: &mut Ui, node: &TreeNode) {
 
     if !node.extra_children.is_empty() {
         ui.add_space(8.0);
-        egui::CollapsingHeader::new(RichText::new("Raw Children").size(11.5).color(TEXT_MUTED))
-            .default_open(false)
-            .show(ui, |ui| {
-                render_raw_nodes(ui, &node.extra_children);
-            });
+        egui::CollapsingHeader::new(
+            RichText::new(format!("Raw Children ({})", node.extra_children.len()))
+                .size(11.5)
+                .color(TEXT_MUTED),
+        )
+        .default_open(false)
+        .show(ui, |ui| {
+            render_raw_nodes(ui, &node.extra_children);
+        });
     }
 }
 
@@ -255,7 +274,7 @@ fn kv_row(ui: &mut Ui, k: &str, v: &str) {
 }
 
 fn render_raw_nodes(ui: &mut Ui, nodes: &[RawNode]) {
-    for raw in nodes {
+    for (idx, raw) in nodes.iter().enumerate() {
         let mut header_str = format!("<{}", raw.tag);
         for (k, v) in &raw.attributes {
             header_str.push_str(&format!(" {}=\"{}\"", k, v));
@@ -276,7 +295,7 @@ fn render_raw_nodes(ui: &mut Ui, nodes: &[RawNode]) {
             );
         }
         if !raw.children.is_empty() {
-            ui.indent(&raw.tag, |ui| {
+            ui.indent((idx, &raw.tag), |ui| {
                 render_raw_nodes(ui, &raw.children);
             });
         }

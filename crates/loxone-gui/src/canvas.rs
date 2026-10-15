@@ -110,11 +110,7 @@ pub fn classify_pin_side(block: &PageBlock, pin: &ConnectorPin, xref: &XrefIndex
     if xref.outgoing_wires_by_pin_uuid.contains_key(&pin.uuid) {
         return PinSide::Output;
     }
-    if pin.key.starts_with('Q')
-        || pin.key.starts_with('O')
-        || pin.key.starts_with("AQ")
-        || pin.key.starts_with("TQ")
-    {
+    if pin.pin_kind == loxone_core::model::PinKind::Output {
         PinSide::Output
     } else {
         PinSide::Input
@@ -210,13 +206,18 @@ pub fn render_page_canvas(
         };
 
         // Sticky Note
-        if block.block_type == "Note" {
+        if matches!(block.block_type.as_str(), "Note" | "Text") {
             let note_bg = Color32::from_rgb(0x28, 0x24, 0x18);
             painter.rect(rect, CornerRadius::same(6), note_bg, border_stroke, egui::StrokeKind::Inside);
+            let note_text = block
+                .text_content
+                .as_deref()
+                .filter(|s| !s.is_empty())
+                .unwrap_or(&block.title);
             painter.text(
                 rect.min + Vec2::new(8.0 * viewport.zoom, 6.0 * viewport.zoom),
                 Align2::LEFT_TOP,
-                &block.title,
+                note_text,
                 FontId::proportional((11.0 * viewport.zoom).clamp(8.0, 16.0)),
                 TEXT_PRIMARY,
             );
