@@ -562,12 +562,61 @@ pub fn collect_block_display_pins(
     (inputs, outputs)
 }
 
+const LIVE_ACTIVE_GREEN: Color32 = Color32::from_rgb(0x59, 0xB8, 0x28);
+const LIVE_INACTIVE_CAPSULE_BG: Color32 = Color32::from_rgb(0x36, 0x3E, 0x4E);
+
+fn paint_inline_wire_value_label(
+    painter: &egui::Painter,
+    pos: Pos2,
+    align: Align2,
+    text: &str,
+    is_active: bool,
+    zoom: f32,
+) {
+    if text.is_empty() {
+        return;
+    }
+    let font_sz = (10.5 * zoom).clamp(8.5, 14.5);
+    let char_w = (5.6 * zoom).clamp(4.4, 8.0);
+    let w = (text.chars().count() as f32 * char_w) + 5.0 * zoom;
+    let h = (13.0 * zoom).clamp(10.5, 17.5);
+    let bg_rect = match align {
+        Align2::LEFT_CENTER => Rect::from_min_max(
+            Pos2::new(pos.x - 1.5 * zoom, pos.y - h * 0.5),
+            Pos2::new(pos.x + w, pos.y + h * 0.5),
+        ),
+        Align2::RIGHT_CENTER => Rect::from_min_max(
+            Pos2::new(pos.x - w, pos.y - h * 0.5),
+            Pos2::new(pos.x + 1.5 * zoom, pos.y + h * 0.5),
+        ),
+        _ => Rect::from_center_size(pos, Vec2::new(w, h)),
+    };
+    painter.rect_filled(
+        bg_rect,
+        CornerRadius::same(2),
+        CANVAS_BG.gamma_multiply(0.92),
+    );
+    let text_color = if is_active {
+        Color32::from_rgb(0xDF, 0xF7, 0xD2)
+    } else {
+        Color32::from_rgb(0xB4, 0xBF, 0xD0)
+    };
+    painter.text(
+        pos,
+        align,
+        text,
+        FontId::proportional(font_sz),
+        text_color,
+    );
+}
+
 pub fn render_page_canvas(
     ui: &mut Ui,
     project: &LoxoneProject,
     page_index: usize,
     viewport: &mut CanvasViewport,
     selected_uuid: Option<&str>,
+    live_store: Option<&loxone_core::miniserver::LiveValueStore>,
 ) -> Option<CanvasAction> {
     let page = project.pages.get(page_index)?;
     let (response, painter) = ui.allocate_painter(ui.available_size(), Sense::click_and_drag());
@@ -1048,6 +1097,9 @@ pub fn render_page_canvas(
 
     // Pass 2: Draw on-page direct wires BEHIND blocks using cubic Bézier curves + wire hit-testing
     let mut selected_wire_badge: Option<(Pos2, SelectedWire)> = None;
+    let mut live_wire_labels: Vec<(Pos2, Align2, String, bool)> = Vec::new();
+    let mut connected_source_pins: std::collections::HashSet<String> =
+        std::collections::HashSet::new();
     for layout in &layouts {
         let block = layout.block;
         if block.is_input_ref_bar() {
@@ -1064,6 +1116,7 @@ pub fn render_page_canvas(
                 if let Some(&(src_pos, src_block_idx)) =
                     pin_screen_positions.get(&link.source_pin_uuid)
                 {
+                    connected_source_pins.insert(link.source_pin_uuid.clone());
                     let candidate_wire = SelectedWire {
                         target_block_uuid: block.uuid.clone(),
                         target_pin_key: pin.key.clone(),
@@ -1113,8 +1166,32 @@ pub fn render_page_canvas(
                     } else {
                         WIRE_DIGITAL
                     };
+                    let mut live_wire_active = false;
+                    if let Some(store) = live_store {
+                        let dst_sig = store.resolve_pin_signal(block, pin, page, project);
+                        let src_sig = store
+                            .resolve_pin_by_uuid(&link.source_pin_uuid, page, project, 0)
+                            .unwrap_or_else(|| dst_sig.clone());
+                        live_wire_active = src_sig.is_active || dst_sig.is_active;
+                        live_wire_labels.push((
+                            Pos2::new(src_pos.x + 7.5 * viewport.zoom, src_pos.y),
+                            Align2::LEFT_CENTER,
+                            src_sig.formatted.clone(),
+                            live_wire_active,
+                        ));
+                        if src_pos.distance(dst_pos) > 74.0 * viewport.zoom {
+                            live_wire_labels.push((
+                                Pos2::new(dst_pos.x - 7.5 * viewport.zoom, dst_pos.y),
+                                Align2::RIGHT_CENTER,
+                                dst_sig.formatted,
+                                live_wire_active,
+                            ));
+                        }
+                    }
                     let wire_color = if is_wire_selected {
                         Color32::from_rgb(0xFF, 0x6B, 0x6B)
+                    } else if live_wire_active {
+                        LIVE_ACTIVE_GREEN
                     } else if is_highlighted {
                         ACCENT_BLUE
                     } else {
@@ -1122,8 +1199,8 @@ pub fn render_page_canvas(
                     };
                     let wire_width = if is_wire_selected {
                         (3.4 * viewport.zoom).clamp(2.4, 5.0)
-                    } else if is_highlighted {
-                        (2.8 * viewport.zoom).clamp(2.0, 4.2)
+                    } else if live_wire_active || is_highlighted {
+                        (2.6 * viewport.zoom).clamp(1.9, 4.0)
                     } else {
                         (2.1 * viewport.zoom).clamp(1.5, 3.2)
                     };
@@ -1225,6 +1302,53 @@ pub fn render_page_canvas(
             );
             painter.rect_filled(strip, CornerRadius::same(3), accent_color);
 
+            let mut capsule_left_pad = 0.0_f32;
+            let mut capsule_right_pad = 0.0_f32;
+            let mut ref_sig_active = false;
+            if let Some(store) = live_store {
+                let sig = store.resolve_ref_bar_signal(block, page, project);
+                ref_sig_active = sig.is_active;
+                let badge = loxone_core::miniserver::ref_bar_capsule_badge(block, page, project);
+                let cap_w = ((badge.chars().count() as f32) * 6.5 * viewport.zoom
+                    + 10.0 * viewport.zoom)
+                    .clamp(20.0 * viewport.zoom, 42.0 * viewport.zoom);
+                let cap_h = (rect.height() - 4.0 * viewport.zoom).max(12.0);
+                let is_output_side_left =
+                    block.block_type == "OutputRef" || block.block_type == "OutputRefLM";
+                let cap_rect = if is_output_side_left {
+                    capsule_left_pad = cap_w + 3.0 * viewport.zoom;
+                    Rect::from_min_max(
+                        Pos2::new(rect.min.x + strip_w + 1.5 * viewport.zoom, rect.center().y - cap_h * 0.5),
+                        Pos2::new(
+                            rect.min.x + strip_w + 1.5 * viewport.zoom + cap_w,
+                            rect.center().y + cap_h * 0.5,
+                        ),
+                    )
+                } else {
+                    capsule_right_pad = cap_w + 3.0 * viewport.zoom;
+                    Rect::from_min_max(
+                        Pos2::new(rect.max.x - cap_w - 2.0 * viewport.zoom, rect.center().y - cap_h * 0.5),
+                        Pos2::new(rect.max.x - 2.0 * viewport.zoom, rect.center().y + cap_h * 0.5),
+                    )
+                };
+                painter.rect_filled(
+                    cap_rect,
+                    CornerRadius::same(4),
+                    if sig.is_active {
+                        LIVE_ACTIVE_GREEN
+                    } else {
+                        LIVE_INACTIVE_CAPSULE_BG
+                    },
+                );
+                painter.text(
+                    cap_rect.center(),
+                    Align2::CENTER_CENTER,
+                    badge,
+                    FontId::proportional((10.5 * viewport.zoom).clamp(8.5, 14.5)),
+                    Color32::WHITE,
+                );
+            }
+
             let ref_tree_type = block
                 .ref_uuid
                 .as_deref()
@@ -1234,7 +1358,7 @@ pub fn render_page_canvas(
             let icon_sz = (15.0 * viewport.zoom).clamp(11.0, 22.0);
             let icon_rect = Rect::from_center_size(
                 Pos2::new(
-                    rect.min.x + strip_w + 4.0 * viewport.zoom + icon_sz * 0.5,
+                    rect.min.x + strip_w + capsule_left_pad + 4.0 * viewport.zoom + icon_sz * 0.5,
                     rect.center().y,
                 ),
                 Vec2::splat(icon_sz),
@@ -1253,9 +1377,9 @@ pub fn render_page_canvas(
                 block.block_type.clone()
             };
             let text_left = icon_rect.max.x + 5.0 * viewport.zoom;
-            let max_chars = ((rect.max.x - text_left - 8.0 * viewport.zoom)
+            let max_chars = ((rect.max.x - capsule_right_pad - text_left - 6.0 * viewport.zoom)
                 / (6.8 * viewport.zoom).max(4.5))
-            .max(8.0) as usize;
+            .max(6.0) as usize;
             let label = truncate_text(&raw_label, max_chars);
 
             let text_clip = painter.with_clip_rect(rect.shrink(2.0));
@@ -1277,11 +1401,14 @@ pub fn render_page_canvas(
                     } else {
                         (4.5 * viewport.zoom).clamp(3.5, 6.8)
                     };
-                    painter.circle_filled(
-                        anchor,
-                        r,
-                        if is_hovered { ACCENT_BLUE } else { WIRE_DIGITAL },
-                    );
+                    let dot_color = if is_hovered {
+                        ACCENT_BLUE
+                    } else if ref_sig_active {
+                        LIVE_ACTIVE_GREEN
+                    } else {
+                        WIRE_DIGITAL
+                    };
+                    painter.circle_filled(anchor, r, dot_color);
                     painter.circle_stroke(anchor, r, Stroke::new(1.2_f32, CANVAS_BG));
                 }
             }
@@ -1369,16 +1496,40 @@ pub fn render_page_canvas(
             } else {
                 (4.5 * viewport.zoom).clamp(3.5, 6.8)
             };
-            painter.circle_filled(
-                anchor,
-                r,
-                if is_hovered { ACCENT_BLUE } else { WIRE_DIGITAL },
-            );
+            let mut pin_active = false;
+            if let Some(store) = live_store {
+                if let Some(cp) = block.pins.iter().find(|p| p.key == pin.key) {
+                    let sig = store.resolve_pin_signal(block, cp, page, project);
+                    pin_active = sig.is_active;
+                    if cp.incoming_links.iter().all(|l| l.is_hidden()) && cp.default_value.is_some()
+                    {
+                        live_wire_labels.push((
+                            Pos2::new(anchor.x - 7.5 * viewport.zoom, anchor.y),
+                            Align2::RIGHT_CENTER,
+                            sig.formatted,
+                            sig.is_active,
+                        ));
+                    }
+                }
+            }
+            let dot_color = if is_hovered {
+                ACCENT_BLUE
+            } else if pin_active {
+                LIVE_ACTIVE_GREEN
+            } else {
+                WIRE_DIGITAL
+            };
+            painter.circle_filled(anchor, r, dot_color);
             painter.circle_stroke(anchor, r, Stroke::new(1.2_f32, CANVAS_BG));
+            let display_key = if live_store.is_some() {
+                loxone_core::miniserver::loxone_short_pin_label(&block.block_type, &pin.key)
+            } else {
+                pin.key.as_str()
+            };
             painter.text(
                 Pos2::new(rect.min.x + 8.5 * viewport.zoom, py),
                 Align2::LEFT_CENTER,
-                truncate_text(&pin.key, pin_max_chars),
+                truncate_text(display_key, pin_max_chars),
                 pin_font.clone(),
                 if is_hovered { TEXT_PRIMARY } else { pin_label_color },
             );
@@ -1394,16 +1545,41 @@ pub fn render_page_canvas(
             } else {
                 (4.5 * viewport.zoom).clamp(3.5, 6.8)
             };
-            painter.circle_filled(
-                anchor,
-                r,
-                if is_hovered { ACCENT_BLUE } else { WIRE_ANALOG },
-            );
+            let mut pin_active = false;
+            if let Some(store) = live_store {
+                if let Some(cp) = block.pins.iter().find(|p| p.key == pin.key) {
+                    let sig = store.resolve_pin_signal(block, cp, page, project);
+                    pin_active = sig.is_active;
+                    if !connected_source_pins.contains(&cp.uuid)
+                        && (sig.is_active || store.controls.contains_key(&block.uuid))
+                    {
+                        live_wire_labels.push((
+                            Pos2::new(anchor.x + 7.5 * viewport.zoom, anchor.y),
+                            Align2::LEFT_CENTER,
+                            sig.formatted,
+                            sig.is_active,
+                        ));
+                    }
+                }
+            }
+            let dot_color = if is_hovered {
+                ACCENT_BLUE
+            } else if pin_active {
+                LIVE_ACTIVE_GREEN
+            } else {
+                WIRE_ANALOG
+            };
+            painter.circle_filled(anchor, r, dot_color);
             painter.circle_stroke(anchor, r, Stroke::new(1.2_f32, CANVAS_BG));
+            let display_key = if live_store.is_some() {
+                loxone_core::miniserver::loxone_short_pin_label(&block.block_type, &pin.key)
+            } else {
+                pin.key.as_str()
+            };
             painter.text(
                 Pos2::new(rect.max.x - 8.5 * viewport.zoom, py),
                 Align2::RIGHT_CENTER,
-                truncate_text(&pin.key, pin_max_chars),
+                truncate_text(display_key, pin_max_chars),
                 pin_font.clone(),
                 if is_hovered { TEXT_PRIMARY } else { pin_label_color },
             );
@@ -1447,11 +1623,24 @@ pub fn render_page_canvas(
                 format!("🔗 {}:{}", owner_short, pin_short)
             };
 
+            let pill_live = live_store
+                .and_then(|store| store.resolve_pin_by_uuid(&first_meta.pin_uuid, page, project, 0));
+            let pill_active = pill_live.as_ref().is_some_and(|s| s.is_active);
+            let cap_extra_w = if live_store.is_some() {
+                20.0 * viewport.zoom
+            } else {
+                0.0
+            };
+
             let char_w = (6.8 * viewport.zoom).clamp(5.0, 9.5);
-            let pill_w = ((tag.chars().count() as f32) * char_w + 14.0 * viewport.zoom)
-                .clamp(64.0 * viewport.zoom, 190.0 * viewport.zoom);
+            let pill_w = ((tag.chars().count() as f32) * char_w + 14.0 * viewport.zoom + cap_extra_w)
+                .clamp(64.0 * viewport.zoom, 210.0 * viewport.zoom);
             let pill_h = (18.0 * viewport.zoom).clamp(14.0, 26.0);
-            let gap = (8.0 * viewport.zoom).max(5.0);
+            let gap = if live_store.is_some() {
+                (44.0 * viewport.zoom).max(28.0)
+            } else {
+                (8.0 * viewport.zoom).max(5.0)
+            };
             let pill_rect = Rect::from_min_max(
                 Pos2::new(dst_pos.x - pill_w - gap, dst_pos.y - pill_h * 0.5),
                 Pos2::new(dst_pos.x - gap, dst_pos.y + pill_h * 0.5),
@@ -1459,7 +1648,14 @@ pub fn render_page_canvas(
 
             painter.line_segment(
                 [Pos2::new(pill_rect.max.x, dst_pos.y), dst_pos],
-                Stroke::new(1.5_f32, CARD_BORDER),
+                Stroke::new(
+                    if pill_active { 2.2_f32 } else { 1.5_f32 },
+                    if pill_active {
+                        LIVE_ACTIVE_GREEN
+                    } else {
+                        CARD_BORDER
+                    },
+                ),
             );
             painter.rect(
                 pill_rect,
@@ -1468,9 +1664,42 @@ pub fn render_page_canvas(
                 Stroke::new(1.2_f32, CARD_BORDER),
                 egui::StrokeKind::Inside,
             );
-            let pill_clip = painter.with_clip_rect(pill_rect.shrink(1.5));
+            if let Some(sig) = pill_live {
+                let cap_w = (18.0 * viewport.zoom).clamp(14.0, 24.0);
+                let cap_rect = Rect::from_min_max(
+                    Pos2::new(pill_rect.max.x - cap_w - 1.5, pill_rect.min.y + 1.5),
+                    Pos2::new(pill_rect.max.x - 1.5, pill_rect.max.y - 1.5),
+                );
+                painter.rect_filled(
+                    cap_rect,
+                    CornerRadius::same(3),
+                    if sig.is_active {
+                        LIVE_ACTIVE_GREEN
+                    } else {
+                        LIVE_INACTIVE_CAPSULE_BG
+                    },
+                );
+                painter.text(
+                    cap_rect.center(),
+                    Align2::CENTER_CENTER,
+                    "->",
+                    FontId::proportional((9.5 * viewport.zoom).clamp(8.0, 13.0)),
+                    Color32::WHITE,
+                );
+                live_wire_labels.push((
+                    Pos2::new(dst_pos.x - 6.5 * viewport.zoom, dst_pos.y),
+                    Align2::RIGHT_CENTER,
+                    sig.formatted,
+                    sig.is_active,
+                ));
+            }
+            let text_rect = Rect::from_min_max(
+                pill_rect.min,
+                Pos2::new(pill_rect.max.x - cap_extra_w, pill_rect.max.y),
+            );
+            let pill_clip = painter.with_clip_rect(text_rect.shrink(1.5));
             pill_clip.text(
-                pill_rect.center(),
+                text_rect.center(),
                 Align2::CENTER_CENTER,
                 tag,
                 FontId::proportional((10.5 * viewport.zoom).clamp(8.5, 15.0)),
@@ -1494,6 +1723,11 @@ pub fn render_page_canvas(
                 }
             }
         }
+    }
+
+    // Pass 4b: Draw inline Live View wire value badges on top of wires and pins
+    for (pos, align, text, is_active) in live_wire_labels {
+        paint_inline_wire_value_label(&painter, pos, align, &text, is_active, viewport.zoom);
     }
 
     // Pass 5: Draw active wire preview and selected wire delete badge
@@ -1867,5 +2101,29 @@ mod tests {
             expanded_out.iter().any(|p| p.key == "Q"),
             "Expanded Switch pins should include schema output Q"
         );
+    }
+
+    #[test]
+    fn test_render_page_canvas_with_live_view_store_renders_energized_wires_and_badges() {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../Klimczaki.Loxone");
+        let project = load_loxone_file(&path).expect("Klimczaki.Loxone should parse");
+        let page_idx = project
+            .pages
+            .iter()
+            .position(|p| p.title == "Pokój Agatki")
+            .unwrap_or(0);
+
+        let mut store = loxone_core::miniserver::LiveValueStore::new();
+        store.seed_project_defaults(&project);
+        store.set_control_value("1b8378f9-023f-486d-ffff9ec51fc90b6a", "22.9");
+        store.set_control_value("1b8378f9-0244-487c-ffff9ec51fc90b6a", "1");
+
+        let mut vp = CanvasViewport::default();
+        let ctx = egui::Context::default();
+        let _ = ctx.run(egui::RawInput::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                let _ = render_page_canvas(ui, &project, page_idx, &mut vp, None, Some(&store));
+            });
+        });
     }
 }

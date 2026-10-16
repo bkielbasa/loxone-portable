@@ -17,18 +17,27 @@ pub enum InspectorAction {
     SelectObject(String),
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LiveCommand {
+    pub control_uuid: String,
+    pub pin_key: Option<String>,
+    pub command: String,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct InspectorOutput {
     pub nav_action: Option<InspectorAction>,
     pub edits: Vec<ProjectEdit>,
     pub delete_uuid: Option<String>,
     pub place_on_page_uuid: Option<String>,
+    pub live_commands: Vec<LiveCommand>,
 }
 
 pub fn render_right_inspector(
     ui: &mut Ui,
     project: &LoxoneProject,
     selected_uuid: Option<&str>,
+    live_store: Option<&loxone_core::miniserver::LiveValueStore>,
 ) -> InspectorOutput {
     let mut output = InspectorOutput::default();
 
@@ -56,6 +65,10 @@ pub fn render_right_inspector(
     ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
         render_kb_header_card(ui, project, summary, schema, &mut output);
         ui.add_space(8.0);
+        if let Some(store) = live_store {
+            render_live_monitor_card(ui, project, summary, store, &mut output);
+            ui.add_space(8.0);
+        }
         render_used_on_pages_section(ui, project, uuid, &mut output);
         ui.add_space(8.0);
 
@@ -107,6 +120,133 @@ pub fn render_right_inspector(
     });
 
     output
+}
+
+fn render_live_monitor_card(
+    ui: &mut Ui,
+    project: &LoxoneProject,
+    summary: &loxone_core::xref::ObjectSummary,
+    store: &loxone_core::miniserver::LiveValueStore,
+    output: &mut InspectorOutput,
+) {
+    let green = egui::Color32::from_rgb(0x59, 0xB8, 0x28);
+    let mut target_uuid = summary.uuid.clone();
+    let mut primary_sig = None;
+    let mut pin_rows: Vec<(String, loxone_core::miniserver::LiveSignal)> = Vec::new();
+
+    match &summary.location {
+        ObjectLocation::PageBlock {
+            page_index,
+            block_index,
+            ..
+        } => {
+            if let Some(page) = project.pages.get(*page_index) {
+                if let Some(block) = page.blocks.get(*block_index) {
+                    if block.is_ref_bar() {
+                        if let Some(ru) = &block.ref_uuid {
+                            target_uuid = ru.clone();
+                        }
+                        primary_sig = Some(store.resolve_ref_bar_signal(block, page, project));
+                    } else {
+                        for pin in &block.pins {
+                            let sig = store.resolve_pin_signal(block, pin, page, project);
+                            let short_k = loxone_core::miniserver::loxone_short_pin_label(
+                                &block.block_type,
+                                &pin.key,
+                            );
+                            pin_rows.push((format!("{} ({})", short_k, pin.key), sig));
+                        }
+                    }
+                }
+            }
+        }
+        ObjectLocation::TreeNode { .. } => {
+            if let Some(node) = find_tree_node(&project.periphery_tree, &summary.uuid)
+                .or_else(|| find_tree_node(&project.system_tree, &summary.uuid))
+            {
+                primary_sig = store.resolve_tree_node_signal(node);
+            }
+        }
+        _ => return,
+    }
+
+    egui::Frame::new()
+        .fill(CARD_BG)
+        .stroke(Stroke::new(1.2_f32, green.gamma_multiply(0.75)))
+        .corner_radius(6)
+        .inner_margin(egui::Margin::same(10))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal(|ui| {
+                ui.label(
+                    RichText::new("● LIVE VIEW MONITOR & CONTROL")
+                        .size(11.0)
+                        .color(green)
+                        .strong(),
+                );
+                if let Some(sig) = &primary_sig {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let badge_bg = if sig.is_active {
+                            green
+                        } else {
+                            egui::Color32::from_rgb(0x36, 0x3E, 0x4E)
+                        };
+                        egui::Frame::new()
+                            .fill(badge_bg)
+                            .corner_radius(4)
+                            .inner_margin(egui::Margin::symmetric(8, 2))
+                            .show(ui, |ui| {
+                                ui.label(
+                                    RichText::new(&sig.formatted)
+                                        .size(12.0)
+                                        .strong()
+                                        .color(egui::Color32::WHITE),
+                                );
+                            });
+                    });
+                }
+            });
+
+            if !pin_rows.is_empty() {
+                ui.add_space(4.0);
+                egui::Grid::new(("live_pins_grid", &summary.uuid))
+                    .num_columns(2)
+                    .spacing([12.0, 3.0])
+                    .show(ui, |ui| {
+                        for (label, sig) in pin_rows.iter().take(12) {
+                            ui.label(RichText::new(label).monospace().size(11.0).color(TEXT_MUTED));
+                            ui.label(
+                                RichText::new(&sig.formatted)
+                                    .monospace()
+                                    .size(11.5)
+                                    .strong()
+                                    .color(if sig.is_active { green } else { TEXT_PRIMARY }),
+                            );
+                            ui.end_row();
+                        }
+                    });
+            }
+
+            ui.add_space(6.0);
+            ui.horizontal_wrapped(|ui| {
+                ui.label(RichText::new("Force / Send:").size(11.0).color(TEXT_MUTED));
+                for (btn_label, cmd) in [
+                    ("Wł. (On)", "On"),
+                    ("Wył. (Off)", "Off"),
+                    ("Pulse", "Pulse"),
+                    ("22.5°", "22.5"),
+                    ("50%", "50"),
+                ] {
+                    if ui.small_button(btn_label).clicked() {
+                        output.live_commands.push(LiveCommand {
+                            control_uuid: target_uuid.clone(),
+                            pin_key: None,
+                            command: cmd.to_string(),
+                        });
+                    }
+                }
+            });
+        });
 }
 
 fn resolve_summary_icon(
@@ -1429,15 +1569,19 @@ mod tests {
             project.places.keys().next().unwrap().clone(),
         ];
 
+        let mut store = loxone_core::miniserver::LiveValueStore::new();
+        store.seed_project_defaults(&project);
+
         let ctx = egui::Context::default();
         let _ = ctx.run(egui::RawInput::default(), |ctx| {
             egui::CentralPanel::default().show(ctx, |ui| {
-                let empty_out: InspectorOutput = render_right_inspector(ui, &project, None);
+                let empty_out: InspectorOutput = render_right_inspector(ui, &project, None, None);
                 assert!(empty_out.nav_action.is_none());
                 assert!(empty_out.edits.is_empty());
 
                 for uuid in &target_uuids {
-                    let out: InspectorOutput = render_right_inspector(ui, &project, Some(uuid));
+                    let out: InspectorOutput =
+                        render_right_inspector(ui, &project, Some(uuid), Some(&store));
                     assert!(out.nav_action.is_none());
                     assert!(
                         out.edits.is_empty(),
@@ -1460,7 +1604,7 @@ mod tests {
                 egui::CentralPanel::default().show(ctx, |ui| {
                     for block in &page.blocks {
                         let out: InspectorOutput =
-                            render_right_inspector(ui, &project, Some(&block.uuid));
+                            render_right_inspector(ui, &project, Some(&block.uuid), None);
                         assert!(
                             out.edits.is_empty(),
                             "Page {page_idx} block {} ({}) emitted unexpected edits on idle render",

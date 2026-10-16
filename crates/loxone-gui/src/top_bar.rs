@@ -23,6 +23,7 @@ pub enum TopBarAction {
     Undo,
     Redo,
     OpenMiniserverModal,
+    ToggleLiveView,
     OpenCommandPalette,
     ToggleCompactPins,
     FitPage,
@@ -49,6 +50,7 @@ pub enum ToolbarIcon {
     Undo,
     Redo,
     Download,
+    LivePulse { active: bool },
     Search,
     FitPage,
     PinsMode { all_pins: bool },
@@ -281,6 +283,33 @@ pub fn paint_toolbar_icon(painter: &Painter, rect: Rect, icon: ToolbarIcon, fg: 
                 stroke,
             ));
         }
+        ToolbarIcon::LivePulse { active } => {
+            let pulse_color = if active {
+                Color32::from_rgb(0x59, 0xB8, 0x28)
+            } else {
+                fg
+            };
+            let pulse_stroke = Stroke::new((sw * 1.15).max(1.5), pulse_color);
+            painter.add(Shape::line(
+                vec![
+                    p(0.06, 0.56),
+                    p(0.26, 0.56),
+                    p(0.38, 0.18),
+                    p(0.54, 0.84),
+                    p(0.68, 0.40),
+                    p(0.78, 0.56),
+                    p(0.94, 0.56),
+                ],
+                pulse_stroke,
+            ));
+            if active {
+                painter.circle_filled(
+                    p(0.38, 0.18),
+                    w * 0.12,
+                    Color32::from_rgb(0x8E, 0xE8, 0x58),
+                );
+            }
+        }
         ToolbarIcon::Search => {
             let center = p(0.43, 0.43);
             painter.circle_stroke(center, w * 0.27, stroke);
@@ -420,6 +449,27 @@ pub fn build_miniserver_toolbar_items(is_busy: bool) -> Vec<ToolbarItem> {
         enabled: !is_busy,
         accent: true,
     }]
+}
+
+pub fn build_live_view_toolbar_item(has_project: bool, live_view_active: bool) -> ToolbarItem {
+    ToolbarItem {
+        group: ToolbarGroup::Miniserver,
+        icon: "⚡",
+        vector_icon: ToolbarIcon::LivePulse {
+            active: live_view_active,
+        },
+        label: if live_view_active {
+            "Live View: ON".to_string()
+        } else {
+            "Live View".to_string()
+        },
+        shortcut_hint: Some("L"),
+        tooltip:
+            "Toggle LiveView real-time I/O value overlay on schematic wires and pins (L)".to_string(),
+        action: TopBarAction::ToggleLiveView,
+        enabled: has_project,
+        accent: live_view_active,
+    }
 }
 
 pub fn build_view_toolbar_items(compact_pins: bool) -> Vec<ToolbarItem> {
@@ -679,6 +729,7 @@ pub fn render_top_bar(
     is_dirty: bool,
     can_undo: bool,
     can_redo: bool,
+    live_view_active: bool,
 ) -> Option<TopBarAction> {
     let mut action = None;
     let can_save = project.and_then(|p| p.raw_xml.as_ref()).is_some();
@@ -800,10 +851,14 @@ pub fn render_top_bar(
                     action = Some(act);
                 }
 
-                // 4. Unified Miniserver Status & Download Capsule
-                let ms_border = match connection_status {
-                    ConnectionStatus::Disconnected => BORDER_SUBTLE,
-                    _ => status_visuals.dot_color.gamma_multiply(0.60),
+                // 4. Unified Miniserver Status, Download & LiveView Capsule
+                let ms_border = if live_view_active {
+                    Color32::from_rgb(0x59, 0xB8, 0x28).gamma_multiply(0.85)
+                } else {
+                    match connection_status {
+                        ConnectionStatus::Disconnected => BORDER_SUBTLE,
+                        _ => status_visuals.dot_color.gamma_multiply(0.60),
+                    }
                 };
                 Frame::new()
                     .fill(CAPSULE_BG)
@@ -849,6 +904,24 @@ pub fn render_top_bar(
                             if resp.clicked() && item.enabled {
                                 action = Some(item.action.clone());
                             }
+                        }
+
+                        render_capsule_divider(ui);
+
+                        let live_item =
+                            build_live_view_toolbar_item(project.is_some(), live_view_active);
+                        let live_resp = render_vector_button(
+                            ui,
+                            live_item.vector_icon,
+                            &live_item.label,
+                            live_item.shortcut_hint,
+                            &live_item.tooltip,
+                            live_item.enabled,
+                            false,
+                            live_view_active,
+                        );
+                        if live_resp.clicked() && live_item.enabled {
+                            action = Some(live_item.action);
                         }
                     });
 
@@ -1135,6 +1208,15 @@ mod tests {
         let ms_items_busy = build_miniserver_toolbar_items(true);
         assert!(!ms_items_busy[0].enabled);
 
+        let live_item_off = build_live_view_toolbar_item(true, false);
+        assert_eq!(live_item_off.action, TopBarAction::ToggleLiveView);
+        assert_eq!(live_item_off.label, "Live View");
+        assert!(!live_item_off.accent);
+
+        let live_item_on = build_live_view_toolbar_item(true, true);
+        assert_eq!(live_item_on.label, "Live View: ON");
+        assert!(live_item_on.accent);
+
         let view_items = build_view_toolbar_items(true);
         assert_eq!(view_items.len(), 3);
         assert_eq!(view_items[0].group, ToolbarGroup::View);
@@ -1161,6 +1243,7 @@ mod tests {
                 true,
                 false,
                 false,
+                true,
             );
         });
     }

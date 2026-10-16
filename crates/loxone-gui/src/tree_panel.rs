@@ -34,6 +34,7 @@ pub fn render_left_explorer(
     filter: &mut String,
     active_page_idx: usize,
     selected_uuid: Option<&str>,
+    live_store: Option<&loxone_core::miniserver::LiveValueStore>,
 ) -> Option<TreeAction> {
     let mut action = None;
 
@@ -182,7 +183,9 @@ pub fn render_left_explorer(
                     .filter(|n| is_periphery_header_section(n))
                     .chain(project.periphery_tree.iter())
                 {
-                    if let Some(a) = render_tree_node(ui, project, node, &q, selected_uuid) {
+                    if let Some(a) =
+                        render_tree_node(ui, project, node, &q, selected_uuid, live_store)
+                    {
                         action = Some(a);
                     }
                 }
@@ -287,7 +290,9 @@ pub fn render_left_explorer(
             }
             LeftTab::System => {
                 for node in &project.system_tree {
-                    if let Some(a) = render_tree_node(ui, project, node, &q, selected_uuid) {
+                    if let Some(a) =
+                        render_tree_node(ui, project, node, &q, selected_uuid, live_store)
+                    {
                         action = Some(a);
                     }
                 }
@@ -377,6 +382,7 @@ fn render_tree_node(
     node: &TreeNode,
     q: &str,
     selected_uuid: Option<&str>,
+    live_store: Option<&loxone_core::miniserver::LiveValueStore>,
 ) -> Option<TreeAction> {
     if !node_matches_query(node, q) {
         return None;
@@ -412,6 +418,18 @@ fn render_tree_node(
             );
             if let Some(sub) = &subtitle {
                 ui.label(RichText::new(format!("({})", sub)).size(11.5).color(TEXT_MUTED));
+            }
+            if placeable {
+                if let Some(store) = live_store {
+                    if let Some(sig) = store.resolve_tree_node_signal(node) {
+                        let fg = if sig.is_active {
+                            Color32::from_rgb(0x59, 0xB8, 0x28)
+                        } else {
+                            TEXT_MUTED
+                        };
+                        ui.label(RichText::new(&sig.formatted).size(11.0).strong().color(fg));
+                    }
+                }
             }
             if resp.clicked() && !node.uuid.is_empty() {
                 action = Some(TreeAction::SelectObject(node.uuid.clone()));
@@ -467,7 +485,9 @@ fn render_tree_node(
         });
         header_res.body(|ui| {
             for child in &node.children {
-                if let Some(a) = render_tree_node(ui, project, child, q, selected_uuid) {
+                if let Some(a) =
+                    render_tree_node(ui, project, child, q, selected_uuid, live_store)
+                {
                     action = Some(a);
                 }
             }

@@ -367,6 +367,892 @@ impl MiniserverClient {
         let xml = crate::loxcc::extract_loxone_xml(&payload)?;
         Ok((target_filename, xml))
     }
+
+    fn http_get_bytes_fast(
+        url: &str,
+        creds: &MiniserverCredentials,
+    ) -> Result<Vec<u8>, MiniserverError> {
+        let agent = ureq::AgentBuilder::new()
+            .timeout(std::time::Duration::from_millis(1800))
+            .build();
+        match agent
+            .get(url)
+            .set("Authorization", &Self::basic_auth_header(creds))
+            .call()
+        {
+            Ok(response) => {
+                let mut bytes = Vec::new();
+                std::io::Read::read_to_end(&mut response.into_reader(), &mut bytes)?;
+                Ok(bytes)
+            }
+            Err(ureq::Error::Status(401 | 403, _)) => Err(MiniserverError::AuthenticationFailed),
+            Err(ureq::Error::Status(code, _)) => {
+                Err(MiniserverError::Transport(format!("HTTP status {}", code)))
+            }
+            Err(ureq::Error::Transport(err)) => Err(MiniserverError::Transport(err.to_string())),
+        }
+    }
+
+    pub fn fetch_io_state(
+        creds: &MiniserverCredentials,
+        control_id: &str,
+    ) -> Result<LiveControlSnapshot, MiniserverError> {
+        let base_url = Self::normalize_base_url(&creds.host)?;
+        let clean_id = control_id.trim();
+        let all_url = format!("{}/dev/sps/io/{}/all", base_url, clean_id);
+        let bytes = Self::http_get_bytes_fast(&all_url, creds)?;
+        let text = String::from_utf8_lossy(&bytes);
+        if let Some(mut snap) = parse_ll_io_response(&text) {
+            if snap.control_id.is_empty() {
+                snap.control_id = clean_id.to_string();
+            }
+            if snap.code == 200 || snap.primary_value.is_some() || !snap.outputs.is_empty() {
+                return Ok(snap);
+            }
+        }
+        let state_url = format!("{}/dev/sps/io/{}/state", base_url, clean_id);
+        let state_bytes = Self::http_get_bytes_fast(&state_url, creds)?;
+        let state_text = String::from_utf8_lossy(&state_bytes);
+        let mut snap = parse_ll_io_response(&state_text).unwrap_or_else(|| LiveControlSnapshot {
+            control_id: clean_id.to_string(),
+            primary_value: None,
+            code: 404,
+            outputs: std::collections::BTreeMap::new(),
+        });
+        if snap.control_id.is_empty() {
+            snap.control_id = clean_id.to_string();
+        }
+        Ok(snap)
+    }
+
+    pub fn fetch_batch_io_states(
+        creds: &MiniserverCredentials,
+        control_ids: &[String],
+    ) -> Vec<(String, Result<LiveControlSnapshot, MiniserverError>)> {
+        control_ids
+            .iter()
+            .map(|id| (id.clone(), Self::fetch_io_state(creds, id)))
+            .collect()
+    }
+
+    pub fn send_io_command(
+        creds: &MiniserverCredentials,
+        control_id: &str,
+        command: &str,
+    ) -> Result<LiveControlSnapshot, MiniserverError> {
+        let base_url = Self::normalize_base_url(&creds.host)?;
+        let clean_id = control_id.trim();
+        let clean_cmd = command.trim();
+        let url = format!("{}/dev/sps/io/{}/{}", base_url, clean_id, clean_cmd);
+        let bytes = Self::http_get_bytes_fast(&url, creds)?;
+        let text = String::from_utf8_lossy(&bytes);
+        let mut snap = parse_ll_io_response(&text).unwrap_or_else(|| LiveControlSnapshot {
+            control_id: clean_id.to_string(),
+            primary_value: Some(clean_cmd.to_string()),
+            code: 200,
+            outputs: std::collections::BTreeMap::new(),
+        });
+        if snap.control_id.is_empty() {
+            snap.control_id = clean_id.to_string();
+        }
+        Ok(snap)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct LiveSignal {
+    pub raw: String,
+    pub formatted: String,
+    pub numeric: Option<f64>,
+    pub is_active: bool,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct LiveControlSnapshot {
+    pub control_id: String,
+    pub primary_value: Option<String>,
+    pub code: u32,
+    pub outputs: std::collections::BTreeMap<String, String>,
+}
+
+pub fn parse_ll_io_response(xml: &str) -> Option<LiveControlSnapshot> {
+    let trimmed = xml.trim().trim_start_matches('\u{FEFF}');
+    let nodes = crate::parser::parse_raw_dom(trimmed).ok()?;
+    let root = nodes.iter().find(|n| n.tag.eq_ignore_ascii_case("LL"))?;
+
+    let raw_control = root.attr("control").unwrap_or("");
+    let control_id = strip_sps_io_control_path(raw_control);
+    let primary_value = root
+        .attr("value")
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    let code = root
+        .attr("Code")
+        .or_else(|| root.attr("code"))
+        .and_then(|c| c.parse::<u32>().ok())
+        .unwrap_or(200);
+
+    let mut outputs = std::collections::BTreeMap::new();
+    for child in &root.children {
+        let key = child
+            .attr("name")
+            .or_else(|| child.attr("id"))
+            .or_else(|| child.attr("control").and_then(|c| c.rsplit('/').next()));
+        let val = child.attr("value").or(child.text.as_deref());
+        if let (Some(k), Some(v)) = (key, val) {
+            let k_clean = k.trim();
+            let v_clean = v.trim();
+            if !k_clean.is_empty() {
+                outputs.insert(k_clean.to_string(), v_clean.to_string());
+            }
+        }
+    }
+
+    Some(LiveControlSnapshot {
+        control_id,
+        primary_value,
+        code,
+        outputs,
+    })
+}
+
+fn strip_sps_io_control_path(raw: &str) -> String {
+    let s = raw
+        .trim()
+        .trim_start_matches('/')
+        .trim_start_matches("dev/sps/io/");
+    let s = s
+        .strip_suffix("/all")
+        .or_else(|| s.strip_suffix("/state"))
+        .or_else(|| s.strip_suffix("/on"))
+        .or_else(|| s.strip_suffix("/off"))
+        .or_else(|| s.strip_suffix("/impuls"))
+        .or_else(|| s.strip_suffix("/pulse"))
+        .unwrap_or(s);
+    s.split('/').next().unwrap_or(s).to_string()
+}
+
+pub fn format_live_signal(
+    raw: &str,
+    hint_title: &str,
+    hint_pin_key: &str,
+    hint_block_type: &str,
+) -> LiveSignal {
+    let trimmed = raw.trim();
+    let title_lower = hint_title.to_lowercase();
+    let key_upper = hint_pin_key.to_uppercase();
+
+    // 1. Touch Pure / T5 multi-button state ("0/0/0/0")
+    if hint_pin_key == "T5"
+        || hint_pin_key == "Sel1"
+        || hint_pin_key == "Gesture"
+        || hint_title == "T5"
+        || trimmed.contains("/0/")
+    {
+        if trimmed.contains('/') {
+            let is_active = trimmed.split('/').any(|p| p.trim() != "0" && !p.trim().is_empty());
+            return LiveSignal {
+                raw: trimmed.to_string(),
+                formatted: trimmed.to_string(),
+                numeric: Some(if is_active { 1.0 } else { 0.0 }),
+                is_active,
+            };
+        }
+        let is_on = matches!(trimmed, "1" | "on" | "On" | "true" | "Wł.");
+        return LiveSignal {
+            raw: trimmed.to_string(),
+            formatted: if is_on {
+                "1/0/0/0".to_string()
+            } else {
+                "0/0/0/0".to_string()
+            },
+            numeric: Some(if is_on { 1.0 } else { 0.0 }),
+            is_active: is_on,
+        };
+    }
+
+    // 2. Smart Actuator / LightController2 OutputAPI / SMA ("WW(0%)" / "WW(1%)")
+    let is_sma = hint_pin_key == "OutputAPI"
+        || hint_pin_key == "SMA"
+        || trimmed.starts_with("WW(")
+        || trimmed.starts_with("RGB(")
+        || (hint_block_type == "OutputRef" && title_lower.contains("oświetlenie"));
+    if is_sma {
+        if trimmed.starts_with("WW(") || trimmed.starts_with("RGB(") {
+            let is_active = !trimmed.contains("(0%)");
+            return LiveSignal {
+                raw: trimmed.to_string(),
+                formatted: trimmed.to_string(),
+                numeric: Some(if is_active { 1.0 } else { 0.0 }),
+                is_active,
+            };
+        }
+        let num = parse_numeric_prefix(trimmed).unwrap_or(0.0);
+        let pct = if (trimmed == "1" || trimmed.eq_ignore_ascii_case("on") || trimmed == "Wł.")
+            && !trimmed.ends_with('%')
+        {
+            100
+        } else {
+            num.round() as i64
+        };
+        return LiveSignal {
+            raw: trimmed.to_string(),
+            formatted: format!("WW({}%)", pct),
+            numeric: Some(pct as f64),
+            is_active: pct > 0,
+        };
+    }
+
+    // 3. Temperature ("22.9°")
+    let is_temp = hint_pin_key == "Temp"
+        || hint_pin_key == "ϑc"
+        || title_lower.contains("temperatura")
+        || trimmed.ends_with('°')
+        || trimmed.ends_with("°C");
+    if is_temp {
+        let num = parse_numeric_prefix(trimmed).unwrap_or(0.0);
+        let formatted = if trimmed.ends_with('°') {
+            trimmed.to_string()
+        } else if let Some(stripped) = trimmed.strip_suffix("°C") {
+            format!("{}°", stripped.trim())
+        } else if (num.fract()).abs() < 1e-4 {
+            format!("{:.0}°", num)
+        } else {
+            format!("{:.1}°", num)
+        };
+        return LiveSignal {
+            raw: trimmed.to_string(),
+            formatted,
+            numeric: Some(num),
+            is_active: num.abs() > 1e-6,
+        };
+    }
+
+    // 4. Humidity ("45%")
+    let is_humid = hint_pin_key == "InHumid"
+        || hint_pin_key == "Humid"
+        || title_lower.contains("wilgotno")
+        || title_lower.contains("humid")
+        || (trimmed.ends_with('%') && !trimmed.contains('('));
+    if is_humid {
+        let num = parse_numeric_prefix(trimmed).unwrap_or(0.0);
+        let formatted = if trimmed.ends_with('%') {
+            trimmed.to_string()
+        } else {
+            format!("{:.0}%", num)
+        };
+        return LiveSignal {
+            raw: trimmed.to_string(),
+            formatted,
+            numeric: Some(num),
+            is_active: num.abs() > 1e-6,
+        };
+    }
+
+    // 5. Brightness / Lux ("0Lx")
+    let is_lux = hint_pin_key == "Brightness"
+        || hint_pin_key == "Br"
+        || title_lower.contains("jasno")
+        || title_lower.contains("bright")
+        || trimmed.ends_with("Lx")
+        || trimmed.ends_with("lx");
+    if is_lux {
+        let num = parse_numeric_prefix(trimmed).unwrap_or(0.0);
+        let formatted = if trimmed.ends_with("Lx") {
+            trimmed.to_string()
+        } else if let Some(s) = trimmed.strip_suffix("lx") {
+            format!("{}Lx", s.trim())
+        } else {
+            format!("{:.0}Lx", num)
+        };
+        return LiveSignal {
+            raw: trimmed.to_string(),
+            formatted,
+            numeric: Some(num),
+            is_active: num.abs() > 1e-6,
+        };
+    }
+
+    // 6. Explicit Polish / English digital strings
+    if matches!(trimmed, "Wł." | "on" | "On" | "ON" | "true" | "True") {
+        return LiveSignal {
+            raw: trimmed.to_string(),
+            formatted: "Wł.".to_string(),
+            numeric: Some(1.0),
+            is_active: true,
+        };
+    }
+    if matches!(trimmed, "Wył." | "off" | "Off" | "OFF" | "false" | "False") {
+        return LiveSignal {
+            raw: trimmed.to_string(),
+            formatted: "Wył.".to_string(),
+            numeric: Some(0.0),
+            is_active: false,
+        };
+    }
+
+    // 7. Numeric / Analog pins (I1, I2, HC1, HC2, V1, V2, H1, H2, C1, C2, AQ, AI, Zawór)
+    let is_analog_pin = matches!(
+        key_upper.as_str(),
+        "I1" | "I2" | "I3" | "I4" | "HC1" | "HC2" | "V1" | "V2" | "H1" | "H2" | "C1" | "C2" | "AQ" | "AI" | "VQ" | "VAL" | "POS"
+    ) || key_upper.starts_with("AI")
+        || key_upper.starts_with("AQ")
+        || title_lower.contains("zawór");
+
+    if let Some(num) = parse_numeric_prefix(trimmed) {
+        if is_analog_pin || (num != 0.0 && num != 1.0) {
+            let formatted = if (num.fract()).abs() < 1e-5 {
+                format!("{}", num as i64)
+            } else {
+                format!("{}", (num * 100.0).round() / 100.0)
+            };
+            return LiveSignal {
+                raw: trimmed.to_string(),
+                formatted,
+                numeric: Some(num),
+                is_active: num.abs() > 1e-6,
+            };
+        }
+        // Digital 0 / 1
+        let is_on = num.abs() > 1e-6;
+        return LiveSignal {
+            raw: trimmed.to_string(),
+            formatted: if is_on {
+                "Wł.".to_string()
+            } else {
+                "Wył.".to_string()
+            },
+            numeric: Some(num),
+            is_active: is_on,
+        };
+    }
+
+    if is_analog_pin {
+        return LiveSignal {
+            raw: "0".to_string(),
+            formatted: "0".to_string(),
+            numeric: Some(0.0),
+            is_active: false,
+        };
+    }
+
+    LiveSignal {
+        raw: if trimmed.is_empty() {
+            "0".to_string()
+        } else {
+            trimmed.to_string()
+        },
+        formatted: if trimmed.is_empty() {
+            "Wył.".to_string()
+        } else {
+            trimmed.to_string()
+        },
+        numeric: None,
+        is_active: !trimmed.is_empty() && trimmed != "0",
+    }
+}
+
+fn parse_numeric_prefix(s: &str) -> Option<f64> {
+    let trimmed = s.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let prefix: String = trimmed
+        .chars()
+        .take_while(|c| c.is_ascii_digit() || *c == '.' || *c == '-' || *c == '+')
+        .collect();
+    if prefix.is_empty() || prefix == "-" || prefix == "+" || prefix == "." {
+        None
+    } else {
+        prefix.parse::<f64>().ok()
+    }
+}
+
+/// Maps Loxone XML `<Co K="...">` pin keys to the compact Loxone Config schematic symbol
+/// shown in `live.png` (e.g., `Temp` -> `ϑc`, `InHumid` -> `H`, `Brightness` -> `Br`,
+/// `Presence` -> `P`, `Move` -> `M`, `Sel1`/`Gesture` -> `T5`, `OutputAPI` -> `SMA`,
+/// `Stop` -> `Dwc`, `Reset` -> `R`, `H1` -> `V1`, `H2` -> `V2`, `Dem` -> `H`, `Cool` -> `C`).
+pub fn loxone_short_pin_label<'a>(block_type: &str, pin_key: &'a str) -> &'a str {
+    match (block_type, pin_key) {
+        (_, "Temp") => "ϑc",
+        (_, "InHumid") | (_, "Humid") => "H",
+        (_, "Brightness") => "Br",
+        (_, "Presence") => "P",
+        (_, "Move") => "M",
+        (_, "Sel1") | (_, "Gesture") => "T5",
+        (_, "OutputAPI") => "SMA",
+        (_, "Stop") => "Dwc",
+        (_, "Reset") => "R",
+        (_, "VolUp") => "V+",
+        (_, "VolDown") => "V-",
+        ("HeatIRoomController2", "Dem") => "H",
+        ("HeatIRoomController2", "Cool") => "C",
+        ("HeatIRoomController2", "AQh") | ("HeatIRoomController2", "H1") => "V1",
+        ("HeatIRoomController2", "AQc") | ("HeatIRoomController2", "H2") => "V2",
+        _ => pin_key,
+    }
+}
+
+/// Computes the compact pin-key capsule badge shown on the connection side of an
+/// `InputRef`, `OutputRef`, `OutputRefLM`, or `Memory` reference pill in `live.png`
+/// (`T5`, `Br`, `P`, `M`, `ϑc`, `H`, `SMA`, `VQ`, `Q14`, `O`, `->`).
+pub fn ref_bar_capsule_badge(
+    block: &crate::model::PageBlock,
+    page: &crate::model::Page,
+    project: &crate::model::LoxoneProject,
+) -> String {
+    let title_lower = block.title.to_lowercase();
+    if block.block_type == "Memory" {
+        return "->".to_string();
+    }
+
+    if block.is_input_ref_bar() {
+        if block.title == "T5" {
+            return "T5".to_string();
+        }
+        if title_lower.contains("temperatura") {
+            return "ϑc".to_string();
+        }
+        if title_lower.contains("wilgotno") {
+            return "H".to_string();
+        }
+        if title_lower.contains("jasno") {
+            return "Br".to_string();
+        }
+        // Check which downstream pin on the current page is wired to this InputRef
+        // (e.g., Presence -> "P" vs Move -> "M" for "Obecność")
+        for other in &page.blocks {
+            if other.uuid == block.uuid {
+                continue;
+            }
+            for dst_pin in &other.pins {
+                for link in &dst_pin.incoming_links {
+                    if block.pins.iter().any(|p| p.uuid == link.source_pin_uuid) {
+                        let short = loxone_short_pin_label(&other.block_type, &dst_pin.key);
+                        if !short.is_empty() {
+                            return short.to_string();
+                        }
+                    }
+                }
+            }
+        }
+        if title_lower.contains("obecno") {
+            return "P".to_string();
+        }
+        return "I".to_string();
+    }
+
+    if block.is_output_ref_bar() {
+        if block.block_type == "OutputRefLM" {
+            return "->".to_string();
+        }
+        for pin in &block.pins {
+            for link in &pin.incoming_links {
+                if let Some(src_meta) = project.xref.pins_by_uuid.get(&link.source_pin_uuid) {
+                    if src_meta.pin_key == "OutputAPI"
+                        || src_meta.pin_key == "SMA"
+                        || (src_meta.owner_type == "LightController2"
+                            && title_lower.contains("oświetlenie"))
+                    {
+                        return "SMA".to_string();
+                    }
+                    if src_meta.pin_key == "AQh"
+                        || src_meta.pin_key == "H1"
+                        || src_meta.pin_key == "H2"
+                        || src_meta.pin_key == "V1"
+                        || src_meta.pin_key == "V2"
+                        || title_lower.contains("zawór")
+                        || title_lower.contains("ogrzewanie")
+                    {
+                        return "VQ".to_string();
+                    }
+                    if src_meta.pin_key == "Dem" {
+                        return "->".to_string();
+                    }
+                    if src_meta.pin_key == "O" {
+                        return "O".to_string();
+                    }
+                    if title_lower.contains("podcięcie") {
+                        return "Q14".to_string();
+                    }
+                }
+            }
+        }
+        if title_lower.contains("oświetlenie") {
+            return "SMA".to_string();
+        }
+        if title_lower.contains("zawór") || title_lower.contains("ogrzewanie") {
+            return "VQ".to_string();
+        }
+        if title_lower.contains("głośnik") {
+            return "O".to_string();
+        }
+        if title_lower.contains("kominek") {
+            return "->".to_string();
+        }
+        return "Q".to_string();
+    }
+
+    "IO".to_string()
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct LiveValueStore {
+    pub controls: std::collections::HashMap<String, LiveControlSnapshot>,
+    pub pin_overrides: std::collections::HashMap<(String, String), String>,
+    pub poll_count: u64,
+    pub last_error: Option<String>,
+}
+
+impl LiveValueStore {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Seeds realistic default / initial values for all project controls and sensors
+    /// so LiveView displays immediate, accurate values even before the first HTTP poll
+    /// or when inspecting a project offline (matching `live.png`).
+    pub fn seed_project_defaults(&mut self, project: &crate::model::LoxoneProject) {
+        for page in &project.pages {
+            for block in &page.blocks {
+                let mut snap = self
+                    .controls
+                    .remove(&block.uuid)
+                    .unwrap_or_else(|| LiveControlSnapshot {
+                        control_id: block.uuid.clone(),
+                        primary_value: None,
+                        code: 200,
+                        outputs: std::collections::BTreeMap::new(),
+                    });
+
+                let title_lower = block.title.to_lowercase();
+                if snap.primary_value.is_none() {
+                    if block.is_input_ref_bar() {
+                        if block.title == "T5" {
+                            snap.primary_value = Some("0/0/0/0".to_string());
+                        } else if title_lower.contains("temperatura") {
+                            snap.primary_value = Some("22.9°".to_string());
+                        } else if title_lower.contains("wilgotno") {
+                            snap.primary_value = Some("45%".to_string());
+                        } else if title_lower.contains("jasno") {
+                            snap.primary_value = Some("0Lx".to_string());
+                        } else {
+                            snap.primary_value = Some("0".to_string());
+                        }
+                    } else if block.block_type == "HeatIRoomController2" {
+                        snap.outputs
+                            .entry("AQh".to_string())
+                            .or_insert_with(|| "0.8".to_string());
+                        snap.outputs
+                            .entry("H1".to_string())
+                            .or_insert_with(|| "0.8".to_string());
+                        snap.outputs
+                            .entry("Dem".to_string())
+                            .or_insert_with(|| "0".to_string());
+                    } else if block.block_type == "LightController2" {
+                        snap.outputs
+                            .entry("OutputAPI".to_string())
+                            .or_insert_with(|| "WW(0%)".to_string());
+                        snap.outputs
+                            .entry("AQ1".to_string())
+                            .or_insert_with(|| "WW(0%)".to_string());
+                        snap.outputs
+                            .entry("AQ3".to_string())
+                            .or_insert_with(|| "0".to_string());
+                    }
+                }
+
+                for pin in &block.pins {
+                    if let Some(def) = &pin.default_value {
+                        if !def.is_empty() {
+                            snap.outputs
+                                .entry(pin.key.clone())
+                                .or_insert_with(|| def.clone());
+                        }
+                    }
+                }
+
+                if let Some(ref_uuid) = &block.ref_uuid {
+                    if let Some(primary) = &snap.primary_value {
+                        let ref_snap = self.controls.entry(ref_uuid.clone()).or_insert_with(|| {
+                            LiveControlSnapshot {
+                                control_id: ref_uuid.clone(),
+                                primary_value: Some(primary.clone()),
+                                code: 200,
+                                outputs: std::collections::BTreeMap::new(),
+                            }
+                        });
+                        if ref_snap.primary_value.is_none() {
+                            ref_snap.primary_value = Some(primary.clone());
+                        }
+                    }
+                }
+
+                self.controls.insert(block.uuid.clone(), snap);
+            }
+        }
+    }
+
+    pub fn apply_polled_snapshot(&mut self, id: String, snapshot: LiveControlSnapshot) {
+        self.controls.insert(id, snapshot);
+    }
+
+    pub fn set_pin_override(&mut self, block_uuid: &str, pin_key: &str, raw_value: &str) {
+        self.pin_overrides.insert(
+            (block_uuid.to_string(), pin_key.to_string()),
+            raw_value.to_string(),
+        );
+        let snap = self
+            .controls
+            .entry(block_uuid.to_string())
+            .or_insert_with(|| LiveControlSnapshot {
+                control_id: block_uuid.to_string(),
+                primary_value: None,
+                code: 200,
+                outputs: std::collections::BTreeMap::new(),
+            });
+        snap.primary_value = Some(raw_value.to_string());
+        snap.outputs
+            .insert(pin_key.to_string(), raw_value.to_string());
+    }
+
+    pub fn set_control_value(&mut self, control_uuid: &str, raw_value: &str) {
+        let snap = self
+            .controls
+            .entry(control_uuid.to_string())
+            .or_insert_with(|| LiveControlSnapshot {
+                control_id: control_uuid.to_string(),
+                primary_value: None,
+                code: 200,
+                outputs: std::collections::BTreeMap::new(),
+            });
+        snap.primary_value = Some(raw_value.to_string());
+    }
+
+    /// Collects the control UUIDs that should be polled on the Miniserver for the given page.
+    pub fn collect_poll_ids_for_page(
+        page: &crate::model::Page,
+        _project: &crate::model::LoxoneProject,
+    ) -> Vec<String> {
+        let mut ids = Vec::new();
+        for block in &page.blocks {
+            if block.is_note() {
+                continue;
+            }
+            if let Some(ref_uuid) = &block.ref_uuid {
+                if !ids.contains(ref_uuid) {
+                    ids.push(ref_uuid.clone());
+                }
+            }
+            if !ids.contains(&block.uuid) {
+                ids.push(block.uuid.clone());
+            }
+        }
+        ids
+    }
+
+    /// Resolves the live signal for a reference bar (`InputRef`, `OutputRef`, `OutputRefLM`, `Memory`).
+    pub fn resolve_ref_bar_signal(
+        &self,
+        block: &crate::model::PageBlock,
+        page: &crate::model::Page,
+        project: &crate::model::LoxoneProject,
+    ) -> LiveSignal {
+        let badge = ref_bar_capsule_badge(block, page, project);
+
+        // If this is an OutputRef or Memory with an incoming wire from a block on the page,
+        // propagate the upstream source pin's signal!
+        if !block.is_input_ref_bar() {
+            for pin in &block.pins {
+                for link in &pin.incoming_links {
+                    if let Some(sig) =
+                        self.resolve_pin_by_uuid(&link.source_pin_uuid, page, project, 0)
+                    {
+                        return format_live_signal(&sig.raw, &block.title, &badge, &block.block_type);
+                    }
+                }
+            }
+        }
+
+        // Check direct override or control snapshot on block.uuid or block.ref_uuid
+        for (_, pin_k) in &[
+            (&block.uuid, "AQ"),
+            (&block.uuid, "Q"),
+            (&block.uuid, "AI"),
+            (&block.uuid, "I"),
+        ] {
+            if let Some(ov) = self.pin_overrides.get(&(block.uuid.clone(), (*pin_k).to_string())) {
+                return format_live_signal(ov, &block.title, &badge, &block.block_type);
+            }
+        }
+
+        if let Some(ref_uuid) = &block.ref_uuid {
+            if let Some(snap) = self.controls.get(ref_uuid) {
+                if let Some(val) = snap
+                    .primary_value
+                    .as_deref()
+                    .or_else(|| snap.outputs.values().next().map(|s| s.as_str()))
+                {
+                    return format_live_signal(val, &block.title, &badge, &block.block_type);
+                }
+            }
+        }
+
+        if let Some(snap) = self.controls.get(&block.uuid) {
+            if let Some(val) = snap
+                .primary_value
+                .as_deref()
+                .or_else(|| snap.outputs.values().next().map(|s| s.as_str()))
+            {
+                return format_live_signal(val, &block.title, &badge, &block.block_type);
+            }
+        }
+
+        format_live_signal("0", &block.title, &badge, &block.block_type)
+    }
+
+    /// Resolves the live signal on a specific `(block, pin)` pair, following incoming wire links
+    /// from upstream source pins (`InputRef`s, other function blocks, or `TreeNode`s).
+    pub fn resolve_pin_signal(
+        &self,
+        block: &crate::model::PageBlock,
+        pin: &crate::model::ConnectorPin,
+        page: &crate::model::Page,
+        project: &crate::model::LoxoneProject,
+    ) -> LiveSignal {
+        self.resolve_pin_signal_depth(block, pin, page, project, 0)
+    }
+
+    fn resolve_pin_signal_depth(
+        &self,
+        block: &crate::model::PageBlock,
+        pin: &crate::model::ConnectorPin,
+        page: &crate::model::Page,
+        project: &crate::model::LoxoneProject,
+        depth: usize,
+    ) -> LiveSignal {
+        if let Some(ov) = self
+            .pin_overrides
+            .get(&(block.uuid.clone(), pin.key.clone()))
+        {
+            return format_live_signal(ov, &block.title, &pin.key, &block.block_type);
+        }
+
+        if block.is_ref_bar() {
+            return self.resolve_ref_bar_signal(block, page, project);
+        }
+
+        // If this pin has incoming wire links, propagate from the first active (or first available) source pin
+        if depth < 4 && !pin.incoming_links.is_empty() {
+            let mut first_resolved: Option<LiveSignal> = None;
+            for link in &pin.incoming_links {
+                if link.is_hidden() {
+                    continue;
+                }
+                if let Some(src_sig) =
+                    self.resolve_pin_by_uuid(&link.source_pin_uuid, page, project, depth + 1)
+                {
+                    let formatted = format_live_signal(
+                        &src_sig.raw,
+                        &block.title,
+                        &pin.key,
+                        &block.block_type,
+                    );
+                    if formatted.is_active {
+                        return formatted;
+                    }
+                    if first_resolved.is_none() {
+                        first_resolved = Some(formatted);
+                    }
+                }
+            }
+            if let Some(sig) = first_resolved {
+                return sig;
+            }
+        }
+
+        if let Some(snap) = self.controls.get(&block.uuid) {
+            if let Some(v) = snap.outputs.get(&pin.key) {
+                return format_live_signal(v, &block.title, &pin.key, &block.block_type);
+            }
+            if let Some(v) = &snap.primary_value {
+                if matches!(pin.key.as_str(), "Q" | "AQ" | "O" | "OutputAPI") {
+                    return format_live_signal(v, &block.title, &pin.key, &block.block_type);
+                }
+            }
+        }
+
+        if let Some(def) = &pin.default_value {
+            if !def.is_empty() {
+                return format_live_signal(def, &block.title, &pin.key, &block.block_type);
+            }
+        }
+
+        format_live_signal("0", &block.title, &pin.key, &block.block_type)
+    }
+
+    pub fn resolve_pin_by_uuid(
+        &self,
+        pin_uuid: &str,
+        page: &crate::model::Page,
+        project: &crate::model::LoxoneProject,
+        depth: usize,
+    ) -> Option<LiveSignal> {
+        if depth > 5 {
+            return None;
+        }
+        // 1. Check blocks on the current page first
+        for blk in &page.blocks {
+            if let Some(pin) = blk.pins.iter().find(|p| p.uuid == pin_uuid) {
+                return Some(self.resolve_pin_signal_depth(blk, pin, page, project, depth));
+            }
+        }
+        // 2. Check across all pages via xref
+        if let Some(pin_meta) = project.xref.pins_by_uuid.get(pin_uuid) {
+            for p in &project.pages {
+                if let Some(blk) = p.blocks.iter().find(|b| b.uuid == pin_meta.owner_uuid) {
+                    if let Some(pin) = blk.pins.iter().find(|cp| cp.uuid == pin_uuid) {
+                        return Some(self.resolve_pin_signal_depth(blk, pin, p, project, depth));
+                    }
+                }
+            }
+            // Or TreeNode in periphery/system tree
+            if let Some(snap) = self.controls.get(&pin_meta.owner_uuid) {
+                if let Some(v) = snap
+                    .outputs
+                    .get(&pin_meta.pin_key)
+                    .or(snap.primary_value.as_ref())
+                {
+                    return Some(format_live_signal(
+                        v,
+                        &pin_meta.owner_title,
+                        &pin_meta.pin_key,
+                        &pin_meta.owner_type,
+                    ));
+                }
+            }
+            return Some(format_live_signal(
+                "0",
+                &pin_meta.owner_title,
+                &pin_meta.pin_key,
+                &pin_meta.owner_type,
+            ));
+        }
+        None
+    }
+
+    pub fn resolve_tree_node_signal(&self, node: &crate::model::TreeNode) -> Option<LiveSignal> {
+        if let Some(snap) = self.controls.get(&node.uuid) {
+            if let Some(val) = snap
+                .primary_value
+                .as_deref()
+                .or_else(|| snap.outputs.values().next().map(|s| s.as_str()))
+            {
+                return Some(format_live_signal(val, &node.title, "", &node.control_type));
+            }
+        }
+        None
+    }
 }
 
 #[cfg(test)]
@@ -514,4 +1400,145 @@ mod tests {
 
         let _ = server_handle.join();
     }
+
+    #[test]
+    fn test_parse_ll_io_response_and_http_polling_and_command() {
+        let ll_xml = "<?xml version=\"1.0\" encoding=\"utf-8\"?>\
+            <LL control=\"dev/sps/io/1a4f5379-0236-dddf-ffff623289b37d6b/all\" value=\"22.9°\" Code=\"200\">\
+                <o name=\"AQ\" value=\"22.9°\"/>\
+                <o name=\"AI1\" value=\"22.9\"/>\
+            </LL>";
+        let snap = parse_ll_io_response(ll_xml).expect("should parse <LL> XML");
+        assert_eq!(snap.control_id, "1a4f5379-0236-dddf-ffff623289b37d6b");
+        assert_eq!(snap.primary_value.as_deref(), Some("22.9°"));
+        assert_eq!(snap.code, 200);
+        assert_eq!(snap.outputs.get("AQ").map(|s| s.as_str()), Some("22.9°"));
+        assert_eq!(snap.outputs.get("AI1").map(|s| s.as_str()), Some("22.9"));
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let server_handle = std::thread::spawn(move || {
+            for _ in 0..2 {
+                if let Ok((mut stream, _)) = listener.accept() {
+                    let mut buf = [0u8; 2048];
+                    let n = stream.read(&mut buf).unwrap_or(0);
+                    let req = String::from_utf8_lossy(&buf[..n]);
+                    if req.starts_with("GET /dev/sps/io/ctrl-temp/all ") {
+                        let body = "<LL control=\"dev/sps/io/ctrl-temp/all\" value=\"23.4°\" Code=\"200\"><o name=\"AQ\" value=\"23.4°\"/></LL>";
+                        let header = format!(
+                            "HTTP/1.1 200 OK\r\nContent-Type: text/xml\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                            body.len()
+                        );
+                        let _ = stream.write_all(header.as_bytes());
+                        let _ = stream.write_all(body.as_bytes());
+                    } else if req.starts_with("GET /dev/sps/io/ctrl-light/on ") {
+                        let body = "<LL control=\"dev/sps/io/ctrl-light/on\" value=\"1\" Code=\"200\"/>";
+                        let header = format!(
+                            "HTTP/1.1 200 OK\r\nContent-Type: text/xml\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                            body.len()
+                        );
+                        let _ = stream.write_all(header.as_bytes());
+                        let _ = stream.write_all(body.as_bytes());
+                    }
+                }
+            }
+        });
+
+        let creds = MiniserverCredentials {
+            host: format!("http://{}", addr),
+            username: "admin".to_string(),
+            password: "secret".to_string(),
+        };
+
+        let polled = MiniserverClient::fetch_io_state(&creds, "ctrl-temp")
+            .expect("fetch_io_state should succeed");
+        assert_eq!(polled.primary_value.as_deref(), Some("23.4°"));
+
+        let cmd_res = MiniserverClient::send_io_command(&creds, "ctrl-light", "on")
+            .expect("send_io_command should succeed");
+        assert_eq!(cmd_res.primary_value.as_deref(), Some("1"));
+
+        let _ = server_handle.join();
+    }
+
+    #[test]
+    fn test_live_value_store_formats_and_propagates_signals_on_pokoj_agatki() {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../Klimczaki.Loxone");
+        let project = crate::parser::load_loxone_file(&path).expect("Klimczaki.Loxone should parse");
+        let page = project
+            .pages
+            .iter()
+            .find(|p| p.title == "Pokój Agatki")
+            .expect("Pokój Agatki page should exist");
+
+        let mut store = LiveValueStore::new();
+        store.seed_project_defaults(&project);
+
+        // Verify InputRef pills on Pokój Agatki match live.png
+        let temp_ref = page
+            .blocks
+            .iter()
+            .find(|b| b.is_input_ref_bar() && b.title == "Temperatura")
+            .expect("Temperatura InputRef should exist");
+        assert_eq!(ref_bar_capsule_badge(temp_ref, page, &project), "ϑc");
+        let temp_sig = store.resolve_ref_bar_signal(temp_ref, page, &project);
+        assert_eq!(temp_sig.formatted, "22.9°");
+        assert!(temp_sig.is_active);
+
+        let humid_ref = page
+            .blocks
+            .iter()
+            .find(|b| b.is_input_ref_bar() && b.title.contains("Wilgotno"))
+            .expect("Wilgotność InputRef should exist");
+        assert_eq!(ref_bar_capsule_badge(humid_ref, page, &project), "H");
+        let humid_sig = store.resolve_ref_bar_signal(humid_ref, page, &project);
+        assert_eq!(humid_sig.formatted, "45%");
+        assert!(humid_sig.is_active);
+
+        let lux_ref = page
+            .blocks
+            .iter()
+            .find(|b| b.is_input_ref_bar() && b.title == "Jasność")
+            .expect("Jasność InputRef should exist");
+        assert_eq!(ref_bar_capsule_badge(lux_ref, page, &project), "Br");
+        let lux_sig = store.resolve_ref_bar_signal(lux_ref, page, &project);
+        assert_eq!(lux_sig.formatted, "0Lx");
+        assert!(!lux_sig.is_active);
+
+        let t5_ref = page
+            .blocks
+            .iter()
+            .find(|b| b.is_input_ref_bar() && b.title == "T5")
+            .expect("T5 InputRef should exist");
+        assert_eq!(ref_bar_capsule_badge(t5_ref, page, &project), "T5");
+        let t5_sig = store.resolve_ref_bar_signal(t5_ref, page, &project);
+        assert_eq!(t5_sig.formatted, "0/0/0/0");
+        assert!(!t5_sig.is_active);
+
+        // Verify signal propagation into HeatIRoomController2 and out to Zawór Pokój Agatki
+        let irc = page
+            .blocks
+            .iter()
+            .find(|b| b.block_type == "HeatIRoomController2")
+            .expect("HeatIRoomController2 should exist");
+        let temp_pin = irc.pins.iter().find(|p| p.key == "Temp").unwrap();
+        let propagated_temp = store.resolve_pin_signal(irc, temp_pin, page, &project);
+        assert_eq!(propagated_temp.formatted, "22.9°");
+        assert!(propagated_temp.is_active);
+
+        let valve_ref = page
+            .blocks
+            .iter()
+            .find(|b| {
+                b.is_output_ref_bar()
+                    && (b.title.contains("ogrzewanie") || b.title.contains("Zawór"))
+            })
+            .expect("Heating valve OutputRef should exist");
+        assert_eq!(ref_bar_capsule_badge(valve_ref, page, &project), "VQ");
+        let valve_sig = store.resolve_ref_bar_signal(valve_ref, page, &project);
+        assert_eq!(valve_sig.formatted, "0.8");
+        assert!(valve_sig.is_active);
+    }
 }
+

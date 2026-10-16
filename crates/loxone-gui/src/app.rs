@@ -3,7 +3,8 @@ use std::sync::mpsc::{self, Receiver, Sender};
 
 use egui::{Context, Key, Stroke};
 use loxone_core::miniserver::{
-    BackupSnapshot, ConnectionProfile, ConnectionStatus, MiniserverClient, MiniserverCredentials,
+    BackupSnapshot, ConnectionProfile, ConnectionStatus, LiveControlSnapshot, LiveValueStore,
+    MiniserverClient, MiniserverCredentials,
 };
 use loxone_core::model::{LoxoneProject, TreeNode, TreeSectionKind};
 use loxone_core::parser::{load_loxone_file, parse_loxone_xml};
@@ -13,7 +14,7 @@ use loxone_core::xref::ObjectLocation;
 use crate::canvas::{render_page_canvas, CanvasAction, CanvasViewport};
 use crate::command_palette::{CommandPaletteState, PaletteAction};
 use crate::insert_modal::{show_insert_modal, InsertModalSelection, InsertModalState};
-use crate::inspector::{render_right_inspector, InspectorAction};
+use crate::inspector::{render_right_inspector, InspectorAction, LiveCommand};
 use crate::miniserver_modal::{
     render_miniserver_modal, MiniserverModalAction, MiniserverModalState,
 };
@@ -35,6 +36,8 @@ pub enum MiniserverWorkerEvent {
         host: String,
         result: Result<(String, String), String>,
     },
+    LiveValuesPolled(Vec<(String, LiveControlSnapshot)>),
+    LiveCommandSent(Result<(String, LiveControlSnapshot), String>),
 }
 
 pub struct LoxonePortableApp {
@@ -58,6 +61,10 @@ pub struct LoxonePortableApp {
     pub pending_center_block_uuid: Option<String>,
     pub connection_status: ConnectionStatus,
     pub miniserver_modal: MiniserverModalState,
+    pub live_view_enabled: bool,
+    pub live_store: LiveValueStore,
+    pub last_live_poll: Option<std::time::Instant>,
+    pub live_poll_in_flight: bool,
     pub worker_tx: Sender<MiniserverWorkerEvent>,
     pub worker_rx: Receiver<MiniserverWorkerEvent>,
 }
@@ -91,6 +98,10 @@ impl Default for LoxonePortableApp {
             pending_center_block_uuid: None,
             connection_status: ConnectionStatus::Disconnected,
             miniserver_modal: initial_modal,
+            live_view_enabled: false,
+            live_store: LiveValueStore::default(),
+            last_live_poll: None,
+            live_poll_in_flight: false,
             worker_tx,
             worker_rx,
         }
@@ -111,6 +122,9 @@ impl LoxonePortableApp {
         match load_loxone_file(path) {
             Ok(proj) => {
                 self.miniserver_modal.apply_project_fallback_host(Some(&proj));
+                self.live_store = LiveValueStore::default();
+                self.live_store.seed_project_defaults(&proj);
+                self.last_live_poll = None;
                 self.project = Some(proj);
                 self.loaded_path = Some(path.to_path_buf());
                 self.is_dirty = false;
@@ -137,6 +151,9 @@ impl LoxonePortableApp {
     ) -> Result<(), String> {
         let proj = parse_loxone_xml(xml).map_err(|e| format!("Failed to parse XML: {}", e))?;
         self.miniserver_modal.apply_project_fallback_host(Some(&proj));
+        self.live_store = LiveValueStore::default();
+        self.live_store.seed_project_defaults(&proj);
+        self.last_live_poll = None;
         self.project = Some(proj);
         self.loaded_path = None;
         self.is_dirty = false;
@@ -391,7 +408,139 @@ impl LoxonePortableApp {
                         self.miniserver_modal.status_message = Some(err);
                     }
                 },
+                MiniserverWorkerEvent::LiveValuesPolled(updates) => {
+                    self.live_poll_in_flight = false;
+                    for (id, snap) in updates {
+                        self.live_store.apply_polled_snapshot(id, snap);
+                    }
+                }
+                MiniserverWorkerEvent::LiveCommandSent(res) => {
+                    if let Ok((id, snap)) = res {
+                        self.live_store.apply_polled_snapshot(id, snap);
+                    }
+                }
             }
+        }
+    }
+
+    pub fn collect_active_page_poll_identifiers(&self) -> Vec<String> {
+        let mut ids = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        if let Some(sel) = &self.selected_uuid {
+            if !sel.is_empty() && seen.insert(sel.clone()) {
+                ids.push(sel.clone());
+            }
+        }
+        if let Some(proj) = &self.project {
+            if let Some(page) = proj.pages.get(self.active_page_index) {
+                for block in &page.blocks {
+                    if let Some(ref_u) = &block.ref_uuid {
+                        if !ref_u.is_empty() && seen.insert(ref_u.clone()) {
+                            ids.push(ref_u.clone());
+                        }
+                    }
+                    if !block.uuid.is_empty() && seen.insert(block.uuid.clone()) {
+                        ids.push(block.uuid.clone());
+                    }
+                    if ids.len() >= 48 {
+                        break;
+                    }
+                }
+            }
+        }
+        ids
+    }
+
+    pub fn maybe_schedule_live_poll(&mut self, ctx: &Context) {
+        if !self.live_view_enabled {
+            return;
+        }
+        ctx.request_repaint_after(std::time::Duration::from_millis(500));
+        if !self.connection_status.is_connected() || self.live_poll_in_flight {
+            return;
+        }
+        let should_poll = self
+            .last_live_poll
+            .map_or(true, |t| t.elapsed() >= std::time::Duration::from_millis(1200));
+        if !should_poll {
+            return;
+        }
+        let ids = self.collect_active_page_poll_identifiers();
+        if ids.is_empty() || self.miniserver_modal.host.trim().is_empty() {
+            return;
+        }
+        let creds = MiniserverCredentials {
+            host: self.miniserver_modal.host.clone(),
+            username: self.miniserver_modal.username.clone(),
+            password: self.miniserver_modal.password.clone(),
+        };
+        self.live_poll_in_flight = true;
+        self.last_live_poll = Some(std::time::Instant::now());
+        let tx = self.worker_tx.clone();
+        std::thread::spawn(move || {
+            let updates = MiniserverClient::fetch_batch_io_states(&creds, &ids)
+                .into_iter()
+                .filter_map(|(id, res)| res.ok().map(|snap| (id, snap)))
+                .collect();
+            let _ = tx.send(MiniserverWorkerEvent::LiveValuesPolled(updates));
+        });
+    }
+
+    pub fn handle_live_command(&mut self, cmd: LiveCommand) {
+        let optimistic_val = match cmd.command.as_str() {
+            "On" | "Pulse" | "on" | "pulse" => "1",
+            "Off" | "off" => "0",
+            other => other,
+        };
+        if let Some(pin_key) = &cmd.pin_key {
+            self.live_store
+                .set_pin_override(&cmd.control_uuid, pin_key, optimistic_val);
+        } else {
+            self.live_store
+                .set_control_value(&cmd.control_uuid, optimistic_val);
+            self.live_store
+                .set_pin_override(&cmd.control_uuid, "O", optimistic_val);
+            self.live_store
+                .set_pin_override(&cmd.control_uuid, "Q", optimistic_val);
+            self.live_store
+                .set_pin_override(&cmd.control_uuid, "AQ", optimistic_val);
+        }
+
+        if let Some(proj) = &self.project {
+            for page in &proj.pages {
+                for blk in &page.blocks {
+                    if blk.uuid == cmd.control_uuid {
+                        if let Some(ref_u) = &blk.ref_uuid {
+                            self.live_store.set_control_value(ref_u, optimistic_val);
+                            self.live_store.set_pin_override(ref_u, "O", optimistic_val);
+                            self.live_store.set_pin_override(ref_u, "Q", optimistic_val);
+                        }
+                    } else if blk.ref_uuid.as_deref() == Some(cmd.control_uuid.as_str()) {
+                        self.live_store.set_control_value(&blk.uuid, optimistic_val);
+                        self.live_store
+                            .set_pin_override(&blk.uuid, "O", optimistic_val);
+                        self.live_store
+                            .set_pin_override(&blk.uuid, "Q", optimistic_val);
+                    }
+                }
+            }
+        }
+
+        if self.connection_status.is_connected() && !self.miniserver_modal.host.trim().is_empty() {
+            let creds = MiniserverCredentials {
+                host: self.miniserver_modal.host.clone(),
+                username: self.miniserver_modal.username.clone(),
+                password: self.miniserver_modal.password.clone(),
+            };
+            let id = cmd.control_uuid.clone();
+            let command = cmd.command.clone();
+            let tx = self.worker_tx.clone();
+            std::thread::spawn(move || {
+                let res = MiniserverClient::send_io_command(&creds, &id, &command)
+                    .map(|snap| (id, snap))
+                    .map_err(|e| e.to_string());
+                let _ = tx.send(MiniserverWorkerEvent::LiveCommandSent(res));
+            });
         }
     }
 
@@ -422,6 +571,17 @@ impl LoxonePortableApp {
             }
             TopBarAction::OpenMiniserverModal => {
                 self.open_miniserver_modal();
+            }
+            TopBarAction::ToggleLiveView => {
+                self.live_view_enabled = !self.live_view_enabled;
+                if self.live_view_enabled {
+                    if let Some(proj) = &self.project {
+                        if self.live_store.controls.is_empty() {
+                            self.live_store.seed_project_defaults(proj);
+                        }
+                    }
+                    self.last_live_poll = None;
+                }
             }
             TopBarAction::OpenCommandPalette => {
                 self.palette.open();
@@ -998,6 +1158,9 @@ impl LoxonePortableApp {
             if ctx.input(|i| i.key_pressed(Key::P)) {
                 self.viewport.compact_pins = !self.viewport.compact_pins;
             }
+            if !cmd_or_ctrl && ctx.input(|i| i.key_pressed(Key::L)) && self.project.is_some() {
+                self.execute_top_bar_action(TopBarAction::ToggleLiveView);
+            }
             if ctx.input(|i| i.key_pressed(Key::Num0)) {
                 self.execute_palette_action(PaletteAction::ResetZoom);
             }
@@ -1044,6 +1207,7 @@ impl eframe::App for LoxonePortableApp {
         if self.connection_status.is_connecting() {
             ctx.request_repaint_after(std::time::Duration::from_millis(80));
         }
+        self.maybe_schedule_live_poll(ctx);
 
         self.handle_shortcuts(ctx);
 
@@ -1060,6 +1224,7 @@ impl eframe::App for LoxonePortableApp {
             self.is_dirty,
             self.can_undo(),
             self.can_redo(),
+            self.live_view_enabled,
         ) {
             self.execute_top_bar_action(top_act);
         }
@@ -1073,6 +1238,7 @@ impl eframe::App for LoxonePortableApp {
         // Left Explorer Panel
         if self.show_left_panel {
             let mut tree_act = None;
+            let live_opt = self.live_view_enabled.then_some(&self.live_store);
             if let Some(proj) = &self.project {
                 egui::SidePanel::left("left_explorer")
                     .default_width(250.0)
@@ -1090,6 +1256,7 @@ impl eframe::App for LoxonePortableApp {
                             &mut self.tree_filter,
                             self.active_page_index,
                             self.selected_uuid.as_deref(),
+                            live_opt,
                         );
                     });
             }
@@ -1102,6 +1269,7 @@ impl eframe::App for LoxonePortableApp {
         // Right Inspector Panel
         if self.show_right_panel {
             let mut insp_out = crate::inspector::InspectorOutput::default();
+            let live_opt = self.live_view_enabled.then_some(&self.live_store);
             if let Some(proj) = &self.project {
                 egui::SidePanel::right("right_inspector")
                     .default_width(300.0)
@@ -1112,13 +1280,21 @@ impl eframe::App for LoxonePortableApp {
                             .inner_margin(egui::Margin::symmetric(10, 6)),
                     )
                     .show(ctx, |ui| {
-                        insp_out =
-                            render_right_inspector(ui, proj, self.selected_uuid.as_deref());
+                        insp_out = render_right_inspector(
+                            ui,
+                            proj,
+                            self.selected_uuid.as_deref(),
+                            live_opt,
+                        );
                     });
             }
 
             for edit in insp_out.edits {
                 self.apply_project_edit(edit);
+            }
+
+            for cmd in insp_out.live_commands {
+                self.handle_live_command(cmd);
             }
 
             if let Some(del_uuid) = insp_out.delete_uuid {
@@ -1153,6 +1329,7 @@ impl eframe::App for LoxonePortableApp {
             .show(ctx, |ui| {
                 let view_size = ui.available_size();
                 let mut pending_canvas_act = None;
+                let live_opt = self.live_view_enabled.then_some(&self.live_store);
                 if let Some(proj) = &self.project {
                     if self.needs_initial_fit {
                         if let Some(page) = proj.pages.get(self.active_page_index) {
@@ -1180,6 +1357,7 @@ impl eframe::App for LoxonePortableApp {
                         self.active_page_index,
                         &mut self.viewport,
                         self.selected_uuid.as_deref(),
+                        live_opt,
                     );
                 } else {
                     ui.centered_and_justified(|ui| {
@@ -1270,6 +1448,7 @@ mod tests {
         let proj = app.project.as_ref().unwrap();
         let tree_uuid = proj.periphery_tree[0].uuid.clone();
         let cat_uuid = proj.categories.keys().next().unwrap().clone();
+        let live_opt = Some(&app.live_store);
         let _ = ctx.run(egui::RawInput::default(), |ctx| {
             egui::CentralPanel::default().show(ctx, |ui| {
                 for mut tab in [
@@ -1286,11 +1465,12 @@ mod tests {
                         &mut filter,
                         0,
                         Some(&first_block_uuid),
+                        live_opt,
                     );
                 }
-                let _ = render_right_inspector(ui, proj, Some(&first_block_uuid));
-                let _ = render_right_inspector(ui, proj, Some(&tree_uuid));
-                let _ = render_right_inspector(ui, proj, Some(&cat_uuid));
+                let _ = render_right_inspector(ui, proj, Some(&first_block_uuid), live_opt);
+                let _ = render_right_inspector(ui, proj, Some(&tree_uuid), live_opt);
+                let _ = render_right_inspector(ui, proj, Some(&cat_uuid), live_opt);
             });
         });
     }
@@ -1723,6 +1903,74 @@ mod tests {
         // Single Undo restores both deleted blocks
         app.undo();
         assert_eq!(app.project.as_ref().unwrap().pages[page_idx].blocks.len(), 2);
+    }
+
+    #[test]
+    fn test_app_live_view_toggle_and_live_command_updates_store() {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../Klimczaki.Loxone");
+        let mut app = LoxonePortableApp::default();
+        app.load_file(&path);
+
+        assert!(!app.live_view_enabled);
+        assert!(!app.live_store.controls.is_empty());
+
+        app.execute_top_bar_action(TopBarAction::ToggleLiveView);
+        assert!(app.live_view_enabled);
+
+        let ids = app.collect_active_page_poll_identifiers();
+        assert!(!ids.is_empty());
+
+        let first_id = ids[0].clone();
+        app.handle_live_command(LiveCommand {
+            control_uuid: first_id.clone(),
+            pin_key: None,
+            command: "On".to_string(),
+        });
+        assert_eq!(
+            app.live_store
+                .pin_overrides
+                .get(&(first_id.clone(), "O".to_string()))
+                .map(|s| s.as_str()),
+            Some("1")
+        );
+
+        app.handle_live_command(LiveCommand {
+            control_uuid: first_id.clone(),
+            pin_key: None,
+            command: "Off".to_string(),
+        });
+        assert_eq!(
+            app.live_store
+                .pin_overrides
+                .get(&(first_id.clone(), "O".to_string()))
+                .map(|s| s.as_str()),
+            Some("0")
+        );
+
+        let mut outputs = std::collections::BTreeMap::new();
+        outputs.insert("AQ".to_string(), "23.4".to_string());
+        let snap = LiveControlSnapshot {
+            control_id: first_id.clone(),
+            primary_value: Some("23.4".to_string()),
+            code: 200,
+            outputs,
+        };
+        app.worker_tx
+            .send(MiniserverWorkerEvent::LiveValuesPolled(vec![(
+                first_id.clone(),
+                snap,
+            )]))
+            .unwrap();
+        app.poll_miniserver_worker();
+
+        assert_eq!(
+            app.live_store
+                .controls
+                .get(&first_id)
+                .and_then(|c| c.outputs.get("AQ"))
+                .map(|s| s.as_str()),
+            Some("23.4")
+        );
     }
 }
 
