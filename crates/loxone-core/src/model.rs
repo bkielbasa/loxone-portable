@@ -15,6 +15,23 @@ impl RawNode {
             .find(|(k, _)| k == key)
             .map(|(_, v)| v.as_str())
     }
+
+    pub fn set_attr(&mut self, name: &str, value: Option<&str>) {
+        match value {
+            Some(val) => {
+                if let Some((_, existing_val)) =
+                    self.attributes.iter_mut().find(|(k, _)| k == name)
+                {
+                    *existing_val = val.to_string();
+                } else {
+                    self.attributes.push((name.to_string(), val.to_string()));
+                }
+            }
+            None => {
+                self.attributes.retain(|(k, _)| k != name);
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]

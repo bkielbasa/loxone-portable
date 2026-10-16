@@ -172,7 +172,7 @@ pub fn parse_loxone_xml(xml: &str) -> Result<LoxoneProject, LoxoneError> {
     Ok(project)
 }
 
-fn parse_raw_dom(xml: &str) -> Result<Vec<RawNode>, LoxoneError> {
+pub(crate) fn parse_raw_dom(xml: &str) -> Result<Vec<RawNode>, LoxoneError> {
     let mut reader = Reader::from_str(xml);
     reader.config_mut().trim_text(true);
     let mut stack: Vec<RawNode> = Vec::new();
