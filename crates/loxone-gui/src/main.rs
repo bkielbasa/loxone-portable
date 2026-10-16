@@ -1,6 +1,7 @@
 mod app;
 mod canvas;
 mod command_palette;
+mod insert_modal;
 mod inspector;
 mod miniserver_modal;
 mod theme;
