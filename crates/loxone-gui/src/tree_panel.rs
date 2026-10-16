@@ -1,6 +1,7 @@
 use egui::{Color32, RichText, ScrollArea, Ui};
 use loxone_core::model::{LoxoneProject, TreeNode};
 
+use crate::icons::{icon_for_block_type, icon_for_tree_node, tree_node_attr, ui_icon, LoxoneIcon};
 use crate::theme::{ACCENT_BLUE, TEXT_MUTED, TEXT_PRIMARY};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -142,6 +143,7 @@ pub fn render_left_explorer(
                         .inner_margin(egui::Margin::symmetric(8, 5))
                         .show(ui, |ui| {
                             ui.horizontal(|ui| {
+                                ui_icon(ui, LoxoneIcon::Page, 16.0);
                                 ui.label(
                                     RichText::new(&page.title)
                                         .color(if is_active { ACCENT_BLUE } else { TEXT_PRIMARY }),
@@ -174,7 +176,12 @@ pub fn render_left_explorer(
                 }
             }
             LeftTab::Periphery => {
-                for node in &project.periphery_tree {
+                for node in project
+                    .system_tree
+                    .iter()
+                    .filter(|n| is_periphery_header_section(n))
+                    .chain(project.periphery_tree.iter())
+                {
                     if let Some(a) = render_tree_node(ui, project, node, &q, selected_uuid) {
                         action = Some(a);
                     }
@@ -187,12 +194,25 @@ pub fn render_left_explorer(
                     if !q.is_empty() && !place.title.to_lowercase().contains(&q) {
                         continue;
                     }
-                    let header = egui::CollapsingHeader::new(
-                        RichText::new(&place.title).color(TEXT_PRIMARY).strong(),
-                    )
-                    .id_salt(&place.uuid)
-                    .default_open(!q.is_empty())
-                    .show(ui, |ui| {
+                    let id = ui.make_persistent_id(&place.uuid);
+                    let state = egui::collapsing_header::CollapsingState::load_with_default_open(
+                        ui.ctx(),
+                        id,
+                        !q.is_empty(),
+                    );
+                    let header_res = state.show_header(ui, |ui| {
+                        ui_icon(ui, LoxoneIcon::Room, 16.0);
+                        if ui
+                            .selectable_label(
+                                selected_uuid == Some(place.uuid.as_str()),
+                                RichText::new(&place.title).color(TEXT_PRIMARY).strong(),
+                            )
+                            .clicked()
+                        {
+                            action = Some(TreeAction::SelectObject(place.uuid.clone()));
+                        }
+                    });
+                    header_res.body(|ui| {
                         for (p_idx, page) in project.pages.iter().enumerate() {
                             for block in &page.blocks {
                                 if !block.has_position {
@@ -205,25 +225,29 @@ pub fn render_left_explorer(
                                 if eff_room == Some(place.uuid.as_str()) && !block.title.is_empty()
                                 {
                                     let is_sel = selected_uuid == Some(block.uuid.as_str());
-                                    if ui
-                                        .selectable_label(
-                                            is_sel,
-                                            format!("{} ({})", block.title, block.block_type),
-                                        )
-                                        .clicked()
-                                    {
-                                        action = Some(TreeAction::NavigateToBlock {
-                                            page_index: p_idx,
-                                            block_uuid: block.uuid.clone(),
-                                        });
-                                    }
+                                    ui.horizontal(|ui| {
+                                        ui_icon(
+                                            ui,
+                                            icon_for_block_type(&block.block_type, None),
+                                            15.0,
+                                        );
+                                        if ui
+                                            .selectable_label(
+                                                is_sel,
+                                                format!("{} ({})", block.title, block.block_type),
+                                            )
+                                            .clicked()
+                                        {
+                                            action = Some(TreeAction::NavigateToBlock {
+                                                page_index: p_idx,
+                                                block_uuid: block.uuid.clone(),
+                                            });
+                                        }
+                                    });
                                 }
                             }
                         }
                     });
-                    if header.header_response.clicked() {
-                        action = Some(TreeAction::SelectObject(place.uuid.clone()));
-                    }
                 }
 
                 if !project.categories.is_empty() {
@@ -242,19 +266,22 @@ pub fn render_left_explorer(
                             continue;
                         }
                         let is_sel = selected_uuid == Some(cat.uuid.as_str());
-                        if ui
-                            .selectable_label(
-                                is_sel,
-                                RichText::new(&cat.title).color(if is_sel {
-                                    ACCENT_BLUE
-                                } else {
-                                    TEXT_PRIMARY
-                                }),
-                            )
-                            .clicked()
-                        {
-                            action = Some(TreeAction::SelectObject(cat.uuid.clone()));
-                        }
+                        ui.horizontal(|ui| {
+                            ui_icon(ui, LoxoneIcon::Category(cat.bk_color), 15.0);
+                            if ui
+                                .selectable_label(
+                                    is_sel,
+                                    RichText::new(&cat.title).color(if is_sel {
+                                        ACCENT_BLUE
+                                    } else {
+                                        TEXT_PRIMARY
+                                    }),
+                                )
+                                .clicked()
+                            {
+                                action = Some(TreeAction::SelectObject(cat.uuid.clone()));
+                            }
+                        });
                     }
                 }
             }
@@ -284,8 +311,64 @@ fn node_matches_query(node: &TreeNode, q: &str) -> bool {
     node.children.iter().any(|c| node_matches_query(c, q))
 }
 
+fn is_periphery_header_section(node: &TreeNode) -> bool {
+    if node.control_type == "WeatherServer" {
+        return true;
+    }
+    if node.control_type == "LoxCaption" {
+        if let Some(ct) = tree_node_attr(node, "CaptionType") {
+            return matches!(ct, "28" | "6" | "14" | "19" | "33");
+        }
+    }
+    false
+}
+
 fn is_placeable_tree_node(control_type: &str) -> bool {
     crate::insert_modal::reference_kind_for_tree_node(control_type).is_some()
+}
+
+fn count_tree_devices_recursive(node: &TreeNode) -> usize {
+    let self_count = usize::from(node.control_type == "TreeDevice");
+    self_count
+        + node
+            .children
+            .iter()
+            .map(count_tree_devices_recursive)
+            .sum::<usize>()
+}
+
+/// Computes the muted secondary subtitle shown in parentheses next to a Periphery/System node
+/// (matching Loxone Config's `(Salon + jadalnia)`, `(Rozdzielnica R01 P1)`, `(5/30 Urządzenia)`, `(36/50 Urządzenia)`).
+pub fn tree_node_subtitle(project: &LoxoneProject, node: &TreeNode) -> Option<String> {
+    let icon = icon_for_tree_node(node);
+    if icon == LoxoneIcon::LoxoneLink && !node.children.is_empty() {
+        return Some(format!("{}/30 Urządzenia", node.children.len()));
+    }
+    if node.control_type == "LoxTree" {
+        let dev_count = count_tree_devices_recursive(node);
+        if dev_count > 0 {
+            return Some(format!("{}/50 Urządzenia", dev_count));
+        }
+    }
+    if let Some(r_uuid) = node.room_uuid.as_deref() {
+        if let Some(place) = project.places.get(r_uuid) {
+            if !place.title.is_empty() && place.title != "Nieprzyporządkowane" {
+                return Some(place.title.clone());
+            }
+        }
+    }
+    if let Some(sb) = tree_node_attr(node, "SwitchBoard").filter(|s| !s.trim().is_empty()) {
+        let row = tree_node_attr(node, "SwitchBoardRow")
+            .and_then(|r| r.parse::<u32>().ok());
+        let pos = tree_node_attr(node, "SwitchBoardPos")
+            .filter(|p| !p.trim().is_empty());
+        return match (row, pos) {
+            (Some(r), Some(p)) => Some(format!("{} R{:02} P{}", sb, r, p)),
+            (Some(r), None) => Some(format!("{} R{:02}", sb, r)),
+            _ => Some(sb.to_string()),
+        };
+    }
+    None
 }
 
 fn render_tree_node(
@@ -307,9 +390,13 @@ fn render_tree_node(
     let usages = project.xref.usages_for(&node.uuid).len();
     let is_selected = !node.uuid.is_empty() && selected_uuid == Some(node.uuid.as_str());
     let placeable = !node.uuid.is_empty() && is_placeable_tree_node(&node.control_type);
+    let icon = icon_for_tree_node(node);
+    let subtitle = tree_node_subtitle(project, node);
 
     if node.children.is_empty() {
         ui.horizontal(|ui| {
+            ui.add_space(18.0);
+            ui_icon(ui, icon, 16.0);
             let text = if usages > 0 {
                 format!("{}  [{}]", label_title, usages)
             } else {
@@ -323,6 +410,9 @@ fn render_tree_node(
                     TEXT_PRIMARY
                 }),
             );
+            if let Some(sub) = &subtitle {
+                ui.label(RichText::new(format!("({})", sub)).size(11.5).color(TEXT_MUTED));
+            }
             if resp.clicked() && !node.uuid.is_empty() {
                 action = Some(TreeAction::SelectObject(node.uuid.clone()));
             }
@@ -336,39 +426,52 @@ fn render_tree_node(
             }
         });
     } else {
-        let header = egui::CollapsingHeader::new(
-            RichText::new(format!("{} ({})", label_title, node.control_type)).color(
-                if is_selected {
+        let salt = if node.uuid.is_empty() {
+            format!("caption_{}_{}", node.control_type, label_title)
+        } else {
+            node.uuid.clone()
+        };
+        let id = ui.make_persistent_id(salt);
+        let default_open = !q.is_empty()
+            || node.control_type == "LoxLIVE"
+            || node.control_type == "Miniserver"
+            || icon == LoxoneIcon::AudioFolder
+            || icon == LoxoneIcon::LoxoneLink;
+        let state =
+            egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, default_open);
+
+        let header_res = state.show_header(ui, |ui| {
+            ui_icon(ui, icon, 16.0);
+            let resp = ui.selectable_label(
+                is_selected,
+                RichText::new(label_title).color(if is_selected {
                     ACCENT_BLUE
                 } else {
                     TEXT_PRIMARY
-                },
-            ),
-        )
-        .id_salt(if node.uuid.is_empty() {
-            label_title
-        } else {
-            &node.uuid
-        })
-        .default_open(!q.is_empty() || node.control_type == "LoxLIVE" || node.control_type == "Miniserver")
-        .show(ui, |ui| {
+                }),
+            );
+            if let Some(sub) = &subtitle {
+                ui.label(RichText::new(format!("({})", sub)).size(11.5).color(TEXT_MUTED));
+            }
+            if resp.clicked() && !node.uuid.is_empty() {
+                action = Some(TreeAction::SelectObject(node.uuid.clone()));
+            }
+            if placeable {
+                resp.context_menu(|ui| {
+                    if ui.button("📥 Place on Current Page").clicked() {
+                        action = Some(TreeAction::PlaceOnPage(node.uuid.clone()));
+                        ui.close_menu();
+                    }
+                });
+            }
+        });
+        header_res.body(|ui| {
             for child in &node.children {
                 if let Some(a) = render_tree_node(ui, project, child, q, selected_uuid) {
                     action = Some(a);
                 }
             }
         });
-        if header.header_response.clicked() && !node.uuid.is_empty() {
-            action = Some(TreeAction::SelectObject(node.uuid.clone()));
-        }
-        if placeable {
-            header.header_response.context_menu(|ui| {
-                if ui.button("📥 Place on Current Page").clicked() {
-                    action = Some(TreeAction::PlaceOnPage(node.uuid.clone()));
-                    ui.close_menu();
-                }
-            });
-        }
     }
 
     action
@@ -388,5 +491,49 @@ mod tests {
         assert!(node_matches_query(&project.periphery_tree[0], ""));
         assert!(node_matches_query(&project.periphery_tree[0], "loxlive"));
         assert!(!node_matches_query(&project.periphery_tree[0], "nonexistent_xyz_device_999"));
+    }
+
+    #[test]
+    fn test_tree_node_subtitles_match_reference_screenshot() {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../Klimczaki.Loxone");
+        let project = load_loxone_file(&path).expect("Klimczaki.Loxone should parse");
+
+        fn find_by_title<'a>(nodes: &'a [TreeNode], title: &str) -> Option<&'a TreeNode> {
+            for n in nodes {
+                if n.title == title {
+                    return Some(n);
+                }
+                if let Some(found) = find_by_title(&n.children, title) {
+                    return Some(found);
+                }
+            }
+            None
+        }
+
+        let ms = find_by_title(&project.periphery_tree, "Klimczaki").unwrap();
+        assert_eq!(
+            tree_node_subtitle(&project, ms),
+            Some("Rozdzielnica R01 P1".to_string())
+        );
+
+        let link = ms.children.iter().find(|n| n.title == "Link").unwrap();
+        assert_eq!(
+            tree_node_subtitle(&project, link),
+            Some("5/30 Urządzenia".to_string())
+        );
+
+        let tree = ms.children.iter().find(|n| n.title == "Tree").unwrap();
+        assert_eq!(
+            tree_node_subtitle(&project, tree),
+            Some("36/50 Urządzenia".to_string())
+        );
+
+        let audio_srv = find_by_title(&project.periphery_tree, "Audioserver")
+            .or_else(|| find_by_title(&project.system_tree, "Audioserver"))
+            .unwrap();
+        assert_eq!(
+            tree_node_subtitle(&project, audio_srv),
+            Some("Salon + jadalnia".to_string())
+        );
     }
 }

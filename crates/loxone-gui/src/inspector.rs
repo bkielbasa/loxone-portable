@@ -8,6 +8,7 @@ use loxone_core::model::{
 use loxone_core::writer::ProjectEdit;
 use loxone_core::xref::{CrossRefKind, ObjectLocation};
 
+use crate::icons::{icon_for_block_type, icon_for_tree_node, ui_icon, LoxoneIcon};
 use crate::theme::{ACCENT_BLUE, BORDER_SUBTLE, CARD_BG, TEXT_MUTED, TEXT_PRIMARY};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -108,6 +109,38 @@ pub fn render_right_inspector(
     output
 }
 
+fn resolve_summary_icon(
+    project: &LoxoneProject,
+    summary: &loxone_core::xref::ObjectSummary,
+) -> LoxoneIcon {
+    match &summary.location {
+        ObjectLocation::TreeNode { .. } => find_tree_node(&project.periphery_tree, &summary.uuid)
+            .or_else(|| find_tree_node(&project.system_tree, &summary.uuid))
+            .map(icon_for_tree_node)
+            .unwrap_or_else(|| icon_for_block_type(&summary.object_type, None)),
+        ObjectLocation::PageBlock {
+            page_index,
+            block_index,
+            ..
+        } => {
+            let ref_type = project
+                .pages
+                .get(*page_index)
+                .and_then(|p| p.blocks.get(*block_index))
+                .and_then(|b| b.ref_uuid.as_deref())
+                .and_then(|ru| project.xref.objects_by_uuid.get(ru))
+                .map(|s| s.object_type.as_str());
+            icon_for_block_type(&summary.object_type, ref_type)
+        }
+        ObjectLocation::Page { .. } => LoxoneIcon::Page,
+        ObjectLocation::Place => LoxoneIcon::Room,
+        ObjectLocation::Category => {
+            LoxoneIcon::Category(project.categories.get(&summary.uuid).and_then(|c| c.bk_color))
+        }
+        ObjectLocation::DocumentRoot => LoxoneIcon::Miniserver,
+    }
+}
+
 fn render_kb_header_card(
     ui: &mut Ui,
     project: &LoxoneProject,
@@ -127,7 +160,11 @@ fn render_kb_header_card(
             } else {
                 &summary.title
             };
-            ui.label(RichText::new(title).size(14.5).color(TEXT_PRIMARY).strong());
+            let icon = resolve_summary_icon(project, summary);
+            ui.horizontal(|ui| {
+                ui_icon(ui, icon, 18.0);
+                ui.label(RichText::new(title).size(14.5).color(TEXT_PRIMARY).strong());
+            });
 
             ui.horizontal_wrapped(|ui| {
                 ui.label(

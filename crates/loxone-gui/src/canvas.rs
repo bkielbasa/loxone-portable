@@ -1225,6 +1225,21 @@ pub fn render_page_canvas(
             );
             painter.rect_filled(strip, CornerRadius::same(3), accent_color);
 
+            let ref_tree_type = block
+                .ref_uuid
+                .as_deref()
+                .and_then(|u| project.xref.objects_by_uuid.get(u))
+                .map(|o| o.object_type.as_str());
+            let block_icon = crate::icons::icon_for_block_type(&block.block_type, ref_tree_type);
+            let icon_sz = (15.0 * viewport.zoom).clamp(11.0, 22.0);
+            let icon_rect = Rect::from_center_size(
+                Pos2::new(
+                    rect.min.x + strip_w + 4.0 * viewport.zoom + icon_sz * 0.5,
+                    rect.center().y,
+                ),
+                Vec2::splat(icon_sz),
+            );
+
             let raw_label = if !block.title.is_empty() {
                 block.title.clone()
             } else if let Some(ref_uuid) = &block.ref_uuid {
@@ -1237,14 +1252,16 @@ pub fn render_page_canvas(
             } else {
                 block.block_type.clone()
             };
-            let max_chars = ((rect.width() - 18.0 * viewport.zoom)
+            let text_left = icon_rect.max.x + 5.0 * viewport.zoom;
+            let max_chars = ((rect.max.x - text_left - 8.0 * viewport.zoom)
                 / (6.8 * viewport.zoom).max(4.5))
             .max(8.0) as usize;
             let label = truncate_text(&raw_label, max_chars);
 
             let text_clip = painter.with_clip_rect(rect.shrink(2.0));
+            crate::icons::paint_icon(&text_clip, icon_rect, block_icon);
             text_clip.text(
-                Pos2::new(rect.min.x + 10.0 * viewport.zoom, rect.center().y),
+                Pos2::new(text_left, rect.center().y),
                 Align2::LEFT_CENTER,
                 label,
                 FontId::proportional((13.0 * viewport.zoom).clamp(10.0, 19.0)),
@@ -1300,21 +1317,30 @@ pub fn render_page_canvas(
         );
         painter.rect_filled(strip, CornerRadius::same(3), accent_color);
 
+        let block_icon = crate::icons::icon_for_block_type(&block.block_type, None);
+        let icon_sz = (16.0 * viewport.zoom).clamp(12.0, 23.0);
+        let icon_rect = Rect::from_center_size(
+            Pos2::new(
+                header_rect.min.x + strip_w + 5.0 * viewport.zoom + icon_sz * 0.5,
+                header_rect.center().y,
+            ),
+            Vec2::splat(icon_sz),
+        );
+        let title_left = icon_rect.max.x + 5.0 * viewport.zoom;
+
         let raw_title = if block.title.is_empty() {
             &block.block_type
         } else {
             &block.title
         };
-        let title_max_chars = ((header_rect.width() - 18.0 * viewport.zoom)
+        let title_max_chars = ((header_rect.max.x - title_left - 8.0 * viewport.zoom)
             / (7.2 * viewport.zoom).max(4.5))
         .max(8.0) as usize;
         let title = truncate_text(raw_title, title_max_chars);
         let header_clip = painter.with_clip_rect(header_rect.shrink(2.0));
+        crate::icons::paint_icon(&header_clip, icon_rect, block_icon);
         header_clip.text(
-            Pos2::new(
-                header_rect.min.x + 10.0 * viewport.zoom,
-                header_rect.center().y,
-            ),
+            Pos2::new(title_left, header_rect.center().y),
             Align2::LEFT_CENTER,
             title,
             FontId::proportional((13.5 * viewport.zoom).clamp(10.5, 20.0)),

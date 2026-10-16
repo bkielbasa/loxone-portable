@@ -3,6 +3,7 @@ use loxone_core::block_schema::{BlockSchema, page_block_schemas};
 use loxone_core::factory::default_category_color;
 use loxone_core::model::{LoxoneProject, PinKind, TreeNode, TreeSectionKind};
 
+use crate::icons::{icon_for_block_type, ui_icon};
 use crate::theme;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -416,6 +417,10 @@ pub fn show_insert_modal(
                                                 Color32::from_rgb(r, g, b),
                                             );
 
+                                            let block_icon =
+                                                icon_for_block_type(schema.type_name, None);
+                                            ui_icon(ui, block_icon, 16.0);
+
                                             ui.vertical(|ui| {
                                                 ui.horizontal(|ui| {
                                                     ui.label(
@@ -537,6 +542,11 @@ pub fn show_insert_modal(
                                     .show(ui, |ui| {
                                         ui.set_min_width(ui.available_width());
                                         ui.horizontal(|ui| {
+                                            let ref_icon = icon_for_block_type(
+                                                cand.reference_kind,
+                                                Some(cand.control_type.as_str()),
+                                            );
+                                            ui_icon(ui, ref_icon, 16.0);
                                             ui.label(
                                                 RichText::new(cand.reference_kind)
                                                     .size(10.5)
