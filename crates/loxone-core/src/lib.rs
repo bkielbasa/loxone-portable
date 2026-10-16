@@ -7,3 +7,4 @@ pub mod parser;
 pub mod writer;
 pub mod xref;
 
+pub use writer::{apply_edit, apply_edit_with_inverse, ProjectEdit};
