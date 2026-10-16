@@ -7,22 +7,26 @@ use loxone_core::model::{LoxoneProject, PinKind, TreeNode, TreeSectionKind};
 
 use crate::theme;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum InsertModalTab {
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum InsertTab {
+    #[default]
     FunctionBlocks,
     References,
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum InsertModalAction {
-    InsertFunctionBlock {
+pub enum InsertModalSelection {
+    NewFunctionBlock {
         type_name: String,
-        target_pos: Option<(f32, f32)>,
+        title: String,
+        px: f32,
+        py: f32,
     },
-    InsertReference {
-        reference_kind: String,
-        io_uuid: String,
-        target_pos: Option<(f32, f32)>,
+    NewReferenceBlock {
+        ref_type: String,
+        target_uuid: String,
+        px: f32,
+        py: f32,
     },
 }
 
@@ -35,28 +39,15 @@ pub struct ReferenceCandidate {
     pub section_label: String,
 }
 
+#[derive(Default)]
 pub struct InsertModalState {
     pub is_open: bool,
-    pub active_tab: InsertModalTab,
     pub query: String,
+    pub tab: InsertTab,
     pub selected_category: Option<String>,
     pub selected_index: usize,
-    pub target_canvas_pos: Option<(f32, f32)>,
-    pub request_focus: bool,
-}
-
-impl Default for InsertModalState {
-    fn default() -> Self {
-        Self {
-            is_open: false,
-            active_tab: InsertModalTab::FunctionBlocks,
-            query: String::new(),
-            selected_category: None,
-            selected_index: 0,
-            target_canvas_pos: None,
-            request_focus: false,
-        }
-    }
+    pub target_pos: Option<(f32, f32)>,
+    pub focus_requested: bool,
 }
 
 impl InsertModalState {
@@ -64,13 +55,13 @@ impl InsertModalState {
         self.is_open = true;
         self.query.clear();
         self.selected_index = 0;
-        self.target_canvas_pos = target_pos;
-        self.request_focus = true;
+        self.target_pos = target_pos;
+        self.focus_requested = true;
     }
 
     pub fn close(&mut self) {
         self.is_open = false;
-        self.request_focus = false;
+        self.focus_requested = false;
     }
 }
 
@@ -258,12 +249,12 @@ pub fn show_insert_modal(
     ctx: &egui::Context,
     state: &mut InsertModalState,
     project: Option<&LoxoneProject>,
-) -> Option<InsertModalAction> {
+) -> Option<InsertModalSelection> {
     if !state.is_open {
         return None;
     }
 
-    let mut triggered_action: Option<InsertModalAction> = None;
+    let mut selection: Option<InsertModalSelection> = None;
 
     if ctx.input(|i| i.key_pressed(Key::Escape)) {
         state.close();
@@ -273,24 +264,8 @@ pub fn show_insert_modal(
     let move_down = ctx.input(|i| i.key_pressed(Key::ArrowDown));
     let move_up = ctx.input(|i| i.key_pressed(Key::ArrowUp));
     let enter_pressed = ctx.input(|i| i.key_pressed(Key::Enter));
-
-    // Backdrop dim
-    let screen_rect = ctx.screen_rect();
-    egui::Area::new(egui::Id::new("insert_modal_backdrop"))
-        .order(Order::Foreground)
-        .fixed_pos(screen_rect.min)
-        .show(ctx, |ui| {
-            let (rect, resp) =
-                ui.allocate_exact_size(screen_rect.size(), egui::Sense::click());
-            ui.painter().rect_filled(
-                rect,
-                CornerRadius::ZERO,
-                Color32::from_rgba_unmultiplied(5, 7, 12, 180),
-            );
-            if resp.clicked() {
-                state.close();
-            }
-        });
+    let (px, py) = state.target_pos.unwrap_or((256.0, 256.0));
+    let total_blocks = page_block_schemas().count();
 
     egui::Window::new("Quick Insert")
         .id(egui::Id::new("quick_insert_modal_window"))
@@ -310,26 +285,26 @@ pub fn show_insert_modal(
         .show(ctx, |ui| {
             // Tab Bar
             ui.horizontal(|ui| {
-                let fb_selected = state.active_tab == InsertModalTab::FunctionBlocks;
+                let fb_selected = state.tab == InsertTab::FunctionBlocks;
                 if ui
                     .selectable_label(
                         fb_selected,
-                        RichText::new("⚡ Function Blocks (83)").strong(),
+                        RichText::new(format!("🧩 Function Blocks ({total_blocks})")).strong(),
                     )
                     .clicked()
                 {
-                    state.active_tab = InsertModalTab::FunctionBlocks;
+                    state.tab = InsertTab::FunctionBlocks;
                     state.selected_index = 0;
                 }
-                let ref_selected = state.active_tab == InsertModalTab::References;
+                let ref_selected = state.tab == InsertTab::References;
                 if ui
                     .selectable_label(
                         ref_selected,
-                        RichText::new("🔌 I/O & Memory References").strong(),
+                        RichText::new("📥 Periphery / Flags / Virtual I/O").strong(),
                     )
                     .clicked()
                 {
-                    state.active_tab = InsertModalTab::References;
+                    state.tab = InsertTab::References;
                     state.selected_index = 0;
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -350,9 +325,9 @@ pub fn show_insert_modal(
                     "Search function blocks, periphery I/Os, virtual inputs, or memory flags...",
                 ),
             );
-            if state.request_focus {
+            if state.focus_requested {
                 search_resp.request_focus();
-                state.request_focus = false;
+                state.focus_requested = false;
             }
             if search_resp.changed() {
                 state.selected_index = 0;
@@ -360,8 +335,8 @@ pub fn show_insert_modal(
 
             ui.add_space(8.0);
 
-            match state.active_tab {
-                InsertModalTab::FunctionBlocks => {
+            match state.tab {
+                InsertTab::FunctionBlocks => {
                     // Category Filter Chips
                     let categories = available_categories();
                     ui.horizontal_wrapped(|ui| {
@@ -398,9 +373,11 @@ pub fn show_insert_modal(
 
                     if enter_pressed {
                         if let Some(schema) = schemas.get(state.selected_index) {
-                            triggered_action = Some(InsertModalAction::InsertFunctionBlock {
+                            selection = Some(InsertModalSelection::NewFunctionBlock {
                                 type_name: schema.type_name.to_string(),
-                                target_pos: state.target_canvas_pos,
+                                title: schema.display_name_en.to_string(),
+                                px,
+                                py,
                             });
                         }
                     }
@@ -450,7 +427,7 @@ pub fn show_insert_modal(
                                                     );
                                                     ui.label(
                                                         RichText::new(format!(
-                                                            "({})",
+                                                            "[{}]",
                                                             schema.type_name
                                                         ))
                                                         .size(11.0)
@@ -490,17 +467,19 @@ pub fn show_insert_modal(
                                     .interact(egui::Sense::click());
 
                                 if resp.clicked() {
-                                    triggered_action =
-                                        Some(InsertModalAction::InsertFunctionBlock {
+                                    selection =
+                                        Some(InsertModalSelection::NewFunctionBlock {
                                             type_name: schema.type_name.to_string(),
-                                            target_pos: state.target_canvas_pos,
+                                            title: schema.display_name_en.to_string(),
+                                            px,
+                                            py,
                                         });
                                 }
                                 ui.add_space(4.0);
                             }
                         });
                 }
-                InsertModalTab::References => {
+                InsertTab::References => {
                     let candidates = project
                         .map(|p| matching_reference_candidates(p, &state.query))
                         .unwrap_or_default();
@@ -518,10 +497,11 @@ pub fn show_insert_modal(
 
                     if enter_pressed {
                         if let Some(cand) = candidates.get(state.selected_index) {
-                            triggered_action = Some(InsertModalAction::InsertReference {
-                                reference_kind: cand.reference_kind.to_string(),
-                                io_uuid: cand.io_uuid.clone(),
-                                target_pos: state.target_canvas_pos,
+                            selection = Some(InsertModalSelection::NewReferenceBlock {
+                                ref_type: cand.reference_kind.to_string(),
+                                target_uuid: cand.io_uuid.clone(),
+                                px,
+                                py,
                             });
                         }
                     }
@@ -584,11 +564,12 @@ pub fn show_insert_modal(
                                     .interact(egui::Sense::click());
 
                                 if resp.clicked() {
-                                    triggered_action =
-                                        Some(InsertModalAction::InsertReference {
-                                            reference_kind: cand.reference_kind.to_string(),
-                                            io_uuid: cand.io_uuid.clone(),
-                                            target_pos: state.target_canvas_pos,
+                                    selection =
+                                        Some(InsertModalSelection::NewReferenceBlock {
+                                            ref_type: cand.reference_kind.to_string(),
+                                            target_uuid: cand.io_uuid.clone(),
+                                            px,
+                                            py,
                                         });
                                 }
                                 ui.add_space(4.0);
@@ -598,11 +579,11 @@ pub fn show_insert_modal(
             }
         });
 
-    if triggered_action.is_some() {
+    if selection.is_some() {
         state.close();
     }
 
-    triggered_action
+    selection
 }
 
 #[cfg(test)]
@@ -706,8 +687,8 @@ mod tests {
         assert!(state.is_open);
         assert_eq!(state.query, "");
         assert_eq!(state.selected_index, 0);
-        assert_eq!(state.target_canvas_pos, Some((12.0, 8.0)));
-        assert!(state.request_focus);
+        assert_eq!(state.target_pos, Some((12.0, 8.0)));
+        assert!(state.focus_requested);
 
         // Render in headless egui context and verify Enter selects top match
         let ctx = egui::Context::default();
@@ -726,9 +707,11 @@ mod tests {
         });
         assert_eq!(
             action,
-            Some(InsertModalAction::InsertFunctionBlock {
+            Some(InsertModalSelection::NewFunctionBlock {
                 type_name: "StairwellLight".to_string(),
-                target_pos: Some((12.0, 8.0)),
+                title: "Stairwell Light Switch".to_string(),
+                px: 12.0,
+                py: 8.0,
             })
         );
         assert!(!state.is_open);
