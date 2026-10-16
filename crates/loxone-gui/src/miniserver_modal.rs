@@ -120,14 +120,19 @@ pub fn render_miniserver_modal(
     let can_submit = !state.host.trim().is_empty() && !is_busy;
     let badge = status_badge_visuals(connection_status, Some(&state.host));
 
-    // Backdrop dimmer
+    // Subtle backdrop on Order::Middle (strictly behind Order::Foreground modal)
     let screen_rect = ctx.screen_rect();
-    let backdrop_layer = egui::LayerId::new(Order::Foreground, Id::new("miniserver_modal_backdrop"));
-    ctx.layer_painter(backdrop_layer).rect_filled(
-        screen_rect,
-        0.0,
-        Color32::from_black_alpha(150),
-    );
+    egui::Area::new(Id::new("miniserver_modal_backdrop"))
+        .order(Order::Middle)
+        .fixed_pos(screen_rect.min)
+        .show(ctx, |ui| {
+            let _ = ui.allocate_rect(screen_rect, egui::Sense::click());
+            ui.painter().rect_filled(
+                screen_rect,
+                0.0,
+                Color32::from_black_alpha(55),
+            );
+        });
 
     egui::Area::new(Id::new("miniserver_modal_window"))
         .order(Order::Foreground)
@@ -135,7 +140,13 @@ pub fn render_miniserver_modal(
         .show(ctx, |ui| {
             Frame::new()
                 .fill(PANEL_BG)
-                .stroke(Stroke::new(1.0_f32, ACCENT_BLUE))
+                .stroke(Stroke::new(1.5_f32, ACCENT_BLUE))
+                .shadow(egui::Shadow {
+                    offset: [0, 8],
+                    blur: 24,
+                    spread: 0,
+                    color: Color32::from_black_alpha(100),
+                })
                 .corner_radius(10)
                 .inner_margin(Margin::same(16))
                 .show(ui, |ui| {

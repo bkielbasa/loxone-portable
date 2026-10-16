@@ -296,14 +296,23 @@ impl CommandPaletteState {
             }
         }
 
-        // Subtle backdrop dimmer
+        // Subtle backdrop on Order::Middle (strictly behind Order::Foreground modal)
         let screen_rect = ctx.screen_rect();
-        let backdrop_layer = egui::LayerId::new(Order::Foreground, Id::new("cmd_palette_backdrop"));
-        ctx.layer_painter(backdrop_layer).rect_filled(
-            screen_rect,
-            0.0,
-            Color32::from_black_alpha(140),
-        );
+        let mut backdrop_clicked = false;
+        egui::Area::new(Id::new("cmd_palette_backdrop"))
+            .order(Order::Middle)
+            .fixed_pos(screen_rect.min)
+            .show(ctx, |ui| {
+                let resp = ui.allocate_rect(screen_rect, Sense::click());
+                ui.painter().rect_filled(
+                    screen_rect,
+                    0.0,
+                    Color32::from_black_alpha(55),
+                );
+                if resp.clicked() {
+                    backdrop_clicked = true;
+                }
+            });
 
         egui::Area::new(Id::new("cmd_palette_modal"))
             .order(Order::Foreground)
@@ -311,7 +320,13 @@ impl CommandPaletteState {
             .show(ctx, |ui| {
                 Frame::new()
                     .fill(PANEL_BG)
-                    .stroke(Stroke::new(1.0_f32, ACCENT_BLUE))
+                    .stroke(Stroke::new(1.5_f32, ACCENT_BLUE))
+                    .shadow(egui::Shadow {
+                        offset: [0, 8],
+                        blur: 24,
+                        spread: 0,
+                        color: Color32::from_black_alpha(100),
+                    })
                     .corner_radius(10)
                     .inner_margin(Margin::same(12))
                     .show(ui, |ui| {
@@ -400,7 +415,7 @@ impl CommandPaletteState {
                     });
             });
 
-        if triggered_action.is_some() {
+        if triggered_action.is_some() || backdrop_clicked {
             self.close();
         }
         triggered_action
@@ -434,5 +449,16 @@ mod tests {
         // Searching "lightcontroller2" matches LightController2 blocks
         let lc_results = build_palette_entries(Some(&project), "lightcontroller2");
         assert!(lc_results.iter().any(|e| e.badge == PaletteBadge::Block));
+
+        // Verify backdrop is on Order::Middle and modal is strictly above it on Order::Foreground
+        let ctx = Context::default();
+        let mut palette = CommandPaletteState::default();
+        palette.open();
+        let _ = ctx.run(egui::RawInput::default(), |ctx| {
+            let _ = palette.show(ctx, Some(&project));
+        });
+        let backdrop_id = egui::LayerId::new(Order::Middle, Id::new("cmd_palette_backdrop"));
+        let modal_id = egui::LayerId::new(Order::Foreground, Id::new("cmd_palette_modal"));
+        assert!(backdrop_id.order < modal_id.order);
     }
 }
