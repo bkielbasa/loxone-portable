@@ -534,7 +534,7 @@ impl eframe::App for LoxonePortableApp {
         // Right Inspector Panel
         if self.show_right_panel {
             if let Some(proj) = &self.project {
-                let mut insp_act = None;
+                let mut insp_out = crate::inspector::InspectorOutput::default();
                 egui::SidePanel::right("right_inspector")
                     .default_width(300.0)
                     .frame(
@@ -544,11 +544,11 @@ impl eframe::App for LoxonePortableApp {
                             .inner_margin(egui::Margin::symmetric(10, 6)),
                     )
                     .show(ctx, |ui| {
-                        insp_act =
+                        insp_out =
                             render_right_inspector(ui, proj, self.selected_uuid.as_deref());
                     });
 
-                if let Some(act) = insp_act {
+                if let Some(act) = insp_out.nav_action {
                     match act {
                         InspectorAction::NavigateToBlock {
                             page_index,
