@@ -698,6 +698,7 @@ impl LoxonePortableApp {
             }
             CanvasAction::ClearSelection => {
                 self.selected_uuid = None;
+                self.viewport.interaction.selected_blocks.clear();
             }
             CanvasAction::NavigateToBlock {
                 page_index,
@@ -721,8 +722,47 @@ impl LoxonePortableApp {
                     py,
                 });
             }
+            CanvasAction::MoveBlocks { page_uuid, moves } => {
+                let edits: Vec<ProjectEdit> = moves
+                    .into_iter()
+                    .map(|(block_uuid, px, py)| ProjectEdit::MovePageBlock {
+                        page_uuid: page_uuid.clone(),
+                        block_uuid,
+                        px,
+                        py,
+                    })
+                    .collect();
+                if !edits.is_empty() {
+                    self.execute_edit(ProjectEdit::Batch(edits));
+                }
+            }
             CanvasAction::DeleteBlock { block_uuid, .. } => {
                 self.delete_object_by_uuid(&block_uuid);
+                self.viewport
+                    .interaction
+                    .selected_blocks
+                    .retain(|u| u != &block_uuid);
+            }
+            CanvasAction::DeleteBlocks {
+                page_uuid,
+                block_uuids,
+            } => {
+                let edits: Vec<ProjectEdit> = block_uuids
+                    .iter()
+                    .map(|block_uuid| ProjectEdit::RemovePageBlock {
+                        page_uuid: page_uuid.clone(),
+                        block_uuid: block_uuid.clone(),
+                    })
+                    .collect();
+                if !edits.is_empty() {
+                    self.execute_edit(ProjectEdit::Batch(edits));
+                }
+                if let Some(sel) = &self.selected_uuid {
+                    if block_uuids.contains(sel) {
+                        self.selected_uuid = None;
+                    }
+                }
+                self.viewport.interaction.selected_blocks.clear();
             }
             CanvasAction::ConnectPins {
                 target_block_uuid,
@@ -839,6 +879,7 @@ impl LoxonePortableApp {
             }
             PaletteAction::NavigateToPage(idx) => {
                 self.active_page_index = idx;
+                self.viewport.interaction.selected_blocks.clear();
                 self.needs_initial_fit = true;
             }
             PaletteAction::NavigateToBlock {
@@ -847,6 +888,7 @@ impl LoxonePortableApp {
             } => {
                 self.active_page_index = page_index;
                 self.selected_uuid = Some(block_uuid.clone());
+                self.viewport.interaction.selected_blocks = vec![block_uuid.clone()];
                 self.pending_center_block_uuid = Some(block_uuid);
                 self.show_right_panel = true;
             }
@@ -906,6 +948,22 @@ impl LoxonePortableApp {
         }
 
         if !ctx.wants_keyboard_input() {
+            if cmd_or_ctrl && ctx.input(|i| i.key_pressed(Key::A)) {
+                if let Some(proj) = &self.project {
+                    if let Some(page) = proj.pages.get(self.active_page_index) {
+                        let all_uuids: Vec<String> = page
+                            .blocks
+                            .iter()
+                            .filter(|b| b.has_position)
+                            .map(|b| b.uuid.clone())
+                            .collect();
+                        if let Some(first) = all_uuids.first() {
+                            self.selected_uuid = Some(first.clone());
+                        }
+                        self.viewport.interaction.selected_blocks = all_uuids;
+                    }
+                }
+            }
             if !cmd_or_ctrl && ctx.input(|i| i.key_pressed(Key::A)) && self.project.is_some() {
                 self.insert_modal.open_at(None);
             }
@@ -916,8 +974,22 @@ impl LoxonePortableApp {
                         target_pin_key: wire.target_pin_key,
                         source_pin_uuid: wire.source_pin_uuid,
                     });
+                } else if self.viewport.interaction.selected_blocks.len() > 1 {
+                    let page_uuid = self
+                        .project
+                        .as_ref()
+                        .and_then(|p| p.pages.get(self.active_page_index))
+                        .map(|p| p.uuid.clone());
+                    if let Some(page_uuid) = page_uuid {
+                        let block_uuids = self.viewport.interaction.selected_blocks.clone();
+                        self.handle_canvas_action(CanvasAction::DeleteBlocks {
+                            page_uuid,
+                            block_uuids,
+                        });
+                    }
                 } else if let Some(sel_uuid) = self.selected_uuid.clone() {
                     self.delete_object_by_uuid(&sel_uuid);
+                    self.viewport.interaction.selected_blocks.clear();
                 }
             }
             if ctx.input(|i| i.key_pressed(Key::F)) {
@@ -1568,6 +1640,89 @@ mod tests {
         assert_eq!((r_stair.px, r_stair.py), (640.0, 320.0));
         let r_dis = r_stair.pins.iter().find(|p| p.key == "Dis").unwrap();
         assert_eq!(r_dis.incoming_links.len(), 1);
+    }
+
+    #[test]
+    fn test_app_multi_block_move_and_delete_batch_undo_redo() {
+        let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        path.pop();
+        path.pop();
+        path.push("Klimczaki.Loxone");
+        if !path.exists() {
+            return;
+        }
+
+        let mut app = LoxonePortableApp::default();
+        app.load_file(&path);
+        app.handle_tree_action(TreeAction::CreatePage);
+        let page_idx = app.active_page_index;
+        let page_uuid = app.project.as_ref().unwrap().pages[page_idx].uuid.clone();
+
+        app.handle_insert_selection(InsertModalSelection::NewFunctionBlock {
+            type_name: "Pushbutton".to_string(),
+            title: "Btn 1".to_string(),
+            px: 128.0,
+            py: 128.0,
+        });
+        let b1_uuid = app.selected_uuid.clone().unwrap();
+
+        app.handle_insert_selection(InsertModalSelection::NewFunctionBlock {
+            type_name: "StairwellLight".to_string(),
+            title: "Light 1".to_string(),
+            px: 512.0,
+            py: 128.0,
+        });
+        let b2_uuid = app.selected_uuid.clone().unwrap();
+
+        // Group move both blocks together in a single batch
+        app.handle_canvas_action(CanvasAction::MoveBlocks {
+            page_uuid: page_uuid.clone(),
+            moves: vec![
+                (b1_uuid.clone(), 256.0, 320.0),
+                (b2_uuid.clone(), 640.0, 320.0),
+            ],
+        });
+
+        {
+            let page = &app.project.as_ref().unwrap().pages[page_idx];
+            let b1 = page.blocks.iter().find(|b| b.uuid == b1_uuid).unwrap();
+            let b2 = page.blocks.iter().find(|b| b.uuid == b2_uuid).unwrap();
+            assert_eq!((b1.px, b1.py), (256.0, 320.0));
+            assert_eq!((b2.px, b2.py), (640.0, 320.0));
+        }
+
+        // Single Undo restores both blocks to their original positions
+        app.undo();
+        {
+            let page = &app.project.as_ref().unwrap().pages[page_idx];
+            let b1 = page.blocks.iter().find(|b| b.uuid == b1_uuid).unwrap();
+            let b2 = page.blocks.iter().find(|b| b.uuid == b2_uuid).unwrap();
+            assert_eq!((b1.px, b1.py), (128.0, 128.0));
+            assert_eq!((b2.px, b2.py), (512.0, 128.0));
+        }
+
+        // Single Redo re-applies the group move
+        app.redo();
+        {
+            let page = &app.project.as_ref().unwrap().pages[page_idx];
+            let b1 = page.blocks.iter().find(|b| b.uuid == b1_uuid).unwrap();
+            let b2 = page.blocks.iter().find(|b| b.uuid == b2_uuid).unwrap();
+            assert_eq!((b1.px, b1.py), (256.0, 320.0));
+            assert_eq!((b2.px, b2.py), (640.0, 320.0));
+        }
+
+        // Group delete both blocks in a single batch
+        app.viewport.interaction.selected_blocks = vec![b1_uuid.clone(), b2_uuid.clone()];
+        app.handle_canvas_action(CanvasAction::DeleteBlocks {
+            page_uuid: page_uuid.clone(),
+            block_uuids: vec![b1_uuid.clone(), b2_uuid.clone()],
+        });
+        assert!(app.viewport.interaction.selected_blocks.is_empty());
+        assert!(app.project.as_ref().unwrap().pages[page_idx].blocks.is_empty());
+
+        // Single Undo restores both deleted blocks
+        app.undo();
+        assert_eq!(app.project.as_ref().unwrap().pages[page_idx].blocks.len(), 2);
     }
 }
 

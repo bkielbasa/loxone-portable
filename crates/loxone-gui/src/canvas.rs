@@ -55,6 +55,11 @@ pub enum CanvasContextMenu {
 #[derive(Debug, Clone, Default)]
 pub struct CanvasInteractionState {
     pub dragging_block: Option<BlockDragState>,
+    pub dragging_blocks: Vec<BlockDragState>,
+    pub selected_blocks: Vec<String>,
+    pub marquee_start: Option<Pos2>,
+    pub marquee_current: Option<Pos2>,
+    pub marquee_base_selection: Vec<String>,
     pub wiring_from: Option<WireDragState>,
     pub selected_wire: Option<SelectedWire>,
     pub hovered_pin: Option<(String, String)>,
@@ -94,6 +99,10 @@ pub enum CanvasAction {
         px: f32,
         py: f32,
     },
+    MoveBlocks {
+        page_uuid: String,
+        moves: Vec<(String, f32, f32)>,
+    },
     ConnectPins {
         target_block_uuid: String,
         target_pin_key: String,
@@ -107,6 +116,10 @@ pub enum CanvasAction {
     DeleteBlock {
         page_uuid: String,
         block_uuid: String,
+    },
+    DeleteBlocks {
+        page_uuid: String,
+        block_uuids: Vec<String>,
     },
     OpenInsertModalAt {
         px: f32,
@@ -621,21 +634,41 @@ pub fn render_page_canvas(
     let clicked = response.clicked();
     let mut clicked_any_block = false;
     let mut clicked_any_pin_or_wire = false;
+    let multi_mod = ui.input(|i| i.modifiers.shift || i.modifiers.command || i.modifiers.ctrl);
+    let pan_mod = ui.input(|i| i.key_down(egui::Key::Space) || i.modifiers.alt);
     let show_all_pins = !viewport.compact_pins || viewport.interaction.wiring_from.is_some();
 
     let positioned_blocks: Vec<&PageBlock> =
         page.blocks.iter().filter(|b| b.has_position).collect();
+
+    // Ensure selected_uuid from tree/inspector is reflected in selected_blocks when appropriate
+    if let Some(su) = selected_uuid {
+        if viewport.interaction.selected_blocks.is_empty()
+            && viewport.interaction.marquee_start.is_none()
+            && positioned_blocks.iter().any(|b| b.uuid == su)
+        {
+            viewport.interaction.selected_blocks.push(su.to_string());
+        }
+    }
+
     let mut layouts: Vec<BlockLayout> = Vec::with_capacity(positioned_blocks.len());
     let mut pin_hit_targets: Vec<PinHitTarget> = Vec::new();
 
     // Pass 1: Precompute positioned block rects and pin screen coordinates
     for (block_idx, &block) in positioned_blocks.iter().enumerate() {
-        let mut rect = if let Some(drag) = viewport
+        let active_drag = viewport
             .interaction
-            .dragging_block
-            .as_ref()
-            .filter(|d| d.block_uuid == block.uuid)
-        {
+            .dragging_blocks
+            .iter()
+            .find(|d| d.block_uuid == block.uuid)
+            .or_else(|| {
+                viewport
+                    .interaction
+                    .dragging_block
+                    .as_ref()
+                    .filter(|d| d.block_uuid == block.uuid)
+            });
+        let mut rect = if let Some(drag) = active_drag {
             let w_lx = (block.px2 - block.px).max(512.0);
             let h_ly = (block.py2 - block.py).max(192.0);
             viewport.loxone_coords_rect_to_screen(
@@ -762,13 +795,20 @@ pub fn render_page_canvas(
         .as_ref()
         .map(|p| (p.block_uuid.clone(), p.pin_key.clone()));
 
-    // Handle Delete/Backspace or Escape keys for selected wire / active wire drawing
-    let delete_pressed = ui.input(|i| i.key_pressed(egui::Key::Delete) || i.key_pressed(egui::Key::Backspace));
+    // Handle Delete/Backspace or Escape keys for selected wire / active wire drawing / marquee
+    let delete_pressed =
+        ui.input(|i| i.key_pressed(egui::Key::Delete) || i.key_pressed(egui::Key::Backspace));
     let escape_pressed = ui.input(|i| i.key_pressed(egui::Key::Escape));
     if escape_pressed {
         viewport.interaction.wiring_from = None;
         viewport.interaction.context_menu = None;
         viewport.interaction.selected_wire = None;
+        viewport.interaction.marquee_start = None;
+        viewport.interaction.marquee_current = None;
+        if viewport.interaction.selected_blocks.len() > 1 {
+            viewport.interaction.selected_blocks.clear();
+            action = Some(CanvasAction::ClearSelection);
+        }
     }
     if delete_pressed {
         if let Some(sel) = viewport.interaction.selected_wire.take() {
@@ -780,8 +820,15 @@ pub fn render_page_canvas(
         }
     }
 
+    // Middle-click or Right-drag pans the canvas
+    if response.dragged_by(egui::PointerButton::Middle)
+        || response.dragged_by(egui::PointerButton::Secondary)
+    {
+        viewport.pan += response.drag_delta();
+    }
+
     // Handle drag start, active drag, and drag stop
-    if response.drag_started_by(egui::PointerButton::Primary) {
+    if response.drag_started_by(egui::PointerButton::Primary) && !pan_mod {
         let press_pos = ui.input(|i| i.pointer.press_origin()).or(hover_pos);
         if let Some(ppos) = press_pos {
             let pin_at_press = pin_hit_targets
@@ -803,43 +850,127 @@ pub fn render_page_canvas(
                 });
                 viewport.interaction.context_menu = None;
             } else if let Some(hit_layout) = layouts.iter().rev().find(|l| l.rect.contains(ppos)) {
-                viewport.interaction.dragging_block = Some(BlockDragState {
-                    block_uuid: hit_layout.block.uuid.clone(),
-                    start_px: hit_layout.block.px,
-                    start_py: hit_layout.block.py,
-                    current_px: hit_layout.block.px,
-                    current_py: hit_layout.block.py,
-                });
+                let hit_uuid = hit_layout.block.uuid.clone();
+                let already_selected = viewport.interaction.selected_blocks.contains(&hit_uuid)
+                    || selected_uuid == Some(hit_uuid.as_str());
+                if !already_selected {
+                    if multi_mod {
+                        viewport.interaction.selected_blocks.push(hit_uuid.clone());
+                    } else {
+                        viewport.interaction.selected_blocks = vec![hit_uuid.clone()];
+                    }
+                } else if viewport.interaction.selected_blocks.is_empty() {
+                    viewport.interaction.selected_blocks.push(hit_uuid.clone());
+                }
+
+                let mut drag_group = Vec::new();
+                for &blk in &positioned_blocks {
+                    if viewport.interaction.selected_blocks.contains(&blk.uuid) {
+                        drag_group.push(BlockDragState {
+                            block_uuid: blk.uuid.clone(),
+                            start_px: blk.px,
+                            start_py: blk.py,
+                            current_px: blk.px,
+                            current_py: blk.py,
+                        });
+                    }
+                }
+                viewport.interaction.dragging_block = drag_group.first().cloned();
+                viewport.interaction.dragging_blocks = drag_group;
                 viewport.interaction.context_menu = None;
-                action = Some(CanvasAction::SelectObject(hit_layout.block.uuid.clone()));
+                action = Some(CanvasAction::SelectObject(hit_uuid));
+            } else {
+                // Drag started on empty canvas -> begin marquee selection box
+                viewport.interaction.marquee_start = Some(ppos);
+                viewport.interaction.marquee_current = Some(ppos);
+                viewport.interaction.marquee_base_selection = if multi_mod {
+                    viewport.interaction.selected_blocks.clone()
+                } else {
+                    Vec::new()
+                };
+                if !multi_mod {
+                    viewport.interaction.selected_blocks.clear();
+                }
+                viewport.interaction.context_menu = None;
             }
         }
     }
 
     if response.dragged_by(egui::PointerButton::Primary) {
         let delta = response.drag_delta();
-        if let Some(drag) = &mut viewport.interaction.dragging_block {
+        if !viewport.interaction.dragging_blocks.is_empty() {
+            let dlx = delta.x / viewport.zoom * LOXONE_UNITS_PER_PX;
+            let dly = delta.y / viewport.zoom * LOXONE_UNITS_PER_PX;
+            for drag in &mut viewport.interaction.dragging_blocks {
+                drag.current_px = (drag.current_px + dlx).max(0.0);
+                drag.current_py = (drag.current_py + dly).max(0.0);
+            }
+            viewport.interaction.dragging_block = viewport.interaction.dragging_blocks.first().cloned();
+        } else if let Some(drag) = &mut viewport.interaction.dragging_block {
             let dlx = delta.x / viewport.zoom * LOXONE_UNITS_PER_PX;
             let dly = delta.y / viewport.zoom * LOXONE_UNITS_PER_PX;
             drag.current_px = (drag.current_px + dlx).max(0.0);
             drag.current_py = (drag.current_py + dly).max(0.0);
+        } else if let Some(start_pos) = viewport.interaction.marquee_start {
+            let cur_pos = hover_pos.or(pointer_pos).unwrap_or(start_pos);
+            viewport.interaction.marquee_current = Some(cur_pos);
+            let sel_rect = Rect::from_two_pos(start_pos, cur_pos);
+            let mut next_selected = viewport.interaction.marquee_base_selection.clone();
+            for layout in &layouts {
+                if sel_rect.intersects(layout.rect)
+                    && !next_selected.contains(&layout.block.uuid)
+                {
+                    next_selected.push(layout.block.uuid.clone());
+                }
+            }
+            viewport.interaction.selected_blocks = next_selected;
         } else if viewport.interaction.wiring_from.is_none() {
             viewport.pan += delta;
         }
     }
 
     if response.drag_stopped_by(egui::PointerButton::Primary) {
-        if let Some(drag) = viewport.interaction.dragging_block.take() {
-            let snapped_px = snap_to_loxone_grid(drag.current_px).max(0.0);
-            let snapped_py = snap_to_loxone_grid(drag.current_py).max(0.0);
-            if (snapped_px - drag.start_px).abs() > 0.5 || (snapped_py - drag.start_py).abs() > 0.5
-            {
+        let mut dragged = std::mem::take(&mut viewport.interaction.dragging_blocks);
+        if dragged.is_empty() {
+            if let Some(single) = viewport.interaction.dragging_block.take() {
+                dragged.push(single);
+            }
+        } else {
+            viewport.interaction.dragging_block = None;
+        }
+        if !dragged.is_empty() {
+            let mut moves = Vec::new();
+            for d in dragged {
+                let snapped_px = snap_to_loxone_grid(d.current_px).max(0.0);
+                let snapped_py = snap_to_loxone_grid(d.current_py).max(0.0);
+                if (snapped_px - d.start_px).abs() > 0.5
+                    || (snapped_py - d.start_py).abs() > 0.5
+                {
+                    moves.push((d.block_uuid, snapped_px, snapped_py));
+                }
+            }
+            if moves.len() == 1 {
+                let (block_uuid, px, py) = moves.into_iter().next().unwrap();
                 action = Some(CanvasAction::MoveBlock {
                     page_uuid: page.uuid.clone(),
-                    block_uuid: drag.block_uuid,
-                    px: snapped_px,
-                    py: snapped_py,
+                    block_uuid,
+                    px,
+                    py,
                 });
+            } else if moves.len() > 1 {
+                action = Some(CanvasAction::MoveBlocks {
+                    page_uuid: page.uuid.clone(),
+                    moves,
+                });
+            }
+        }
+        if viewport.interaction.marquee_start.take().is_some() {
+            viewport.interaction.marquee_current = None;
+            viewport.interaction.marquee_base_selection.clear();
+            if let Some(first) = viewport.interaction.selected_blocks.first().cloned() {
+                action = Some(CanvasAction::SelectObject(first));
+            } else {
+                action = Some(CanvasAction::ClearSelection);
             }
         }
         if let Some(wire_drag) = viewport.interaction.wiring_from.take() {
@@ -964,9 +1095,12 @@ pub fn render_page_canvas(
 
                     let is_wire_selected =
                         viewport.interaction.selected_wire.as_ref() == Some(&candidate_wire);
+                    let src_uuid = &positioned_blocks[src_block_idx].uuid;
                     let is_highlighted = is_wire_selected
                         || selected_uuid == Some(block.uuid.as_str())
-                        || selected_uuid == Some(positioned_blocks[src_block_idx].uuid.as_str());
+                        || selected_uuid == Some(src_uuid.as_str())
+                        || viewport.interaction.selected_blocks.contains(&block.uuid)
+                        || viewport.interaction.selected_blocks.contains(src_uuid);
                     let base_color = if pin.key.starts_with("AI")
                         || pin.key.starts_with("AQ")
                         || project
@@ -1010,7 +1144,8 @@ pub fn render_page_canvas(
     for layout in &layouts {
         let block = layout.block;
         let rect = layout.rect;
-        let is_selected = selected_uuid == Some(block.uuid.as_str());
+        let is_selected = selected_uuid == Some(block.uuid.as_str())
+            || viewport.interaction.selected_blocks.contains(&block.uuid);
         let (header_fill, accent_color) = blend_block_header_color(block.color_rgb);
 
         if clicked && !clicked_any_pin_or_wire {
@@ -1018,7 +1153,28 @@ pub fn render_page_canvas(
                 if rect.contains(pos) {
                     clicked_any_block = true;
                     viewport.interaction.selected_wire = None;
-                    action = Some(CanvasAction::SelectObject(block.uuid.clone()));
+                    if multi_mod {
+                        if let Some(idx) = viewport
+                            .interaction
+                            .selected_blocks
+                            .iter()
+                            .position(|u| u == &block.uuid)
+                        {
+                            viewport.interaction.selected_blocks.remove(idx);
+                        } else {
+                            viewport.interaction.selected_blocks.push(block.uuid.clone());
+                        }
+                        action = viewport
+                            .interaction
+                            .selected_blocks
+                            .last()
+                            .cloned()
+                            .map(CanvasAction::SelectObject)
+                            .or(Some(CanvasAction::ClearSelection));
+                    } else {
+                        viewport.interaction.selected_blocks = vec![block.uuid.clone()];
+                        action = Some(CanvasAction::SelectObject(block.uuid.clone()));
+                    }
                 }
             }
         }
@@ -1343,6 +1499,50 @@ pub fn render_page_canvas(
         );
     }
 
+    // Draw active rubber-band marquee selection rectangle
+    if let (Some(start), Some(cur)) = (
+        viewport.interaction.marquee_start,
+        viewport.interaction.marquee_current,
+    ) {
+        let mrect = Rect::from_two_pos(start, cur);
+        painter.rect(
+            mrect,
+            CornerRadius::same(4),
+            ACCENT_BLUE.gamma_multiply(0.16),
+            Stroke::new(1.5_f32, ACCENT_BLUE),
+            egui::StrokeKind::Inside,
+        );
+    }
+
+    // Draw floating multi-selection badge when 2+ blocks are marked
+    if viewport.interaction.selected_blocks.len() > 1 {
+        let count = viewport.interaction.selected_blocks.len();
+        let badge_text = format!(
+            "✓ {} items selected  ·  Drag any selected item to move together  ·  ⌫ Delete",
+            count
+        );
+        let badge_w = 420.0_f32.min(canvas_rect.width() - 32.0);
+        let badge_h = 28.0_f32;
+        let badge_rect = Rect::from_center_size(
+            Pos2::new(canvas_rect.center().x, canvas_rect.min.y + 22.0),
+            Vec2::new(badge_w, badge_h),
+        );
+        painter.rect(
+            badge_rect,
+            CornerRadius::same(6),
+            CARD_BG.gamma_multiply(0.95),
+            Stroke::new(1.5_f32, ACCENT_BLUE),
+            egui::StrokeKind::Inside,
+        );
+        painter.text(
+            badge_rect.center(),
+            Align2::CENTER_CENTER,
+            badge_text,
+            FontId::proportional(12.0),
+            TEXT_PRIMARY,
+        );
+    }
+
     // Handle right-click context menu trigger
     if response.secondary_clicked() {
         if let Some(pos) = pointer_pos.or(hover_pos) {
@@ -1416,7 +1616,26 @@ pub fn render_page_canvas(
                                     action = Some(CanvasAction::SelectObject(block_uuid.clone()));
                                     close_menu = true;
                                 }
-                                if ui.button("🗑 Delete Block").clicked() {
+                                let multi_count = viewport.interaction.selected_blocks.len();
+                                if multi_count > 1
+                                    && viewport.interaction.selected_blocks.contains(block_uuid)
+                                {
+                                    if ui
+                                        .button(format!(
+                                            "🗑 Delete {} Selected Blocks",
+                                            multi_count
+                                        ))
+                                        .clicked()
+                                    {
+                                        let uuids =
+                                            std::mem::take(&mut viewport.interaction.selected_blocks);
+                                        action = Some(CanvasAction::DeleteBlocks {
+                                            page_uuid: page_uuid.clone(),
+                                            block_uuids: uuids,
+                                        });
+                                        close_menu = true;
+                                    }
+                                } else if ui.button("🗑 Delete Block").clicked() {
                                     action = Some(CanvasAction::DeleteBlock {
                                         page_uuid: page_uuid.clone(),
                                         block_uuid: block_uuid.clone(),
@@ -1437,8 +1656,11 @@ pub fn render_page_canvas(
 
     if clicked && !clicked_any_block && !clicked_any_pin_or_wire {
         viewport.interaction.selected_wire = None;
-        if action.is_none() {
-            action = Some(CanvasAction::ClearSelection);
+        if !multi_mod {
+            viewport.interaction.selected_blocks.clear();
+            if action.is_none() {
+                action = Some(CanvasAction::ClearSelection);
+            }
         }
     }
 
