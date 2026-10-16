@@ -639,7 +639,7 @@ impl eframe::App for LoxonePortableApp {
                         self.selected_uuid.as_deref(),
                     ) {
                         match canvas_act {
-                            CanvasAction::SelectObject(uuid) => {
+                            CanvasAction::SelectObject(uuid) | CanvasAction::SelectBlock(uuid) => {
                                 self.selected_uuid = Some(uuid);
                                 self.show_right_panel = true;
                             }
@@ -655,6 +655,7 @@ impl eframe::App for LoxonePortableApp {
                                     block_uuid,
                                 });
                             }
+                            _ => {}
                         }
                     }
                 } else {

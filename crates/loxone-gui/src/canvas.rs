@@ -1,6 +1,9 @@
+#![allow(dead_code)]
+
 use std::collections::HashMap;
 
 use egui::{Align2, Color32, CornerRadius, FontId, Pos2, Rect, Sense, Stroke, Ui, Vec2};
+use loxone_core::block_schema::lookup_block_schema;
 use loxone_core::model::{ConnectorPin, LoxoneProject, Page, PageBlock};
 use loxone_core::xref::XrefIndex;
 
@@ -10,13 +13,69 @@ use crate::theme::{
 };
 
 pub const LOXONE_UNITS_PER_PX: f32 = 8.0;
+pub const LOXONE_UNITS_PER_SCREEN_PX: f32 = LOXONE_UNITS_PER_PX;
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct BlockDragState {
+    pub block_uuid: String,
+    pub start_px: f32,
+    pub start_py: f32,
+    pub current_px: f32,
+    pub current_py: f32,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct WireDragState {
+    pub block_uuid: String,
+    pub pin_uuid: String,
+    pub pin_key: String,
+    pub is_output: bool,
+    pub start_screen_pos: Pos2,
+}
+
+pub type WireDrawState = WireDragState;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SelectedWire {
+    pub target_block_uuid: String,
+    pub target_pin_key: String,
+    pub source_pin_uuid: String,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum CanvasContextMenu {
+    EmptyCanvas {
+        screen_pos: Pos2,
+        lx: f32,
+        ly: f32,
+    },
+    Block {
+        screen_pos: Pos2,
+        page_uuid: String,
+        block_uuid: String,
+        block_title: String,
+    },
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct CanvasInteractionState {
+    pub dragging_block: Option<BlockDragState>,
+    pub wiring_from: Option<WireDragState>,
+    pub selected_wire: Option<SelectedWire>,
+    pub hovered_pin: Option<(String, String)>,
+    pub context_menu_pos: Option<(Pos2, f32, f32)>,
+    pub context_menu: Option<CanvasContextMenu>,
+}
 
 #[derive(Debug, Clone)]
 pub struct CanvasViewport {
     pub pan: Vec2,
     pub zoom: f32,
     pub compact_pins: bool,
+    pub interaction: CanvasInteractionState,
 }
+
+pub type CanvasState = CanvasViewport;
 
 impl Default for CanvasViewport {
     fn default() -> Self {
@@ -24,21 +83,148 @@ impl Default for CanvasViewport {
             pan: Vec2::new(40.0, 40.0),
             zoom: 1.0,
             compact_pins: true,
+            interaction: CanvasInteractionState::default(),
         }
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum CanvasAction {
     SelectObject(String),
+    SelectBlock(String),
     ClearSelection,
-    NavigateToBlock { page_index: usize, block_uuid: String },
+    NavigateToBlock {
+        page_index: usize,
+        block_uuid: String,
+    },
+    MoveBlock {
+        page_uuid: String,
+        block_uuid: String,
+        px: f32,
+        py: f32,
+    },
+    ConnectPins {
+        target_block_uuid: String,
+        target_pin_key: String,
+        source_pin_uuid: String,
+    },
+    DisconnectWire {
+        target_block_uuid: String,
+        target_pin_key: String,
+        source_pin_uuid: String,
+    },
+    DeleteBlock {
+        page_uuid: String,
+        block_uuid: String,
+    },
+    OpenInsertModalAt {
+        px: f32,
+        py: f32,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PinSide {
     Input,
     Output,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct DisplayPin {
+    pub uuid: String,
+    pub key: String,
+    pub side: PinSide,
+    pub is_schema_only: bool,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct PinHitTarget {
+    pub block_uuid: String,
+    pub pin_uuid: String,
+    pub pin_key: String,
+    pub side: PinSide,
+    pub screen_pos: Pos2,
+}
+
+pub fn snap_to_loxone_grid(val: f32) -> f32 {
+    (val / 64.0).round() * 64.0
+}
+
+pub fn snap_to_grid_units(val: f32) -> f32 {
+    snap_to_loxone_grid(val)
+}
+
+pub fn cubic_bezier_point(p0: Pos2, p1: Pos2, p2: Pos2, p3: Pos2, t: f32) -> Pos2 {
+    let u = 1.0 - t;
+    let u2 = u * u;
+    let u3 = u2 * u;
+    let t2 = t * t;
+    let t3 = t2 * t;
+    let x = u3 * p0.x + 3.0 * u2 * t * p1.x + 3.0 * u * t2 * p2.x + t3 * p3.x;
+    let y = u3 * p0.y + 3.0 * u2 * t * p1.y + 3.0 * u * t2 * p2.y + t3 * p3.y;
+    Pos2::new(x, y)
+}
+
+pub fn cubic_bezier_points(src: Pos2, dst: Pos2) -> [Pos2; 25] {
+    let ctrl_dx = ((dst.x - src.x).abs() * 0.5).max(32.0);
+    let c1 = Pos2::new(src.x + ctrl_dx, src.y);
+    let c2 = Pos2::new(dst.x - ctrl_dx, dst.y);
+    let mut pts = [Pos2::ZERO; 25];
+    for (i, slot) in pts.iter_mut().enumerate() {
+        let t = (i as f32) / 24.0;
+        *slot = cubic_bezier_point(src, c1, c2, dst, t);
+    }
+    pts
+}
+
+pub fn point_to_segment_distance(point: Pos2, a: Pos2, b: Pos2) -> f32 {
+    let ab = b - a;
+    let len_sq = ab.length_sq();
+    if len_sq < 1e-6 {
+        return point.distance(a);
+    }
+    let t = ((point - a).dot(ab) / len_sq).clamp(0.0, 1.0);
+    let proj = a + ab * t;
+    point.distance(proj)
+}
+
+pub fn point_to_bezier_distance(point: Pos2, points: &[Pos2]) -> f32 {
+    if points.is_empty() {
+        return f32::INFINITY;
+    }
+    if points.len() == 1 {
+        return point.distance(points[0]);
+    }
+    points
+        .windows(2)
+        .map(|seg| point_to_segment_distance(point, seg[0], seg[1]))
+        .fold(f32::INFINITY, f32::min)
+}
+
+pub fn distance_to_cubic_bezier(point: Pos2, src: Pos2, dst: Pos2) -> f32 {
+    let pts = cubic_bezier_points(src, dst);
+    point_to_bezier_distance(point, &pts)
+}
+
+pub fn wire_midpoint(points: &[Pos2]) -> Pos2 {
+    if points.is_empty() {
+        return Pos2::ZERO;
+    }
+    if points.len() == 25 {
+        return points[12];
+    }
+    let total_len: f32 = points.windows(2).map(|w| w[0].distance(w[1])).sum();
+    let half = total_len * 0.5;
+    let mut accum = 0.0;
+    for w in points.windows(2) {
+        let seg_len = w[0].distance(w[1]);
+        if accum + seg_len >= half && seg_len > 1e-4 {
+            let t = (half - accum) / seg_len;
+            return w[0] + (w[1] - w[0]) * t;
+        }
+        accum += seg_len;
+    }
+    points[points.len() / 2]
 }
 
 impl CanvasViewport {
@@ -48,12 +234,29 @@ impl CanvasViewport {
         Pos2::new(x, y)
     }
 
-    pub fn loxone_rect_to_screen(&self, canvas_origin: Pos2, block: &PageBlock) -> Rect {
-        let min = self.loxone_to_screen(canvas_origin, block.px, block.py);
-        let max_lx = block.px2.max(block.px + 512.0);
-        let max_ly = block.py2.max(block.py + 192.0);
+    pub fn screen_to_loxone(&self, canvas_origin: Pos2, pos: Pos2) -> (f32, f32) {
+        let lx = (pos.x - canvas_origin.x - self.pan.x) / self.zoom * LOXONE_UNITS_PER_PX;
+        let ly = (pos.y - canvas_origin.y - self.pan.y) / self.zoom * LOXONE_UNITS_PER_PX;
+        (lx, ly)
+    }
+
+    pub fn loxone_coords_rect_to_screen(
+        &self,
+        canvas_origin: Pos2,
+        px: f32,
+        py: f32,
+        px2: f32,
+        py2: f32,
+    ) -> Rect {
+        let min = self.loxone_to_screen(canvas_origin, px, py);
+        let max_lx = px2.max(px + 512.0);
+        let max_ly = py2.max(py + 192.0);
         let max = self.loxone_to_screen(canvas_origin, max_lx, max_ly);
         Rect::from_min_max(min, max)
+    }
+
+    pub fn loxone_rect_to_screen(&self, canvas_origin: Pos2, block: &PageBlock) -> Rect {
+        self.loxone_coords_rect_to_screen(canvas_origin, block.px, block.py, block.px2, block.py2)
     }
 
     pub fn fit_to_page(&mut self, page: &Page, view_size: Vec2) {
@@ -362,6 +565,58 @@ fn draw_rounded_orthogonal_wire(
 }
 
 
+pub fn collect_block_display_pins(
+    block: &PageBlock,
+    xref: &XrefIndex,
+    show_all_pins: bool,
+) -> (Vec<DisplayPin>, Vec<DisplayPin>) {
+    let mut inputs = Vec::new();
+    let mut outputs = Vec::new();
+    for pin in &block.pins {
+        if pin.key.ends_with("Hidden") {
+            continue;
+        }
+        if !show_all_pins && !is_pin_connected(pin, xref) {
+            continue;
+        }
+        let side = classify_pin_side(block, pin, xref);
+        let dp = DisplayPin {
+            uuid: pin.uuid.clone(),
+            key: pin.key.clone(),
+            side,
+            is_schema_only: false,
+        };
+        match side {
+            PinSide::Input => inputs.push(dp),
+            PinSide::Output => outputs.push(dp),
+        }
+    }
+    if show_all_pins {
+        if let Some(schema) = lookup_block_schema(&block.block_type) {
+            for doc in schema.pin_docs {
+                if !block.pins.iter().any(|p| p.key == doc.pin_key) {
+                    let side = if doc.is_output {
+                        PinSide::Output
+                    } else {
+                        PinSide::Input
+                    };
+                    let dp = DisplayPin {
+                        uuid: format!("{}:{}", block.uuid, doc.pin_key),
+                        key: doc.pin_key.to_string(),
+                        side,
+                        is_schema_only: true,
+                    };
+                    match side {
+                        PinSide::Input => inputs.push(dp),
+                        PinSide::Output => outputs.push(dp),
+                    }
+                }
+            }
+        }
+    }
+    (inputs, outputs)
+}
+
 pub fn render_page_canvas(
     ui: &mut Ui,
     project: &LoxoneProject,
@@ -376,8 +631,8 @@ pub fn render_page_canvas(
 
     painter.rect_filled(canvas_rect, 0.0, CANVAS_BG);
 
-    // Handle pan and cursor-centered zoom
-    if response.dragged() {
+    // Handle cursor-centered zoom and middle-mouse / scroll pan
+    if response.dragged_by(egui::PointerButton::Middle) {
         viewport.pan += response.drag_delta();
     }
     if response.hovered() {
@@ -422,24 +677,45 @@ pub fn render_page_canvas(
         rect: Rect,
         header_h: f32,
         row_h: f32,
-        inputs: Vec<&'a ConnectorPin>,
-        outputs: Vec<&'a ConnectorPin>,
+        inputs: Vec<DisplayPin>,
+        outputs: Vec<DisplayPin>,
     }
 
     let mut action: Option<CanvasAction> = None;
     let mut pin_screen_positions: HashMap<String, (Pos2, usize)> = HashMap::new();
     let pointer_pos = response.interact_pointer_pos();
+    let hover_pos = ui.input(|i| i.pointer.hover_pos()).or(pointer_pos);
     let clicked = response.clicked();
     let mut clicked_any_block = false;
+    let mut clicked_any_pin_or_wire = false;
+    let show_all_pins = !viewport.compact_pins || viewport.interaction.wiring_from.is_some();
 
     let positioned_blocks: Vec<&PageBlock> =
         page.blocks.iter().filter(|b| b.has_position).collect();
     let mut layouts: Vec<BlockLayout> = Vec::with_capacity(positioned_blocks.len());
     let mut block_rects: Vec<Rect> = Vec::with_capacity(positioned_blocks.len());
+    let mut pin_hit_targets: Vec<PinHitTarget> = Vec::new();
 
     // Pass 1: Precompute positioned block rects and pin screen coordinates
     for (block_idx, &block) in positioned_blocks.iter().enumerate() {
-        let mut rect = viewport.loxone_rect_to_screen(origin, block);
+        let mut rect = if let Some(drag) = viewport
+            .interaction
+            .dragging_block
+            .as_ref()
+            .filter(|d| d.block_uuid == block.uuid)
+        {
+            let w_lx = (block.px2 - block.px).max(512.0);
+            let h_ly = (block.py2 - block.py).max(192.0);
+            viewport.loxone_coords_rect_to_screen(
+                origin,
+                drag.current_px,
+                drag.current_py,
+                drag.current_px + w_lx,
+                drag.current_py + h_ly,
+            )
+        } else {
+            viewport.loxone_rect_to_screen(origin, block)
+        };
 
         if block.is_note() {
             layouts.push(BlockLayout {
@@ -467,6 +743,13 @@ pub fn render_page_canvas(
                     PinSide::Input => Pos2::new(rect.min.x, rect.center().y),
                 };
                 pin_screen_positions.insert(pin.uuid.clone(), (anchor, block_idx));
+                pin_hit_targets.push(PinHitTarget {
+                    block_uuid: block.uuid.clone(),
+                    pin_uuid: pin.uuid.clone(),
+                    pin_key: pin.key.clone(),
+                    side,
+                    screen_pos: anchor,
+                });
             }
             layouts.push(BlockLayout {
                 block,
@@ -480,17 +763,7 @@ pub fn render_page_canvas(
             continue;
         }
 
-        let mut inputs = Vec::new();
-        let mut outputs = Vec::new();
-        for pin in &block.pins {
-            if viewport.compact_pins && !is_pin_connected(pin, &project.xref) {
-                continue;
-            }
-            match classify_pin_side(block, pin, &project.xref) {
-                PinSide::Input => inputs.push(pin),
-                PinSide::Output => outputs.push(pin),
-            }
-        }
+        let (inputs, outputs) = collect_block_display_pins(block, &project.xref, show_all_pins);
 
         let header_h = (18.0 * viewport.zoom).clamp(6.0, 26.0);
         let row_h = (11.5 * viewport.zoom).clamp(4.0, 17.0);
@@ -506,11 +779,25 @@ pub fn render_page_canvas(
             let py = body_top + (i as f32 + 0.5) * row_h;
             let anchor = Pos2::new(rect.min.x, py);
             pin_screen_positions.insert(pin.uuid.clone(), (anchor, block_idx));
+            pin_hit_targets.push(PinHitTarget {
+                block_uuid: block.uuid.clone(),
+                pin_uuid: pin.uuid.clone(),
+                pin_key: pin.key.clone(),
+                side: PinSide::Input,
+                screen_pos: anchor,
+            });
         }
         for (i, pin) in outputs.iter().enumerate() {
             let py = body_top + (i as f32 + 0.5) * row_h;
             let anchor = Pos2::new(rect.max.x, py);
             pin_screen_positions.insert(pin.uuid.clone(), (anchor, block_idx));
+            pin_hit_targets.push(PinHitTarget {
+                block_uuid: block.uuid.clone(),
+                pin_uuid: pin.uuid.clone(),
+                pin_key: pin.key.clone(),
+                side: PinSide::Output,
+                screen_pos: anchor,
+            });
         }
 
         layouts.push(BlockLayout {
@@ -524,9 +811,177 @@ pub fn render_page_canvas(
         block_rects.push(rect);
     }
 
-    // Pass 2: Draw on-page direct wires BEHIND blocks using obstacle-avoiding orthogonal routing
-    let mut wire_slot = 0usize;
-    for (dst_block_idx, layout) in layouts.iter().enumerate() {
+    // Detect closest hovered pin within 8.0 px
+    let hovered_pin_target: Option<PinHitTarget> = hover_pos.and_then(|hp| {
+        pin_hit_targets
+            .iter()
+            .filter_map(|p| {
+                let d = p.screen_pos.distance(hp);
+                (d <= 8.0).then_some((d, p.clone()))
+            })
+            .min_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal))
+            .map(|(_, p)| p)
+    });
+    viewport.interaction.hovered_pin = hovered_pin_target
+        .as_ref()
+        .map(|p| (p.block_uuid.clone(), p.pin_key.clone()));
+
+    // Handle Delete/Backspace or Escape keys for selected wire / active wire drawing
+    let delete_pressed = ui.input(|i| i.key_pressed(egui::Key::Delete) || i.key_pressed(egui::Key::Backspace));
+    let escape_pressed = ui.input(|i| i.key_pressed(egui::Key::Escape));
+    if escape_pressed {
+        viewport.interaction.wiring_from = None;
+        viewport.interaction.context_menu = None;
+        viewport.interaction.selected_wire = None;
+    }
+    if delete_pressed {
+        if let Some(sel) = viewport.interaction.selected_wire.take() {
+            action = Some(CanvasAction::DisconnectWire {
+                target_block_uuid: sel.target_block_uuid,
+                target_pin_key: sel.target_pin_key,
+                source_pin_uuid: sel.source_pin_uuid,
+            });
+        }
+    }
+
+    // Handle drag start, active drag, and drag stop
+    if response.drag_started_by(egui::PointerButton::Primary) {
+        let press_pos = ui.input(|i| i.pointer.press_origin()).or(hover_pos);
+        if let Some(ppos) = press_pos {
+            let pin_at_press = pin_hit_targets
+                .iter()
+                .filter_map(|p| {
+                    let d = p.screen_pos.distance(ppos);
+                    (d <= 8.0).then_some((d, p.clone()))
+                })
+                .min_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal))
+                .map(|(_, p)| p);
+
+            if let Some(pin_hit) = pin_at_press {
+                viewport.interaction.wiring_from = Some(WireDragState {
+                    block_uuid: pin_hit.block_uuid,
+                    pin_uuid: pin_hit.pin_uuid,
+                    pin_key: pin_hit.pin_key,
+                    is_output: pin_hit.side == PinSide::Output,
+                    start_screen_pos: pin_hit.screen_pos,
+                });
+                viewport.interaction.context_menu = None;
+            } else if let Some(hit_layout) = layouts.iter().rev().find(|l| l.rect.contains(ppos)) {
+                viewport.interaction.dragging_block = Some(BlockDragState {
+                    block_uuid: hit_layout.block.uuid.clone(),
+                    start_px: hit_layout.block.px,
+                    start_py: hit_layout.block.py,
+                    current_px: hit_layout.block.px,
+                    current_py: hit_layout.block.py,
+                });
+                viewport.interaction.context_menu = None;
+                action = Some(CanvasAction::SelectObject(hit_layout.block.uuid.clone()));
+            }
+        }
+    }
+
+    if response.dragged_by(egui::PointerButton::Primary) {
+        let delta = response.drag_delta();
+        if let Some(drag) = &mut viewport.interaction.dragging_block {
+            let dlx = delta.x / viewport.zoom * LOXONE_UNITS_PER_PX;
+            let dly = delta.y / viewport.zoom * LOXONE_UNITS_PER_PX;
+            drag.current_px = (drag.current_px + dlx).max(0.0);
+            drag.current_py = (drag.current_py + dly).max(0.0);
+        } else if viewport.interaction.wiring_from.is_none() {
+            viewport.pan += delta;
+        }
+    }
+
+    if response.drag_stopped_by(egui::PointerButton::Primary) {
+        if let Some(drag) = viewport.interaction.dragging_block.take() {
+            let snapped_px = snap_to_loxone_grid(drag.current_px).max(0.0);
+            let snapped_py = snap_to_loxone_grid(drag.current_py).max(0.0);
+            if (snapped_px - drag.start_px).abs() > 0.5 || (snapped_py - drag.start_py).abs() > 0.5
+            {
+                action = Some(CanvasAction::MoveBlock {
+                    page_uuid: page.uuid.clone(),
+                    block_uuid: drag.block_uuid,
+                    px: snapped_px,
+                    py: snapped_py,
+                });
+            }
+        }
+        if let Some(wire_drag) = viewport.interaction.wiring_from.take() {
+            if let Some(target_pin) = &hovered_pin_target {
+                let target_is_output = target_pin.side == PinSide::Output;
+                if target_pin.block_uuid != wire_drag.block_uuid
+                    && target_is_output != wire_drag.is_output
+                {
+                    let (target_block_uuid, target_pin_key, source_pin_uuid) =
+                        if wire_drag.is_output {
+                            (
+                                target_pin.block_uuid.clone(),
+                                target_pin.pin_key.clone(),
+                                wire_drag.pin_uuid.clone(),
+                            )
+                        } else {
+                            (
+                                wire_drag.block_uuid.clone(),
+                                wire_drag.pin_key.clone(),
+                                target_pin.pin_uuid.clone(),
+                            )
+                        };
+                    action = Some(CanvasAction::ConnectPins {
+                        target_block_uuid,
+                        target_pin_key,
+                        source_pin_uuid,
+                    });
+                }
+            }
+        }
+    }
+
+    // Handle click-to-wire on pins
+    if clicked {
+        if let Some(pin_hit) = &hovered_pin_target {
+            clicked_any_pin_or_wire = true;
+            if let Some(wire_drag) = viewport.interaction.wiring_from.take() {
+                let target_is_output = pin_hit.side == PinSide::Output;
+                if pin_hit.block_uuid != wire_drag.block_uuid
+                    && target_is_output != wire_drag.is_output
+                {
+                    let (target_block_uuid, target_pin_key, source_pin_uuid) =
+                        if wire_drag.is_output {
+                            (
+                                pin_hit.block_uuid.clone(),
+                                pin_hit.pin_key.clone(),
+                                wire_drag.pin_uuid.clone(),
+                            )
+                        } else {
+                            (
+                                wire_drag.block_uuid.clone(),
+                                wire_drag.pin_key.clone(),
+                                pin_hit.pin_uuid.clone(),
+                            )
+                        };
+                    action = Some(CanvasAction::ConnectPins {
+                        target_block_uuid,
+                        target_pin_key,
+                        source_pin_uuid,
+                    });
+                }
+            } else {
+                viewport.interaction.wiring_from = Some(WireDragState {
+                    block_uuid: pin_hit.block_uuid.clone(),
+                    pin_uuid: pin_hit.pin_uuid.clone(),
+                    pin_key: pin_hit.pin_key.clone(),
+                    is_output: pin_hit.side == PinSide::Output,
+                    start_screen_pos: pin_hit.screen_pos,
+                });
+            }
+        } else if viewport.interaction.wiring_from.is_some() {
+            viewport.interaction.wiring_from = None;
+        }
+    }
+
+    // Pass 2: Draw on-page direct wires BEHIND blocks using cubic Bézier curves + wire hit-testing
+    let mut selected_wire_badge: Option<(Pos2, SelectedWire)> = None;
+    for layout in &layouts {
         let block = layout.block;
         if block.is_input_ref_bar() {
             continue;
@@ -542,9 +997,38 @@ pub fn render_page_canvas(
                 if let Some(&(src_pos, src_block_idx)) =
                     pin_screen_positions.get(&link.source_pin_uuid)
                 {
-                    let is_highlighted = selected_uuid == Some(block.uuid.as_str())
-                        || selected_uuid
-                            == Some(positioned_blocks[src_block_idx].uuid.as_str());
+                    let candidate_wire = SelectedWire {
+                        target_block_uuid: block.uuid.clone(),
+                        target_pin_key: pin.key.clone(),
+                        source_pin_uuid: link.source_pin_uuid.clone(),
+                    };
+                    let bezier_pts = cubic_bezier_points(src_pos, dst_pos);
+                    let mid_pt = wire_midpoint(&bezier_pts);
+
+                    if clicked && !clicked_any_pin_or_wire {
+                        if let Some(pos) = pointer_pos {
+                            if viewport.interaction.selected_wire.as_ref() == Some(&candidate_wire)
+                                && pos.distance(mid_pt) <= 10.0
+                            {
+                                clicked_any_pin_or_wire = true;
+                                viewport.interaction.selected_wire = None;
+                                action = Some(CanvasAction::DisconnectWire {
+                                    target_block_uuid: candidate_wire.target_block_uuid.clone(),
+                                    target_pin_key: candidate_wire.target_pin_key.clone(),
+                                    source_pin_uuid: candidate_wire.source_pin_uuid.clone(),
+                                });
+                            } else if point_to_bezier_distance(pos, &bezier_pts) <= 7.0 {
+                                clicked_any_pin_or_wire = true;
+                                viewport.interaction.selected_wire = Some(candidate_wire.clone());
+                            }
+                        }
+                    }
+
+                    let is_wire_selected =
+                        viewport.interaction.selected_wire.as_ref() == Some(&candidate_wire);
+                    let is_highlighted = is_wire_selected
+                        || selected_uuid == Some(block.uuid.as_str())
+                        || selected_uuid == Some(positioned_blocks[src_block_idx].uuid.as_str());
                     let base_color = if pin.key.starts_with("AI")
                         || pin.key.starts_with("AQ")
                         || project
@@ -557,32 +1041,27 @@ pub fn render_page_canvas(
                     } else {
                         WIRE_DIGITAL
                     };
-                    let wire_color = if is_highlighted {
+                    let wire_color = if is_wire_selected {
+                        Color32::from_rgb(0xFF, 0x6B, 0x6B)
+                    } else if is_highlighted {
                         ACCENT_BLUE
                     } else {
                         base_color.gamma_multiply(0.82)
                     };
-                    let wire_width = if is_highlighted {
+                    let wire_width = if is_wire_selected {
+                        (2.8 * viewport.zoom).clamp(1.8, 3.8)
+                    } else if is_highlighted {
                         (2.2 * viewport.zoom).clamp(1.3, 3.2)
                     } else {
                         (1.4 * viewport.zoom).clamp(0.9, 2.2)
                     };
-                    let waypoints = compute_wire_waypoints(
-                        src_pos,
-                        dst_pos,
-                        src_block_idx,
-                        dst_block_idx,
-                        &block_rects,
-                        wire_slot,
-                        viewport.zoom,
-                    );
-                    draw_rounded_orthogonal_wire(
-                        &painter,
-                        &waypoints,
+                    painter.add(egui::Shape::line(
+                        bezier_pts.to_vec(),
                         Stroke::new(wire_width, wire_color),
-                        viewport.zoom,
-                    );
-                    wire_slot += 1;
+                    ));
+                    if is_wire_selected {
+                        selected_wire_badge = Some((mid_pt, candidate_wire));
+                    }
                 }
             }
         }
@@ -595,10 +1074,11 @@ pub fn render_page_canvas(
         let is_selected = selected_uuid == Some(block.uuid.as_str());
         let (header_fill, accent_color) = blend_block_header_color(block.color_rgb);
 
-        if clicked {
+        if clicked && !clicked_any_pin_or_wire {
             if let Some(pos) = pointer_pos {
                 if rect.contains(pos) {
                     clicked_any_block = true;
+                    viewport.interaction.selected_wire = None;
                     action = Some(CanvasAction::SelectObject(block.uuid.clone()));
                 }
             }
@@ -680,10 +1160,17 @@ pub fn render_page_canvas(
 
             for pin in &block.pins {
                 if let Some(&(anchor, _)) = pin_screen_positions.get(&pin.uuid) {
+                    let is_hovered = viewport.interaction.hovered_pin.as_ref()
+                        == Some(&(block.uuid.clone(), pin.key.clone()));
+                    let r = if is_hovered {
+                        (4.6 * viewport.zoom).clamp(3.5, 6.5)
+                    } else {
+                        (2.8 * viewport.zoom).clamp(1.8, 4.5)
+                    };
                     painter.circle_filled(
                         anchor,
-                        (2.8 * viewport.zoom).clamp(1.8, 4.5),
-                        WIRE_DIGITAL,
+                        r,
+                        if is_hovered { ACCENT_BLUE } else { WIRE_DIGITAL },
                     );
                 }
             }
@@ -748,26 +1235,48 @@ pub fn render_page_canvas(
         for (i, pin) in layout.inputs.iter().enumerate() {
             let py = body_top + (i as f32 + 0.5) * row_h;
             let anchor = Pos2::new(rect.min.x, py);
-            painter.circle_filled(anchor, (2.6 * viewport.zoom).clamp(1.6, 4.0), WIRE_DIGITAL);
+            let is_hovered = viewport.interaction.hovered_pin.as_ref()
+                == Some(&(block.uuid.clone(), pin.key.clone()));
+            let r = if is_hovered {
+                (4.4 * viewport.zoom).clamp(3.2, 6.2)
+            } else {
+                (2.6 * viewport.zoom).clamp(1.6, 4.0)
+            };
+            painter.circle_filled(
+                anchor,
+                r,
+                if is_hovered { ACCENT_BLUE } else { WIRE_DIGITAL },
+            );
             painter.text(
                 Pos2::new(rect.min.x + 5.5 * viewport.zoom, py),
                 Align2::LEFT_CENTER,
                 truncate_text(&pin.key, pin_max_chars),
                 pin_font.clone(),
-                TEXT_MUTED,
+                if is_hovered { TEXT_PRIMARY } else { TEXT_MUTED },
             );
         }
 
         for (i, pin) in layout.outputs.iter().enumerate() {
             let py = body_top + (i as f32 + 0.5) * row_h;
             let anchor = Pos2::new(rect.max.x, py);
-            painter.circle_filled(anchor, (2.6 * viewport.zoom).clamp(1.6, 4.0), WIRE_ANALOG);
+            let is_hovered = viewport.interaction.hovered_pin.as_ref()
+                == Some(&(block.uuid.clone(), pin.key.clone()));
+            let r = if is_hovered {
+                (4.4 * viewport.zoom).clamp(3.2, 6.2)
+            } else {
+                (2.6 * viewport.zoom).clamp(1.6, 4.0)
+            };
+            painter.circle_filled(
+                anchor,
+                r,
+                if is_hovered { ACCENT_BLUE } else { WIRE_ANALOG },
+            );
             painter.text(
                 Pos2::new(rect.max.x - 5.5 * viewport.zoom, py),
                 Align2::RIGHT_CENTER,
                 truncate_text(&pin.key, pin_max_chars),
                 pin_font.clone(),
-                TEXT_MUTED,
+                if is_hovered { TEXT_PRIMARY } else { TEXT_MUTED },
             );
         }
     }
@@ -839,7 +1348,7 @@ pub fn render_page_canvas(
                 ACCENT_BLUE,
             );
 
-            if clicked {
+            if clicked && !clicked_any_pin_or_wire {
                 if let Some(pos) = pointer_pos {
                     if pill_rect.contains(pos) {
                         clicked_any_block = true;
@@ -858,8 +1367,133 @@ pub fn render_page_canvas(
         }
     }
 
-    if clicked && !clicked_any_block {
-        action = Some(CanvasAction::ClearSelection);
+    // Pass 5: Draw active wire preview and selected wire delete badge
+    if let Some(wire_drag) = &viewport.interaction.wiring_from {
+        if let Some(cur) = hover_pos {
+            let (src, dst) = if wire_drag.is_output {
+                (wire_drag.start_screen_pos, cur)
+            } else {
+                (cur, wire_drag.start_screen_pos)
+            };
+            let pts = cubic_bezier_points(src, dst);
+            painter.add(egui::Shape::line(
+                pts.to_vec(),
+                Stroke::new(2.2_f32, ACCENT_BLUE),
+            ));
+            painter.circle_filled(wire_drag.start_screen_pos, 4.5, ACCENT_BLUE);
+        }
+    }
+
+    if let Some((mid_pt, _)) = selected_wire_badge {
+        painter.circle_filled(mid_pt, 9.0, Color32::from_rgb(0xD9, 0x38, 0x38));
+        painter.circle_stroke(mid_pt, 9.0, Stroke::new(1.2_f32, TEXT_PRIMARY));
+        painter.text(
+            mid_pt,
+            Align2::CENTER_CENTER,
+            "✕",
+            FontId::proportional(10.5),
+            TEXT_PRIMARY,
+        );
+    }
+
+    // Handle right-click context menu trigger
+    if response.secondary_clicked() {
+        if let Some(pos) = pointer_pos.or(hover_pos) {
+            if let Some(hit_layout) = layouts.iter().rev().find(|l| l.rect.contains(pos)) {
+                let block_title = if hit_layout.block.title.is_empty() {
+                    hit_layout.block.block_type.clone()
+                } else {
+                    hit_layout.block.title.clone()
+                };
+                viewport.interaction.context_menu = Some(CanvasContextMenu::Block {
+                    screen_pos: pos,
+                    page_uuid: page.uuid.clone(),
+                    block_uuid: hit_layout.block.uuid.clone(),
+                    block_title,
+                });
+            } else {
+                let (lx, ly) = viewport.screen_to_loxone(origin, pos);
+                let snapped_lx = snap_to_loxone_grid(lx.max(0.0));
+                let snapped_ly = snap_to_loxone_grid(ly.max(0.0));
+                viewport.interaction.context_menu_pos = Some((pos, snapped_lx, snapped_ly));
+                viewport.interaction.context_menu = Some(CanvasContextMenu::EmptyCanvas {
+                    screen_pos: pos,
+                    lx: snapped_lx,
+                    ly: snapped_ly,
+                });
+            }
+        }
+    }
+
+    // Render active right-click context menu overlay
+    if let Some(menu) = viewport.interaction.context_menu.clone() {
+        let screen_pos = match &menu {
+            CanvasContextMenu::EmptyCanvas { screen_pos, .. } => *screen_pos,
+            CanvasContextMenu::Block { screen_pos, .. } => *screen_pos,
+        };
+        let mut close_menu = false;
+        let area_resp = egui::Area::new(egui::Id::new("canvas_context_menu_popup"))
+            .order(egui::Order::Foreground)
+            .fixed_pos(screen_pos)
+            .show(ui.ctx(), |ui| {
+                egui::Frame::popup(ui.style())
+                    .fill(CARD_BG)
+                    .stroke(Stroke::new(1.0_f32, BORDER_SUBTLE))
+                    .show(ui, |ui| {
+                        ui.set_min_width(210.0);
+                        match &menu {
+                            CanvasContextMenu::EmptyCanvas { lx, ly, .. } => {
+                                if ui
+                                    .button("➕ Add Function Block / Reference here...")
+                                    .clicked()
+                                {
+                                    action = Some(CanvasAction::OpenInsertModalAt {
+                                        px: *lx,
+                                        py: *ly,
+                                    });
+                                    close_menu = true;
+                                }
+                            }
+                            CanvasContextMenu::Block {
+                                page_uuid,
+                                block_uuid,
+                                block_title,
+                                ..
+                            } => {
+                                ui.label(
+                                    egui::RichText::new(block_title)
+                                        .strong()
+                                        .color(TEXT_PRIMARY),
+                                );
+                                ui.separator();
+                                if ui.button("🔍 Inspect Block").clicked() {
+                                    action = Some(CanvasAction::SelectObject(block_uuid.clone()));
+                                    close_menu = true;
+                                }
+                                if ui.button("🗑 Delete Block").clicked() {
+                                    action = Some(CanvasAction::DeleteBlock {
+                                        page_uuid: page_uuid.clone(),
+                                        block_uuid: block_uuid.clone(),
+                                    });
+                                    close_menu = true;
+                                }
+                            }
+                        }
+                    });
+            });
+        if clicked && !area_resp.response.rect.contains(pointer_pos.unwrap_or_default()) {
+            close_menu = true;
+        }
+        if close_menu {
+            viewport.interaction.context_menu = None;
+        }
+    }
+
+    if clicked && !clicked_any_block && !clicked_any_pin_or_wire {
+        viewport.interaction.selected_wire = None;
+        if action.is_none() {
+            action = Some(CanvasAction::ClearSelection);
+        }
     }
 
     action
@@ -962,5 +1596,85 @@ mod tests {
             );
         }
     }
-}
 
+    #[test]
+    fn test_screen_to_loxone_is_exact_inverse_of_loxone_to_screen() {
+        let origin = Pos2::new(80.0, 45.0);
+        for &(zoom, pan) in &[
+            (1.0, Vec2::new(40.0, 40.0)),
+            (1.5, Vec2::new(-120.0, 85.0)),
+            (0.65, Vec2::new(210.0, -30.0)),
+        ] {
+            let mut vp = CanvasViewport::default();
+            vp.zoom = zoom;
+            vp.pan = pan;
+
+            let screen_pos = vp.loxone_to_screen(origin, 512.0, 256.0);
+            let (lx, ly) = vp.screen_to_loxone(origin, screen_pos);
+            assert!((lx - 512.0).abs() < 1e-3, "lx={lx} at zoom={zoom}");
+            assert!((ly - 256.0).abs() < 1e-3, "ly={ly} at zoom={zoom}");
+        }
+    }
+
+    #[test]
+    fn test_snap_to_loxone_grid_snaps_to_64_unit_multiples() {
+        assert_eq!(snap_to_loxone_grid(0.0), 0.0);
+        assert_eq!(snap_to_loxone_grid(31.0), 0.0);
+        assert_eq!(snap_to_loxone_grid(33.0), 64.0);
+        assert_eq!(snap_to_loxone_grid(500.0), 512.0);
+        assert_eq!(snap_to_grid_units(500.0), 512.0);
+    }
+
+    #[test]
+    fn test_point_to_cubic_bezier_distance_detects_wire_click() {
+        let src = Pos2::new(100.0, 100.0);
+        let dst = Pos2::new(300.0, 200.0);
+        let pts = cubic_bezier_points(src, dst);
+        let mid = pts[12];
+        let near = Pos2::new(mid.x + 3.0, mid.y - 4.0);
+        let far = Pos2::new(mid.x + 40.0, mid.y - 40.0);
+
+        assert!(point_to_bezier_distance(near, &pts) <= 8.0);
+        assert!(point_to_bezier_distance(far, &pts) > 8.0);
+        assert!(distance_to_cubic_bezier(near, src, dst) <= 8.0);
+        assert!(distance_to_cubic_bezier(far, src, dst) > 8.0);
+    }
+
+    #[test]
+    fn test_collect_block_display_pins_includes_unconnected_schema_pins_when_expanded() {
+        let block = PageBlock {
+            uuid: "blk-switch-1".to_string(),
+            block_type: "Switch".to_string(),
+            title: "Hallway Switch".to_string(),
+            has_position: true,
+            px: 128.0,
+            py: 128.0,
+            px2: 640.0,
+            py2: 320.0,
+            color_rgb: None,
+            ref_uuid: None,
+            extra_ref_uuids: Vec::new(),
+            room_uuid: None,
+            category_uuid: None,
+            text_content: None,
+            pins: Vec::new(),
+            raw_attributes: Vec::new(),
+            extra_children: Vec::new(),
+        };
+        let xref = XrefIndex::default();
+
+        let (compact_in, compact_out) = collect_block_display_pins(&block, &xref, false);
+        assert!(compact_in.is_empty());
+        assert!(compact_out.is_empty());
+
+        let (expanded_in, expanded_out) = collect_block_display_pins(&block, &xref, true);
+        assert!(
+            expanded_in.iter().any(|p| p.key == "Tr"),
+            "Expanded Switch pins should include schema input Tr"
+        );
+        assert!(
+            expanded_out.iter().any(|p| p.key == "Q"),
+            "Expanded Switch pins should include schema output Q"
+        );
+    }
+}
