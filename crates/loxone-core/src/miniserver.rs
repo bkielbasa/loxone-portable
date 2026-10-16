@@ -896,6 +896,71 @@ pub fn ref_bar_capsule_badge(
     "IO".to_string()
 }
 
+/// Classifies the interactive on-canvas control widget shown inside a reference bar
+/// ("small block") when LiveView is active (matching `on.png`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RefBarLiveControlKind {
+    /// Pill toggle switch (`(●)` / `(○)`) for binary/presence/switch states (`P`, `I`, `Q`, `Sps`, etc.).
+    ToggleSwitch,
+    /// Momentary pushbutton (`(●)` circle) for pulse/trigger/movement inputs (`M`, `Tr`, `R`, `T`, `I+`).
+    Pushbutton,
+    /// 5-button touch pad icon (`❖`) for Loxone Touch `T5` inputs.
+    Touch5Pad,
+    /// Numeric / float value badge (`#`) for analog sensors and outputs (`Br`, `ϑ`, `ϑc`, `H`, `VQ`, `AQ`, `AI`, `SMA`).
+    NumericValue,
+    /// No inline interactive control on the pill.
+    None,
+}
+
+pub fn classify_ref_bar_live_control(
+    block: &crate::model::PageBlock,
+    badge: &str,
+    _project: &crate::model::LoxoneProject,
+) -> RefBarLiveControlKind {
+    if !block.is_ref_bar() {
+        return RefBarLiveControlKind::None;
+    }
+
+    let badge_trim = badge.trim();
+    if badge_trim.eq_ignore_ascii_case("T5") || block.title.trim().eq_ignore_ascii_case("T5") {
+        return RefBarLiveControlKind::Touch5Pad;
+    }
+
+    let badge_upper = badge_trim.to_uppercase();
+    if matches!(
+        badge_upper.as_str(),
+        "BR" | "H" | "VQ" | "AQ" | "AI" | "V1" | "V2" | "SMA"
+    ) || badge_trim.contains('ϑ')
+    {
+        return RefBarLiveControlKind::NumericValue;
+    }
+
+    let title_lower = block.title.to_lowercase();
+    if title_lower.contains("temperatura")
+        || title_lower.contains("wilgotno")
+        || title_lower.contains("jasno")
+        || title_lower.contains("zawór")
+        || title_lower.contains("analog")
+    {
+        return RefBarLiveControlKind::NumericValue;
+    }
+
+    if matches!(
+        badge_upper.as_str(),
+        "M" | "TR" | "R" | "T" | "I+" | "I-" | "PLUS" | "MINUS" | "RESET"
+    ) || title_lower.contains("przycisk")
+        || title_lower.contains("impuls")
+    {
+        return RefBarLiveControlKind::Pushbutton;
+    }
+
+    if badge_trim == "->" {
+        return RefBarLiveControlKind::None;
+    }
+
+    RefBarLiveControlKind::ToggleSwitch
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct LiveValueStore {
     pub controls: std::collections::HashMap<String, LiveControlSnapshot>,
@@ -1017,6 +1082,10 @@ impl LiveValueStore {
     }
 
     pub fn set_control_value(&mut self, control_uuid: &str, raw_value: &str) {
+        self.pin_overrides.insert(
+            (control_uuid.to_string(), String::new()),
+            raw_value.to_string(),
+        );
         let snap = self
             .controls
             .entry(control_uuid.to_string())
@@ -1060,7 +1129,17 @@ impl LiveValueStore {
     ) -> LiveSignal {
         let badge = ref_bar_capsule_badge(block, page, project);
 
-        // If this is an OutputRef or Memory with an incoming wire from a block on the page,
+        // 1. Check direct user override on this specific block first
+        for pin_k in &["", "O", "AQ", "Q", "AI", "I"] {
+            if let Some(ov) = self
+                .pin_overrides
+                .get(&(block.uuid.clone(), (*pin_k).to_string()))
+            {
+                return format_live_signal(ov, &block.title, &badge, &block.block_type);
+            }
+        }
+
+        // 2. If this is an OutputRef or Memory with an incoming wire from a block on the page,
         // propagate the upstream source pin's signal!
         if !block.is_input_ref_bar() {
             for pin in &block.pins {
@@ -1074,15 +1153,14 @@ impl LiveValueStore {
             }
         }
 
-        // Check direct override or control snapshot on block.uuid or block.ref_uuid
-        for (_, pin_k) in &[
-            (&block.uuid, "AQ"),
-            (&block.uuid, "Q"),
-            (&block.uuid, "AI"),
-            (&block.uuid, "I"),
-        ] {
-            if let Some(ov) = self.pin_overrides.get(&(block.uuid.clone(), (*pin_k).to_string())) {
-                return format_live_signal(ov, &block.title, &badge, &block.block_type);
+        // 3. Check control snapshot on block.uuid first (channel-specific), then ref_uuid
+        if let Some(snap) = self.controls.get(&block.uuid) {
+            if let Some(val) = snap
+                .primary_value
+                .as_deref()
+                .or_else(|| snap.outputs.values().next().map(|s| s.as_str()))
+            {
+                return format_live_signal(val, &block.title, &badge, &block.block_type);
             }
         }
 
@@ -1095,16 +1173,6 @@ impl LiveValueStore {
                 {
                     return format_live_signal(val, &block.title, &badge, &block.block_type);
                 }
-            }
-        }
-
-        if let Some(snap) = self.controls.get(&block.uuid) {
-            if let Some(val) = snap
-                .primary_value
-                .as_deref()
-                .or_else(|| snap.outputs.values().next().map(|s| s.as_str()))
-            {
-                return format_live_signal(val, &block.title, &badge, &block.block_type);
             }
         }
 
@@ -1539,6 +1607,91 @@ mod tests {
         let valve_sig = store.resolve_ref_bar_signal(valve_ref, page, &project);
         assert_eq!(valve_sig.formatted, "0.8");
         assert!(valve_sig.is_active);
+    }
+
+    #[test]
+    fn test_classify_ref_bar_live_control_and_manual_override_on_pokoj_agatki() {
+        let path =
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../Klimczaki.Loxone");
+        let project =
+            crate::parser::load_loxone_file(&path).expect("Klimczaki.Loxone should parse");
+        let page = project
+            .pages
+            .iter()
+            .find(|p| p.title == "Pokój Agatki")
+            .expect("Pokój Agatki page should exist");
+
+        let t5_ref = page
+            .blocks
+            .iter()
+            .find(|b| b.is_input_ref_bar() && b.title == "T5")
+            .unwrap();
+        assert_eq!(
+            classify_ref_bar_live_control(t5_ref, "T5", &project),
+            RefBarLiveControlKind::Touch5Pad
+        );
+
+        let lux_ref = page
+            .blocks
+            .iter()
+            .find(|b| b.is_input_ref_bar() && b.title == "Jasność")
+            .unwrap();
+        assert_eq!(
+            classify_ref_bar_live_control(lux_ref, "Br", &project),
+            RefBarLiveControlKind::NumericValue
+        );
+
+        let temp_ref = page
+            .blocks
+            .iter()
+            .find(|b| b.is_input_ref_bar() && b.title == "Temperatura")
+            .unwrap();
+        assert_eq!(
+            classify_ref_bar_live_control(temp_ref, "ϑc", &project),
+            RefBarLiveControlKind::NumericValue
+        );
+
+        let pres_ref = page
+            .blocks
+            .iter()
+            .find(|b| {
+                b.is_input_ref_bar() && ref_bar_capsule_badge(b, page, &project) == "P"
+            })
+            .unwrap();
+        assert_eq!(
+            classify_ref_bar_live_control(pres_ref, "P", &project),
+            RefBarLiveControlKind::ToggleSwitch
+        );
+
+        let move_ref = page
+            .blocks
+            .iter()
+            .find(|b| {
+                b.is_input_ref_bar() && ref_bar_capsule_badge(b, page, &project) == "M"
+            })
+            .unwrap();
+        assert_eq!(
+            classify_ref_bar_live_control(move_ref, "M", &project),
+            RefBarLiveControlKind::Pushbutton
+        );
+
+        let mut store = LiveValueStore::new();
+        store.seed_project_defaults(&project);
+
+        // Manually change temperature float from 22.9 to 24.6 on temp_ref
+        store.set_control_value(&temp_ref.uuid, "24.6");
+        let updated_temp = store.resolve_ref_bar_signal(temp_ref, page, &project);
+        assert_eq!(updated_temp.formatted, "24.6°");
+        assert!(updated_temp.is_active);
+
+        // Manually toggle presence P on pres_ref to 1 ("Wł.") while lux_ref stays 0Lx
+        store.set_control_value(&pres_ref.uuid, "1");
+        let updated_pres = store.resolve_ref_bar_signal(pres_ref, page, &project);
+        assert_eq!(updated_pres.formatted, "Wł.");
+        assert!(updated_pres.is_active);
+        let unchanged_lux = store.resolve_ref_bar_signal(lux_ref, page, &project);
+        assert_eq!(unchanged_lux.formatted, "0Lx");
+        assert!(!unchanged_lux.is_active);
     }
 }
 

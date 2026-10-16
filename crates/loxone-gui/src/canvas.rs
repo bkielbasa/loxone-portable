@@ -7,7 +7,7 @@ use loxone_core::xref::XrefIndex;
 
 use crate::theme::{
     blend_block_header_color, ACCENT_BLUE, BORDER_SUBTLE, CANVAS_BG, CARD_BG, CARD_BORDER,
-    GRID_DOT, TEXT_PRIMARY, WIRE_ANALOG, WIRE_DIGITAL,
+    GRID_DOT, TEXT_MUTED, TEXT_PRIMARY, WIRE_ANALOG, WIRE_DIGITAL,
 };
 
 pub const LOXONE_UNITS_PER_PX: f32 = 8.0;
@@ -52,6 +52,26 @@ pub enum CanvasContextMenu {
     },
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct LiveValuePopupState {
+    pub screen_pos: Pos2,
+    pub control_uuid: String,
+    pub block_title: String,
+    pub badge: String,
+    pub control_kind: loxone_core::miniserver::RefBarLiveControlKind,
+    pub value_input: String,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct RefBarChromeLayout {
+    pub badge: String,
+    pub capsule_rect: Rect,
+    pub control_kind: loxone_core::miniserver::RefBarLiveControlKind,
+    pub control_rect: Option<Rect>,
+    pub capsule_left_pad: f32,
+    pub capsule_right_pad: f32,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct CanvasInteractionState {
     pub dragging_block: Option<BlockDragState>,
@@ -64,6 +84,7 @@ pub struct CanvasInteractionState {
     pub selected_wire: Option<SelectedWire>,
     pub hovered_pin: Option<(String, String)>,
     pub context_menu: Option<CanvasContextMenu>,
+    pub live_value_popup: Option<LiveValuePopupState>,
 }
 
 #[derive(Debug, Clone)]
@@ -124,6 +145,11 @@ pub enum CanvasAction {
     OpenInsertModalAt {
         px: f32,
         py: f32,
+    },
+    TriggerLiveCommand {
+        control_uuid: String,
+        pin_key: Option<String>,
+        command: String,
     },
 }
 
@@ -563,7 +589,275 @@ pub fn collect_block_display_pins(
 }
 
 const LIVE_ACTIVE_GREEN: Color32 = Color32::from_rgb(0x59, 0xB8, 0x28);
-const LIVE_INACTIVE_CAPSULE_BG: Color32 = Color32::from_rgb(0x36, 0x3E, 0x4E);
+const LIVE_INACTIVE_CAPSULE_BG: Color32 = Color32::from_rgb(0x2D, 0x35, 0x45);
+const OFF_CAPSULE_BG: Color32 = Color32::from_rgb(0x1E, 0x25, 0x32);
+const OFF_CAPSULE_BORDER: Color32 = Color32::from_rgb(0x3D, 0x49, 0x5E);
+const OFF_CAPSULE_SELECTED_BG: Color32 = Color32::from_rgb(0x1D, 0x3E, 0x6E);
+
+pub fn compute_ref_bar_chrome_layout(
+    block: &PageBlock,
+    rect: Rect,
+    zoom: f32,
+    live_enabled: bool,
+    page: &Page,
+    project: &LoxoneProject,
+) -> RefBarChromeLayout {
+    let strip_w = (4.5 * zoom).clamp(3.0, 7.0);
+    let badge = loxone_core::miniserver::ref_bar_capsule_badge(block, page, project);
+    let cap_w = ((badge.chars().count() as f32) * 6.5 * zoom + 10.0 * zoom)
+        .clamp(20.0 * zoom, 42.0 * zoom);
+    let cap_h = (rect.height() - 4.0 * zoom).max(12.0);
+    let is_output_side_left =
+        block.block_type == "OutputRef" || block.block_type == "OutputRefLM";
+
+    let capsule_rect = if is_output_side_left {
+        Rect::from_min_max(
+            Pos2::new(
+                rect.min.x + strip_w + 1.5 * zoom,
+                rect.center().y - cap_h * 0.5,
+            ),
+            Pos2::new(
+                rect.min.x + strip_w + 1.5 * zoom + cap_w,
+                rect.center().y + cap_h * 0.5,
+            ),
+        )
+    } else {
+        Rect::from_min_max(
+            Pos2::new(
+                rect.max.x - cap_w - 2.0 * zoom,
+                rect.center().y - cap_h * 0.5,
+            ),
+            Pos2::new(rect.max.x - 2.0 * zoom, rect.center().y + cap_h * 0.5),
+        )
+    };
+
+    if !live_enabled {
+        let (capsule_left_pad, capsule_right_pad) = if is_output_side_left {
+            (cap_w + 3.0 * zoom, 0.0)
+        } else {
+            (0.0, cap_w + 3.0 * zoom)
+        };
+        return RefBarChromeLayout {
+            badge,
+            capsule_rect,
+            control_kind: loxone_core::miniserver::RefBarLiveControlKind::None,
+            control_rect: None,
+            capsule_left_pad,
+            capsule_right_pad,
+        };
+    }
+
+    let control_kind = loxone_core::miniserver::classify_ref_bar_live_control(block, &badge, project);
+    let (ctrl_w, ctrl_h) = match control_kind {
+        loxone_core::miniserver::RefBarLiveControlKind::ToggleSwitch => (
+            (24.0 * zoom).clamp(18.0, 32.0),
+            (13.0 * zoom).clamp(10.0, 18.0),
+        ),
+        loxone_core::miniserver::RefBarLiveControlKind::Pushbutton => (
+            (15.0 * zoom).clamp(12.0, 21.0),
+            (15.0 * zoom).clamp(12.0, 21.0),
+        ),
+        loxone_core::miniserver::RefBarLiveControlKind::NumericValue
+        | loxone_core::miniserver::RefBarLiveControlKind::Touch5Pad => (
+            (16.0 * zoom).clamp(12.0, 22.0),
+            (15.0 * zoom).clamp(12.0, 21.0),
+        ),
+        loxone_core::miniserver::RefBarLiveControlKind::None => (0.0, 0.0),
+    };
+
+    if ctrl_w <= 0.0 {
+        let (capsule_left_pad, capsule_right_pad) = if is_output_side_left {
+            (cap_w + 3.0 * zoom, 0.0)
+        } else {
+            (0.0, cap_w + 3.0 * zoom)
+        };
+        return RefBarChromeLayout {
+            badge,
+            capsule_rect,
+            control_kind,
+            control_rect: None,
+            capsule_left_pad,
+            capsule_right_pad,
+        };
+    }
+
+    let (control_rect, capsule_left_pad, capsule_right_pad) = if is_output_side_left {
+        let right_x = rect.max.x - 3.0 * zoom;
+        let c_rect = Rect::from_min_max(
+            Pos2::new(right_x - ctrl_w, rect.center().y - ctrl_h * 0.5),
+            Pos2::new(right_x, rect.center().y + ctrl_h * 0.5),
+        );
+        (c_rect, cap_w + 3.0 * zoom, ctrl_w + 6.0 * zoom)
+    } else {
+        let right_x = capsule_rect.min.x - 3.0 * zoom;
+        let c_rect = Rect::from_min_max(
+            Pos2::new(right_x - ctrl_w, rect.center().y - ctrl_h * 0.5),
+            Pos2::new(right_x, rect.center().y + ctrl_h * 0.5),
+        );
+        (c_rect, 0.0, cap_w + ctrl_w + 8.0 * zoom)
+    };
+
+    RefBarChromeLayout {
+        badge,
+        capsule_rect,
+        control_kind,
+        control_rect: Some(control_rect),
+        capsule_left_pad,
+        capsule_right_pad,
+    }
+}
+
+fn paint_ref_bar_live_control(
+    painter: &egui::Painter,
+    ctrl_rect: Rect,
+    kind: loxone_core::miniserver::RefBarLiveControlKind,
+    is_active: bool,
+    is_hovered: bool,
+    zoom: f32,
+) {
+    use loxone_core::miniserver::RefBarLiveControlKind;
+    match kind {
+        RefBarLiveControlKind::ToggleSwitch => {
+            let r = (ctrl_rect.height() * 0.5).clamp(4.0, 9.0) as u8;
+            let track_fill = if is_active {
+                LIVE_ACTIVE_GREEN
+            } else {
+                Color32::from_rgb(0x1B, 0x22, 0x2F)
+            };
+            let track_stroke = if is_hovered {
+                Stroke::new(1.4_f32, ACCENT_BLUE)
+            } else if is_active {
+                Stroke::new(1.0_f32, Color32::from_rgb(0x76, 0xD2, 0x45))
+            } else {
+                Stroke::new(1.1_f32, Color32::from_rgb(0x6D, 0x7A, 0x90))
+            };
+            painter.rect(
+                ctrl_rect,
+                CornerRadius::same(r),
+                track_fill,
+                track_stroke,
+                egui::StrokeKind::Inside,
+            );
+            let knob_r = (ctrl_rect.height() * 0.36).max(3.0);
+            let knob_x = if is_active {
+                ctrl_rect.max.x - ctrl_rect.height() * 0.5
+            } else {
+                ctrl_rect.min.x + ctrl_rect.height() * 0.5
+            };
+            painter.circle_filled(
+                Pos2::new(knob_x, ctrl_rect.center().y),
+                knob_r,
+                if is_active {
+                    Color32::WHITE
+                } else {
+                    Color32::from_rgb(0xB8, 0xC4, 0xD6)
+                },
+            );
+        }
+        RefBarLiveControlKind::Pushbutton => {
+            let center = ctrl_rect.center();
+            let outer_r = (ctrl_rect.width().min(ctrl_rect.height()) * 0.46).max(5.0);
+            let inner_r = (outer_r * 0.56).max(2.6);
+            let ring_color = if is_hovered {
+                ACCENT_BLUE
+            } else if is_active {
+                LIVE_ACTIVE_GREEN
+            } else {
+                Color32::from_rgb(0x85, 0x92, 0xA8)
+            };
+            painter.circle_filled(center, outer_r, Color32::from_rgb(0x1B, 0x22, 0x2F));
+            painter.circle_stroke(center, outer_r, Stroke::new(1.3_f32, ring_color));
+            painter.circle_filled(
+                center,
+                inner_r,
+                if is_active {
+                    LIVE_ACTIVE_GREEN
+                } else {
+                    Color32::from_rgb(0x5B, 0x67, 0x7C)
+                },
+            );
+        }
+        RefBarLiveControlKind::NumericValue => {
+            let stroke = if is_hovered {
+                Stroke::new(1.3_f32, ACCENT_BLUE)
+            } else {
+                Stroke::new(1.0_f32, Color32::from_rgb(0x47, 0x53, 0x68))
+            };
+            painter.rect(
+                ctrl_rect,
+                CornerRadius::same(3),
+                Color32::from_rgb(0x28, 0x30, 0x3F),
+                stroke,
+                egui::StrokeKind::Inside,
+            );
+            painter.text(
+                ctrl_rect.center(),
+                Align2::CENTER_CENTER,
+                "#",
+                FontId::proportional((10.5 * zoom).clamp(8.5, 14.0)),
+                Color32::from_rgb(0xE6, 0xEE, 0xFA),
+            );
+        }
+        RefBarLiveControlKind::Touch5Pad => {
+            let stroke = if is_hovered {
+                Stroke::new(1.3_f32, ACCENT_BLUE)
+            } else {
+                Stroke::new(1.0_f32, Color32::from_rgb(0x47, 0x53, 0x68))
+            };
+            painter.rect(
+                ctrl_rect,
+                CornerRadius::same(3),
+                Color32::from_rgb(0x28, 0x30, 0x3F),
+                stroke,
+                egui::StrokeKind::Inside,
+            );
+            let c = ctrl_rect.center();
+            let dx = (ctrl_rect.width() * 0.24).max(2.2);
+            let dy = (ctrl_rect.height() * 0.24).max(2.2);
+            let dot_r = (1.25 * zoom).clamp(1.0, 1.8);
+            let dot_col = if is_active {
+                LIVE_ACTIVE_GREEN
+            } else {
+                Color32::from_rgb(0xE6, 0xEE, 0xFA)
+            };
+            for pt in [
+                c,
+                Pos2::new(c.x - dx, c.y - dy),
+                Pos2::new(c.x + dx, c.y - dy),
+                Pos2::new(c.x - dx, c.y + dy),
+                Pos2::new(c.x + dx, c.y + dy),
+            ] {
+                painter.circle_filled(pt, dot_r, dot_col);
+            }
+        }
+        RefBarLiveControlKind::None => {}
+    }
+}
+
+fn extract_numeric_prefix(raw: &str) -> Option<f64> {
+    let trimmed = raw.trim();
+    let mut end = 0;
+    for (idx, ch) in trimmed.char_indices() {
+        if ch.is_ascii_digit() || ch == '.' || (idx == 0 && (ch == '-' || ch == '+')) {
+            end = idx + ch.len_utf8();
+        } else {
+            break;
+        }
+    }
+    if end == 0 {
+        None
+    } else {
+        trimmed[..end].parse::<f64>().ok()
+    }
+}
+
+fn format_clean_float(val: f64) -> String {
+    if (val - val.round()).abs() < 1e-6 {
+        format!("{}", val.round() as i64)
+    } else {
+        format!("{:.1}", val)
+    }
+}
 
 fn paint_inline_wire_value_label(
     painter: &egui::Painter,
@@ -683,6 +977,7 @@ pub fn render_page_canvas(
     let clicked = response.clicked();
     let mut clicked_any_block = false;
     let mut clicked_any_pin_or_wire = false;
+    let mut opened_live_popup_this_frame = false;
     let multi_mod = ui.input(|i| i.modifiers.shift || i.modifiers.command || i.modifiers.ctrl);
     let pan_mod = ui.input(|i| i.key_down(egui::Key::Space) || i.modifiers.alt);
     let show_all_pins = !viewport.compact_pins || viewport.interaction.wiring_from.is_some();
@@ -1302,68 +1597,6 @@ pub fn render_page_canvas(
             );
             painter.rect_filled(strip, CornerRadius::same(3), accent_color);
 
-            let mut capsule_left_pad = 0.0_f32;
-            let mut capsule_right_pad = 0.0_f32;
-            let mut ref_sig_active = false;
-            if let Some(store) = live_store {
-                let sig = store.resolve_ref_bar_signal(block, page, project);
-                ref_sig_active = sig.is_active;
-                let badge = loxone_core::miniserver::ref_bar_capsule_badge(block, page, project);
-                let cap_w = ((badge.chars().count() as f32) * 6.5 * viewport.zoom
-                    + 10.0 * viewport.zoom)
-                    .clamp(20.0 * viewport.zoom, 42.0 * viewport.zoom);
-                let cap_h = (rect.height() - 4.0 * viewport.zoom).max(12.0);
-                let is_output_side_left =
-                    block.block_type == "OutputRef" || block.block_type == "OutputRefLM";
-                let cap_rect = if is_output_side_left {
-                    capsule_left_pad = cap_w + 3.0 * viewport.zoom;
-                    Rect::from_min_max(
-                        Pos2::new(rect.min.x + strip_w + 1.5 * viewport.zoom, rect.center().y - cap_h * 0.5),
-                        Pos2::new(
-                            rect.min.x + strip_w + 1.5 * viewport.zoom + cap_w,
-                            rect.center().y + cap_h * 0.5,
-                        ),
-                    )
-                } else {
-                    capsule_right_pad = cap_w + 3.0 * viewport.zoom;
-                    Rect::from_min_max(
-                        Pos2::new(rect.max.x - cap_w - 2.0 * viewport.zoom, rect.center().y - cap_h * 0.5),
-                        Pos2::new(rect.max.x - 2.0 * viewport.zoom, rect.center().y + cap_h * 0.5),
-                    )
-                };
-                painter.rect_filled(
-                    cap_rect,
-                    CornerRadius::same(4),
-                    if sig.is_active {
-                        LIVE_ACTIVE_GREEN
-                    } else {
-                        LIVE_INACTIVE_CAPSULE_BG
-                    },
-                );
-                painter.text(
-                    cap_rect.center(),
-                    Align2::CENTER_CENTER,
-                    badge,
-                    FontId::proportional((10.5 * viewport.zoom).clamp(8.5, 14.5)),
-                    Color32::WHITE,
-                );
-            }
-
-            let ref_tree_type = block
-                .ref_uuid
-                .as_deref()
-                .and_then(|u| project.xref.objects_by_uuid.get(u))
-                .map(|o| o.object_type.as_str());
-            let block_icon = crate::icons::icon_for_block_type(&block.block_type, ref_tree_type);
-            let icon_sz = (15.0 * viewport.zoom).clamp(11.0, 22.0);
-            let icon_rect = Rect::from_center_size(
-                Pos2::new(
-                    rect.min.x + strip_w + capsule_left_pad + 4.0 * viewport.zoom + icon_sz * 0.5,
-                    rect.center().y,
-                ),
-                Vec2::splat(icon_sz),
-            );
-
             let raw_label = if !block.title.is_empty() {
                 block.title.clone()
             } else if let Some(ref_uuid) = &block.ref_uuid {
@@ -1376,8 +1609,133 @@ pub fn render_page_canvas(
             } else {
                 block.block_type.clone()
             };
+
+            let chrome = compute_ref_bar_chrome_layout(
+                block,
+                rect,
+                viewport.zoom,
+                live_store.is_some(),
+                page,
+                project,
+            );
+            let ref_live_sig =
+                live_store.map(|store| store.resolve_ref_bar_signal(block, page, project));
+            let ref_sig_active = ref_live_sig.as_ref().is_some_and(|s| s.is_active);
+
+            // Always draw the unit/pin capsule (colored in Live View, neutral in normal view)
+            let (cap_fill, cap_stroke, cap_text_color) = if let Some(sig) = &ref_live_sig {
+                if sig.is_active {
+                    (
+                        LIVE_ACTIVE_GREEN,
+                        Stroke::new(1.0_f32, Color32::from_rgb(0x76, 0xD2, 0x45)),
+                        Color32::WHITE,
+                    )
+                } else {
+                    (
+                        LIVE_INACTIVE_CAPSULE_BG,
+                        Stroke::new(1.0_f32, Color32::from_rgb(0x45, 0x50, 0x65)),
+                        Color32::from_rgb(0xDC, 0xE5, 0xF4),
+                    )
+                }
+            } else if is_selected {
+                (
+                    OFF_CAPSULE_SELECTED_BG,
+                    Stroke::new(1.0_f32, ACCENT_BLUE),
+                    Color32::WHITE,
+                )
+            } else {
+                (
+                    OFF_CAPSULE_BG,
+                    Stroke::new(1.0_f32, OFF_CAPSULE_BORDER),
+                    Color32::from_rgb(0xD8, 0xE2, 0xF0),
+                )
+            };
+            painter.rect(
+                chrome.capsule_rect,
+                CornerRadius::same(4),
+                cap_fill,
+                cap_stroke,
+                egui::StrokeKind::Inside,
+            );
+            painter.text(
+                chrome.capsule_rect.center(),
+                Align2::CENTER_CENTER,
+                &chrome.badge,
+                FontId::proportional((10.5 * viewport.zoom).clamp(8.5, 14.5)),
+                cap_text_color,
+            );
+
+            // When Live View is ON, draw the interactive on-canvas control next to the capsule
+            if let (Some(sig), Some(ctrl_rect)) = (&ref_live_sig, chrome.control_rect) {
+                let ctrl_hovered = hover_pos.is_some_and(|hp| ctrl_rect.contains(hp));
+                if ctrl_hovered {
+                    ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                }
+                paint_ref_bar_live_control(
+                    &painter,
+                    ctrl_rect,
+                    chrome.control_kind,
+                    sig.is_active,
+                    ctrl_hovered,
+                    viewport.zoom,
+                );
+                if clicked && pointer_pos.is_some_and(|pos| ctrl_rect.contains(pos)) {
+                    clicked_any_pin_or_wire = true;
+                    clicked_any_block = true;
+                    viewport.interaction.selected_blocks = vec![block.uuid.clone()];
+                    match chrome.control_kind {
+                        loxone_core::miniserver::RefBarLiveControlKind::ToggleSwitch
+                        | loxone_core::miniserver::RefBarLiveControlKind::Pushbutton => {
+                            let next_cmd = if sig.is_active { "Off" } else { "On" };
+                            viewport.interaction.live_value_popup = None;
+                            action = Some(CanvasAction::TriggerLiveCommand {
+                                control_uuid: block.uuid.clone(),
+                                pin_key: None,
+                                command: next_cmd.to_string(),
+                            });
+                        }
+                        loxone_core::miniserver::RefBarLiveControlKind::NumericValue
+                        | loxone_core::miniserver::RefBarLiveControlKind::Touch5Pad => {
+                            let initial_val = extract_numeric_prefix(&sig.raw)
+                                .map(format_clean_float)
+                                .unwrap_or_else(|| sig.raw.clone());
+                            opened_live_popup_this_frame = true;
+                            viewport.interaction.live_value_popup = Some(LiveValuePopupState {
+                                screen_pos: Pos2::new(ctrl_rect.min.x, rect.max.y + 4.0),
+                                control_uuid: block.uuid.clone(),
+                                block_title: raw_label.clone(),
+                                badge: chrome.badge.clone(),
+                                control_kind: chrome.control_kind,
+                                value_input: initial_val,
+                            });
+                            action = Some(CanvasAction::SelectObject(block.uuid.clone()));
+                        }
+                        loxone_core::miniserver::RefBarLiveControlKind::None => {}
+                    }
+                }
+            }
+
+            let ref_tree_type = block
+                .ref_uuid
+                .as_deref()
+                .and_then(|u| project.xref.objects_by_uuid.get(u))
+                .map(|o| o.object_type.as_str());
+            let block_icon = crate::icons::icon_for_block_type(&block.block_type, ref_tree_type);
+            let icon_sz = (15.0 * viewport.zoom).clamp(11.0, 22.0);
+            let icon_rect = Rect::from_center_size(
+                Pos2::new(
+                    rect.min.x
+                        + strip_w
+                        + chrome.capsule_left_pad
+                        + 4.0 * viewport.zoom
+                        + icon_sz * 0.5,
+                    rect.center().y,
+                ),
+                Vec2::splat(icon_sz),
+            );
+
             let text_left = icon_rect.max.x + 5.0 * viewport.zoom;
-            let max_chars = ((rect.max.x - capsule_right_pad - text_left - 6.0 * viewport.zoom)
+            let max_chars = ((rect.max.x - chrome.capsule_right_pad - text_left - 6.0 * viewport.zoom)
                 / (6.8 * viewport.zoom).max(4.5))
             .max(6.0) as usize;
             let label = truncate_text(&raw_label, max_chars);
@@ -1626,15 +1984,12 @@ pub fn render_page_canvas(
             let pill_live = live_store
                 .and_then(|store| store.resolve_pin_by_uuid(&first_meta.pin_uuid, page, project, 0));
             let pill_active = pill_live.as_ref().is_some_and(|s| s.is_active);
-            let cap_extra_w = if live_store.is_some() {
-                20.0 * viewport.zoom
-            } else {
-                0.0
-            };
+            let cap_w = (20.0 * viewport.zoom).clamp(15.0, 26.0);
+            let cap_extra_w = cap_w + 2.0 * viewport.zoom;
 
             let char_w = (6.8 * viewport.zoom).clamp(5.0, 9.5);
             let pill_w = ((tag.chars().count() as f32) * char_w + 14.0 * viewport.zoom + cap_extra_w)
-                .clamp(64.0 * viewport.zoom, 210.0 * viewport.zoom);
+                .clamp(68.0 * viewport.zoom, 220.0 * viewport.zoom);
             let pill_h = (18.0 * viewport.zoom).clamp(14.0, 26.0);
             let gap = if live_store.is_some() {
                 (44.0 * viewport.zoom).max(28.0)
@@ -1664,12 +2019,11 @@ pub fn render_page_canvas(
                 Stroke::new(1.2_f32, CARD_BORDER),
                 egui::StrokeKind::Inside,
             );
+            let cap_rect = Rect::from_min_max(
+                Pos2::new(pill_rect.max.x - cap_w - 1.5, pill_rect.min.y + 1.5),
+                Pos2::new(pill_rect.max.x - 1.5, pill_rect.max.y - 1.5),
+            );
             if let Some(sig) = pill_live {
-                let cap_w = (18.0 * viewport.zoom).clamp(14.0, 24.0);
-                let cap_rect = Rect::from_min_max(
-                    Pos2::new(pill_rect.max.x - cap_w - 1.5, pill_rect.min.y + 1.5),
-                    Pos2::new(pill_rect.max.x - 1.5, pill_rect.max.y - 1.5),
-                );
                 painter.rect_filled(
                     cap_rect,
                     CornerRadius::same(3),
@@ -1692,6 +2046,21 @@ pub fn render_page_canvas(
                     sig.formatted,
                     sig.is_active,
                 ));
+            } else {
+                painter.rect(
+                    cap_rect,
+                    CornerRadius::same(3),
+                    OFF_CAPSULE_BG,
+                    Stroke::new(1.0_f32, OFF_CAPSULE_BORDER),
+                    egui::StrokeKind::Inside,
+                );
+                painter.text(
+                    cap_rect.center(),
+                    Align2::CENTER_CENTER,
+                    "->",
+                    FontId::proportional((9.5 * viewport.zoom).clamp(8.0, 13.0)),
+                    TEXT_PRIMARY,
+                );
             }
             let text_rect = Rect::from_min_max(
                 pill_rect.min,
@@ -1914,6 +2283,158 @@ pub fn render_page_canvas(
         }
     }
 
+    // Render active on-canvas Live View manual value / T5 control popover
+    if live_store.is_none() {
+        viewport.interaction.live_value_popup = None;
+    }
+    if let Some(mut popup) = viewport.interaction.live_value_popup.clone() {
+        let mut close_popup = false;
+        let area_resp = egui::Area::new(egui::Id::new("canvas_live_value_popup"))
+            .order(egui::Order::Foreground)
+            .fixed_pos(popup.screen_pos)
+            .show(ui.ctx(), |ui| {
+                egui::Frame::popup(ui.style())
+                    .fill(CARD_BG)
+                    .stroke(Stroke::new(1.5_f32, LIVE_ACTIVE_GREEN))
+                    .corner_radius(CornerRadius::same(6))
+                    .inner_margin(egui::Margin::same(10))
+                    .show(ui, |ui| {
+                        ui.set_min_width(225.0);
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                egui::RichText::new(&popup.block_title)
+                                    .strong()
+                                    .color(TEXT_PRIMARY),
+                            );
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    if ui.small_button("✕").clicked() {
+                                        close_popup = true;
+                                    }
+                                    ui.label(
+                                        egui::RichText::new(format!("[{}]", popup.badge))
+                                            .monospace()
+                                            .size(11.0)
+                                            .color(LIVE_ACTIVE_GREEN),
+                                    );
+                                },
+                            );
+                        });
+                        ui.separator();
+
+                        if popup.control_kind
+                            == loxone_core::miniserver::RefBarLiveControlKind::Touch5Pad
+                        {
+                            ui.label(
+                                egui::RichText::new("T5 Touch Pad Simulation:")
+                                    .size(11.0)
+                                    .color(TEXT_MUTED),
+                            );
+                            ui.horizontal_wrapped(|ui| {
+                                for (lbl, val) in [
+                                    ("● Center", "1/0/0/0"),
+                                    ("↖ Top-L", "1/1/0/0"),
+                                    ("↗ Top-R", "1/0/1/0"),
+                                    ("↙ Bot-L", "1/0/0/1"),
+                                    ("↘ Bot-R", "1/0/0/2"),
+                                    ("○ Release (0)", "0/0/0/0"),
+                                ] {
+                                    if ui.small_button(lbl).clicked() {
+                                        action = Some(CanvasAction::TriggerLiveCommand {
+                                            control_uuid: popup.control_uuid.clone(),
+                                            pin_key: None,
+                                            command: val.to_string(),
+                                        });
+                                        close_popup = true;
+                                    }
+                                }
+                            });
+                            ui.add_space(4.0);
+                        } else {
+                            ui.label(
+                                egui::RichText::new("Quick adjust / set value:")
+                                    .size(11.0)
+                                    .color(TEXT_MUTED),
+                            );
+                            ui.horizontal(|ui| {
+                                for delta in [-1.0_f64, -0.5, 0.0, 0.5, 1.0] {
+                                    let btn_lbl = if delta == 0.0 {
+                                        "0".to_string()
+                                    } else if delta > 0.0 {
+                                        format!("+{}", delta)
+                                    } else {
+                                        format!("{}", delta)
+                                    };
+                                    if ui.small_button(btn_lbl).clicked() {
+                                        let next_str = if delta == 0.0 {
+                                            "0".to_string()
+                                        } else {
+                                            let base = popup
+                                                .value_input
+                                                .trim()
+                                                .replace(',', ".")
+                                                .parse::<f64>()
+                                                .unwrap_or(0.0);
+                                            format_clean_float(base + delta)
+                                        };
+                                        popup.value_input = next_str.clone();
+                                        action = Some(CanvasAction::TriggerLiveCommand {
+                                            control_uuid: popup.control_uuid.clone(),
+                                            pin_key: None,
+                                            command: next_str,
+                                        });
+                                    }
+                                }
+                            });
+                            ui.add_space(4.0);
+                        }
+
+                        ui.horizontal(|ui| {
+                            let resp = ui.add(
+                                egui::TextEdit::singleline(&mut popup.value_input)
+                                    .desired_width(135.0)
+                                    .hint_text("Value (e.g. 21.5)"),
+                            );
+                            let enter_pressed =
+                                resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                            let apply_clicked = ui
+                                .add(
+                                    egui::Button::new(
+                                        egui::RichText::new("✓ Set")
+                                            .strong()
+                                            .color(Color32::WHITE),
+                                    )
+                                    .fill(LIVE_ACTIVE_GREEN),
+                                )
+                                .clicked();
+                            if enter_pressed || apply_clicked {
+                                let trimmed = popup.value_input.trim().replace(',', ".");
+                                if !trimmed.is_empty() {
+                                    action = Some(CanvasAction::TriggerLiveCommand {
+                                        control_uuid: popup.control_uuid.clone(),
+                                        pin_key: None,
+                                        command: trimmed,
+                                    });
+                                }
+                                close_popup = true;
+                            }
+                        });
+                    });
+            });
+        if clicked
+            && !opened_live_popup_this_frame
+            && !area_resp.response.rect.contains(pointer_pos.unwrap_or_default())
+        {
+            close_popup = true;
+        }
+        if close_popup {
+            viewport.interaction.live_value_popup = None;
+        } else {
+            viewport.interaction.live_value_popup = Some(popup);
+        }
+    }
+
     if clicked && !clicked_any_block && !clicked_any_pin_or_wire {
         viewport.interaction.selected_wire = None;
         if !multi_mod {
@@ -2125,5 +2646,69 @@ mod tests {
                 let _ = render_page_canvas(ui, &project, page_idx, &mut vp, None, Some(&store));
             });
         });
+    }
+
+    #[test]
+    fn test_ref_bar_chrome_layout_always_includes_unit_capsule_and_adds_live_control_when_live() {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../Klimczaki.Loxone");
+        let project = load_loxone_file(&path).expect("Klimczaki.Loxone should parse");
+        let agatka = project
+            .pages
+            .iter()
+            .find(|p| p.title == "Pokój Agatki")
+            .expect("Pokój Agatki page should exist");
+
+        let sufit_p = agatka
+            .blocks
+            .iter()
+            .find(|b| {
+                b.is_input_ref_bar()
+                    && loxone_core::miniserver::ref_bar_capsule_badge(b, agatka, &project) == "P"
+            })
+            .expect("Sufit P block should exist");
+        let zawor = agatka
+            .blocks
+            .iter()
+            .find(|b| {
+                b.is_output_ref_bar()
+                    && loxone_core::miniserver::ref_bar_capsule_badge(b, agatka, &project) == "VQ"
+            })
+            .expect("Zawór block should exist");
+
+        let rect = Rect::from_min_max(Pos2::new(100.0, 200.0), Pos2::new(260.0, 224.0));
+
+        // 1. Live OFF: unit capsule is always rendered; interactive live control is None
+        let off_right =
+            compute_ref_bar_chrome_layout(sufit_p, rect, 1.0, false, agatka, &project);
+        assert_eq!(off_right.badge, "P");
+        assert!(off_right.capsule_rect.width() >= 18.0);
+        assert!(off_right.control_rect.is_none());
+        assert!(off_right.capsule_right_pad > 0.0);
+
+        let off_left = compute_ref_bar_chrome_layout(zawor, rect, 1.0, false, agatka, &project);
+        assert_eq!(off_left.badge, "VQ");
+        assert!(off_left.capsule_rect.width() >= 18.0);
+        assert!(off_left.control_rect.is_none());
+        assert!(off_left.capsule_left_pad > 0.0);
+
+        // 2. Live ON: both unit capsule and interactive control rect are present and non-overlapping
+        let on_right = compute_ref_bar_chrome_layout(sufit_p, rect, 1.0, true, agatka, &project);
+        let ctrl_right = on_right
+            .control_rect
+            .expect("Live ON ToggleSwitch should have a control rect");
+        assert!(ctrl_right.max.x <= on_right.capsule_rect.min.x);
+        assert!(on_right.capsule_right_pad > off_right.capsule_right_pad);
+
+        let on_left = compute_ref_bar_chrome_layout(zawor, rect, 1.0, true, agatka, &project);
+        let ctrl_left = on_left
+            .control_rect
+            .expect("Live ON NumericValue should have a control rect");
+        assert!(ctrl_left.min.x >= on_left.capsule_rect.max.x);
+        assert!(on_left.capsule_right_pad > 0.0);
+
+        assert_eq!(extract_numeric_prefix("22.8°C"), Some(22.8));
+        assert_eq!(extract_numeric_prefix("48%"), Some(48.0));
+        assert_eq!(format_clean_float(22.5), "22.5");
+        assert_eq!(format_clean_float(23.0), "23");
     }
 }

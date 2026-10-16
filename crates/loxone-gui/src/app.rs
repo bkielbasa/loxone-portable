@@ -506,21 +506,51 @@ impl LoxonePortableApp {
                 .set_pin_override(&cmd.control_uuid, "AQ", optimistic_val);
         }
 
+        let mut target_io_id = cmd.control_uuid.clone();
         if let Some(proj) = &self.project {
+            // Find if cmd.control_uuid is a PageBlock with a ref_uuid and badge
+            let mut matched_ref_and_badge: Option<(String, String)> = None;
             for page in &proj.pages {
-                for blk in &page.blocks {
-                    if blk.uuid == cmd.control_uuid {
-                        if let Some(ref_u) = &blk.ref_uuid {
-                            self.live_store.set_control_value(ref_u, optimistic_val);
-                            self.live_store.set_pin_override(ref_u, "O", optimistic_val);
-                            self.live_store.set_pin_override(ref_u, "Q", optimistic_val);
+                if let Some(blk) = page.blocks.iter().find(|b| b.uuid == cmd.control_uuid) {
+                    if let Some(ref_u) = &blk.ref_uuid {
+                        let badge = loxone_core::miniserver::ref_bar_capsule_badge(blk, page, proj);
+                        matched_ref_and_badge = Some((ref_u.clone(), badge));
+                        target_io_id = ref_u.clone();
+                    }
+                    break;
+                }
+            }
+
+            if let Some((ref_u, badge)) = matched_ref_and_badge {
+                // Count how many distinct badges share `ref_u` across the project
+                let mut shares_multi_channel_device = false;
+                for page in &proj.pages {
+                    for blk in &page.blocks {
+                        if blk.ref_uuid.as_deref() == Some(ref_u.as_str()) {
+                            let other_badge =
+                                loxone_core::miniserver::ref_bar_capsule_badge(blk, page, proj);
+                            if other_badge != badge {
+                                shares_multi_channel_device = true;
+                            } else if blk.uuid != cmd.control_uuid {
+                                self.live_store.set_control_value(&blk.uuid, optimistic_val);
+                            }
                         }
-                    } else if blk.ref_uuid.as_deref() == Some(cmd.control_uuid.as_str()) {
-                        self.live_store.set_control_value(&blk.uuid, optimistic_val);
-                        self.live_store
-                            .set_pin_override(&blk.uuid, "O", optimistic_val);
-                        self.live_store
-                            .set_pin_override(&blk.uuid, "Q", optimistic_val);
+                    }
+                }
+                if !shares_multi_channel_device {
+                    self.live_store.set_control_value(&ref_u, optimistic_val);
+                    self.live_store
+                        .set_pin_override(&ref_u, "O", optimistic_val);
+                    self.live_store
+                        .set_pin_override(&ref_u, "Q", optimistic_val);
+                }
+            } else {
+                // cmd.control_uuid may be a TreeNode UUID directly
+                for page in &proj.pages {
+                    for blk in &page.blocks {
+                        if blk.ref_uuid.as_deref() == Some(cmd.control_uuid.as_str()) {
+                            self.live_store.set_control_value(&blk.uuid, optimistic_val);
+                        }
                     }
                 }
             }
@@ -532,12 +562,12 @@ impl LoxonePortableApp {
                 username: self.miniserver_modal.username.clone(),
                 password: self.miniserver_modal.password.clone(),
             };
-            let id = cmd.control_uuid.clone();
+            let store_key = cmd.control_uuid.clone();
             let command = cmd.command.clone();
             let tx = self.worker_tx.clone();
             std::thread::spawn(move || {
-                let res = MiniserverClient::send_io_command(&creds, &id, &command)
-                    .map(|snap| (id, snap))
+                let res = MiniserverClient::send_io_command(&creds, &target_io_id, &command)
+                    .map(|snap| (store_key, snap))
                     .map_err(|e| e.to_string());
                 let _ = tx.send(MiniserverWorkerEvent::LiveCommandSent(res));
             });
@@ -969,6 +999,17 @@ impl LoxonePortableApp {
             }
             CanvasAction::OpenInsertModalAt { px, py } => {
                 self.insert_modal.open_at(Some((px, py)));
+            }
+            CanvasAction::TriggerLiveCommand {
+                control_uuid,
+                pin_key,
+                command,
+            } => {
+                self.handle_live_command(LiveCommand {
+                    control_uuid,
+                    pin_key,
+                    command,
+                });
             }
         }
     }
@@ -1971,6 +2012,51 @@ mod tests {
                 .map(|s| s.as_str()),
             Some("23.4")
         );
+
+        // Verify on-canvas TriggerLiveCommand isolates sibling channels on a shared Touch Tree device
+        let proj = app.project.as_ref().unwrap().clone();
+        let agatka = proj
+            .pages
+            .iter()
+            .find(|p| p.title == "Pokój Agatki")
+            .unwrap();
+        let sufit_p = agatka
+            .blocks
+            .iter()
+            .find(|b| {
+                b.is_input_ref_bar()
+                    && loxone_core::miniserver::ref_bar_capsule_badge(b, agatka, &proj) == "P"
+            })
+            .unwrap();
+        let temp_blk = agatka
+            .blocks
+            .iter()
+            .find(|b| {
+                b.is_input_ref_bar()
+                    && loxone_core::miniserver::ref_bar_capsule_badge(b, agatka, &proj) == "ϑc"
+            })
+            .unwrap();
+
+        app.handle_canvas_action(CanvasAction::TriggerLiveCommand {
+            control_uuid: sufit_p.uuid.clone(),
+            pin_key: None,
+            command: "On".to_string(),
+        });
+        app.handle_canvas_action(CanvasAction::TriggerLiveCommand {
+            control_uuid: temp_blk.uuid.clone(),
+            pin_key: None,
+            command: "21.6".to_string(),
+        });
+
+        let sig_p = app.live_store.resolve_ref_bar_signal(sufit_p, agatka, &proj);
+        assert!(sig_p.is_active);
+        assert_eq!(sig_p.formatted, "Wł.");
+
+        let sig_temp = app
+            .live_store
+            .resolve_ref_bar_signal(temp_blk, agatka, &proj);
+        assert!(sig_temp.is_active);
+        assert_eq!(sig_temp.formatted, "21.6°");
     }
 }
 
