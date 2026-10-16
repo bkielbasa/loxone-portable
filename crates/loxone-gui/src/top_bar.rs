@@ -22,6 +22,9 @@ pub enum TopBarAction {
     OpenCommandPalette,
     ToggleCompactPins,
     FitPage,
+    ZoomIn,
+    ZoomOut,
+    ResetZoom,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -423,12 +426,32 @@ pub fn render_top_bar(
                     if let Some(act) = render_toolbar_items(ui, &view_items) {
                         action = Some(act);
                     }
-                    ui.label(
-                        RichText::new(format!("{:.0}%", zoom * 100.0))
-                            .monospace()
-                            .size(11.5)
-                            .color(TEXT_MUTED),
-                    );
+                    if ui
+                        .small_button(RichText::new("＋").size(12.0).color(TEXT_PRIMARY))
+                        .on_hover_text("Zoom in (⌘+ / Scroll up)")
+                        .clicked()
+                    {
+                        action = Some(TopBarAction::ZoomIn);
+                    }
+                    if ui
+                        .small_button(
+                            RichText::new(format!("{:.0}%", zoom * 100.0))
+                                .monospace()
+                                .size(11.5)
+                                .color(TEXT_PRIMARY),
+                        )
+                        .on_hover_text("Reset zoom to 100% (0)")
+                        .clicked()
+                    {
+                        action = Some(TopBarAction::ResetZoom);
+                    }
+                    if ui
+                        .small_button(RichText::new("－").size(12.0).color(TEXT_PRIMARY))
+                        .on_hover_text("Zoom out (⌘- / Scroll down)")
+                        .clicked()
+                    {
+                        action = Some(TopBarAction::ZoomOut);
+                    }
                 });
             });
         });

@@ -432,6 +432,15 @@ impl LoxonePortableApp {
             TopBarAction::FitPage => {
                 self.needs_initial_fit = true;
             }
+            TopBarAction::ZoomIn => {
+                self.viewport.zoom = (self.viewport.zoom * 1.25).clamp(0.15, 3.0);
+            }
+            TopBarAction::ZoomOut => {
+                self.viewport.zoom = (self.viewport.zoom / 1.25).clamp(0.15, 3.0);
+            }
+            TopBarAction::ResetZoom => {
+                self.execute_palette_action(PaletteAction::ResetZoom);
+            }
         }
     }
 
@@ -919,6 +928,12 @@ impl LoxonePortableApp {
             }
             if ctx.input(|i| i.key_pressed(Key::Num0)) {
                 self.execute_palette_action(PaletteAction::ResetZoom);
+            }
+            if ctx.input(|i| i.key_pressed(Key::Plus) || i.key_pressed(Key::Equals)) {
+                self.execute_top_bar_action(TopBarAction::ZoomIn);
+            }
+            if ctx.input(|i| i.key_pressed(Key::Minus)) {
+                self.execute_top_bar_action(TopBarAction::ZoomOut);
             }
         }
     }

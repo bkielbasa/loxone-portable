@@ -7,7 +7,7 @@ use loxone_core::xref::XrefIndex;
 
 use crate::theme::{
     blend_block_header_color, ACCENT_BLUE, BORDER_SUBTLE, CANVAS_BG, CARD_BG, CARD_BORDER,
-    GRID_DOT, TEXT_MUTED, TEXT_PRIMARY, WIRE_ANALOG, WIRE_DIGITAL,
+    GRID_DOT, TEXT_PRIMARY, WIRE_ANALOG, WIRE_DIGITAL,
 };
 
 pub const LOXONE_UNITS_PER_PX: f32 = 8.0;
@@ -267,8 +267,8 @@ impl CanvasViewport {
         let width_px = (max_x - min_x).max(512.0) / LOXONE_UNITS_PER_PX;
         let height_px = (max_y - min_y).max(192.0) / LOXONE_UNITS_PER_PX;
         let margin = 64.0;
-        let zx = ((view_size.x - margin) / width_px).clamp(0.25, 2.0);
-        let zy = ((view_size.y - margin) / height_px).clamp(0.25, 2.0);
+        let zx = ((view_size.x - margin) / width_px).clamp(0.85, 2.0);
+        let zy = ((view_size.y - margin) / height_px).clamp(0.85, 2.0);
         self.zoom = zx.min(zy);
         self.pan = Vec2::new(
             margin * 0.5 - (min_x / LOXONE_UNITS_PER_PX) * self.zoom,
@@ -500,11 +500,15 @@ pub fn collect_block_display_pins(
 ) -> (Vec<DisplayPin>, Vec<DisplayPin>) {
     let mut inputs = Vec::new();
     let mut outputs = Vec::new();
+    let has_any_wire = block.pins.iter().any(|p| {
+        !p.key.ends_with("Hidden")
+            && (p.has_visible_incoming_links() || has_visible_outgoing_wires(&p.uuid, xref))
+    });
     for pin in &block.pins {
         if pin.key.ends_with("Hidden") {
             continue;
         }
-        if !show_all_pins && !is_pin_connected(pin, xref) {
+        if !show_all_pins && has_any_wire && !is_pin_connected(pin, xref) {
             continue;
         }
         let side = classify_pin_side(block, pin, xref);
@@ -569,7 +573,7 @@ pub fn render_page_canvas(
         if (zoom_delta - 1.0).abs() > 0.001 {
             if let Some(hover_pos) = ui.input(|i| i.pointer.hover_pos()) {
                 let old_zoom = viewport.zoom;
-                viewport.zoom = (viewport.zoom * zoom_delta).clamp(0.2, 3.0);
+                viewport.zoom = (viewport.zoom * zoom_delta).clamp(0.3, 4.0);
                 let rel = hover_pos - origin - viewport.pan;
                 viewport.pan -= rel * (viewport.zoom / old_zoom - 1.0);
             }
@@ -577,7 +581,7 @@ pub fn render_page_canvas(
             if let Some(hover_pos) = ui.input(|i| i.pointer.hover_pos()) {
                 let factor = (1.0 + scroll.y * 0.003).clamp(0.8, 1.25);
                 let old_zoom = viewport.zoom;
-                viewport.zoom = (viewport.zoom * factor).clamp(0.2, 3.0);
+                viewport.zoom = (viewport.zoom * factor).clamp(0.3, 4.0);
                 let rel = hover_pos - origin - viewport.pan;
                 viewport.pan -= rel * (viewport.zoom / old_zoom - 1.0);
             }
@@ -588,13 +592,14 @@ pub fn render_page_canvas(
 
     // Subtle dot grid
     let step = (24.0 * viewport.zoom).max(14.0);
+    let dot_r = (1.3 * viewport.zoom).clamp(1.0, 2.0);
     let start_x = origin.x + (viewport.pan.x % step);
     let start_y = origin.y + (viewport.pan.y % step);
     let mut gx = start_x;
     while gx < canvas_rect.max.x {
         let mut gy = start_y;
         while gy < canvas_rect.max.y {
-            painter.circle_filled(Pos2::new(gx, gy), 1.0, GRID_DOT);
+            painter.circle_filled(Pos2::new(gx, gy), dot_r, GRID_DOT);
             gy += step;
         }
         gx += step;
@@ -645,6 +650,10 @@ pub fn render_page_canvas(
         };
 
         if block.is_note() {
+            let min_w = (170.0 * viewport.zoom).max(110.0);
+            let min_h = (56.0 * viewport.zoom).max(40.0);
+            rect.max.x = rect.max.x.max(rect.min.x + min_w);
+            rect.max.y = rect.max.y.max(rect.min.y + min_h);
             layouts.push(BlockLayout {
                 block,
                 rect,
@@ -657,11 +666,10 @@ pub fn render_page_canvas(
         }
 
         if block.is_ref_bar() {
-            let v_pad = (1.5 * viewport.zoom).min(rect.height() * 0.18);
-            rect = Rect::from_min_max(
-                Pos2::new(rect.min.x, rect.min.y + v_pad),
-                Pos2::new(rect.max.x, rect.max.y - v_pad),
-            );
+            let min_ref_w = (170.0 * viewport.zoom).max(115.0);
+            let target_ref_h = (26.0 * viewport.zoom).clamp(20.0, 42.0);
+            rect.max.x = rect.max.x.max(rect.min.x + min_ref_w);
+            rect.max.y = rect.min.y + rect.height().max(target_ref_h);
             for pin in &block.pins {
                 let side = classify_pin_side(block, pin, &project.xref);
                 let anchor = match side {
@@ -690,10 +698,13 @@ pub fn render_page_canvas(
 
         let (inputs, outputs) = collect_block_display_pins(block, &project.xref, show_all_pins);
 
-        let header_h = (18.0 * viewport.zoom).clamp(6.0, 26.0);
-        let row_h = (11.5 * viewport.zoom).clamp(4.0, 17.0);
-        let body_pad = 4.0 * viewport.zoom;
-        let max_rows = inputs.len().max(outputs.len());
+        let min_block_w = (195.0 * viewport.zoom).max(135.0);
+        rect.max.x = rect.max.x.max(rect.min.x + min_block_w);
+
+        let header_h = (28.0 * viewport.zoom).clamp(20.0, 44.0);
+        let row_h = (19.0 * viewport.zoom).clamp(14.0, 28.0);
+        let body_pad = (6.0 * viewport.zoom).max(4.0);
+        let max_rows = inputs.len().max(outputs.len()).max(1);
         let needed_h = header_h + body_pad * 2.0 + (max_rows as f32) * row_h;
         if needed_h > rect.height() {
             rect.max.y = rect.min.y + needed_h;
@@ -735,13 +746,14 @@ pub fn render_page_canvas(
         });
     }
 
-    // Detect closest hovered pin within 8.0 px
+    // Detect closest hovered pin within 12.0 px
+    let pin_hit_radius = (12.0 * viewport.zoom).clamp(10.0, 16.0);
     let hovered_pin_target: Option<PinHitTarget> = hover_pos.and_then(|hp| {
         pin_hit_targets
             .iter()
             .filter_map(|p| {
                 let d = p.screen_pos.distance(hp);
-                (d <= 8.0).then_some((d, p.clone()))
+                (d <= pin_hit_radius).then_some((d, p.clone()))
             })
             .min_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal))
             .map(|(_, p)| p)
@@ -776,7 +788,7 @@ pub fn render_page_canvas(
                 .iter()
                 .filter_map(|p| {
                     let d = p.screen_pos.distance(ppos);
-                    (d <= 8.0).then_some((d, p.clone()))
+                    (d <= pin_hit_radius).then_some((d, p.clone()))
                 })
                 .min_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal))
                 .map(|(_, p)| p);
@@ -972,14 +984,14 @@ pub fn render_page_canvas(
                     } else if is_highlighted {
                         ACCENT_BLUE
                     } else {
-                        base_color.gamma_multiply(0.82)
+                        base_color.gamma_multiply(0.95)
                     };
                     let wire_width = if is_wire_selected {
-                        (2.8 * viewport.zoom).clamp(1.8, 3.8)
+                        (3.4 * viewport.zoom).clamp(2.4, 5.0)
                     } else if is_highlighted {
-                        (2.2 * viewport.zoom).clamp(1.3, 3.2)
+                        (2.8 * viewport.zoom).clamp(2.0, 4.2)
                     } else {
-                        (1.4 * viewport.zoom).clamp(0.9, 2.2)
+                        (2.1 * viewport.zoom).clamp(1.5, 3.2)
                     };
                     painter.add(egui::Shape::line(
                         bezier_pts.to_vec(),
@@ -994,6 +1006,7 @@ pub fn render_page_canvas(
     }
 
     // Pass 3: Draw blocks, reference bars, and notes ON TOP of wires
+    let pin_label_color = Color32::from_rgb(0xC8, 0xD2, 0xE3);
     for layout in &layouts {
         let block = layout.block;
         let rect = layout.rect;
@@ -1011,13 +1024,14 @@ pub fn render_page_canvas(
         }
 
         let border_stroke = if is_selected {
-            Stroke::new(1.5_f32, ACCENT_BLUE)
+            Stroke::new(2.5_f32, ACCENT_BLUE)
         } else {
-            Stroke::new(1.0_f32, CARD_BORDER)
+            Stroke::new(1.5_f32, CARD_BORDER)
         };
+        let strip_w = (4.5 * viewport.zoom).clamp(3.0, 7.0);
 
         if block.is_note() {
-            let note_bg = Color32::from_rgb(0x28, 0x24, 0x18);
+            let note_bg = Color32::from_rgb(0x2E, 0x29, 0x1B);
             painter.rect(
                 rect,
                 CornerRadius::same(6),
@@ -1030,12 +1044,12 @@ pub fn render_page_canvas(
                 .as_deref()
                 .filter(|s| !s.is_empty())
                 .unwrap_or(&block.title);
-            let clipped = painter.with_clip_rect(rect.shrink(4.0 * viewport.zoom));
+            let clipped = painter.with_clip_rect(rect.shrink(5.0 * viewport.zoom));
             clipped.text(
-                rect.min + Vec2::new(8.0 * viewport.zoom, 6.0 * viewport.zoom),
+                rect.min + Vec2::new(10.0 * viewport.zoom, 8.0 * viewport.zoom),
                 Align2::LEFT_TOP,
                 note_text,
-                FontId::proportional((10.5 * viewport.zoom).clamp(7.0, 15.0)),
+                FontId::proportional((13.0 * viewport.zoom).clamp(10.0, 19.0)),
                 TEXT_PRIMARY,
             );
             continue;
@@ -1044,19 +1058,16 @@ pub fn render_page_canvas(
         if block.is_ref_bar() {
             painter.rect(
                 rect,
-                CornerRadius::same(4),
+                CornerRadius::same(5),
                 header_fill,
                 border_stroke,
                 egui::StrokeKind::Inside,
             );
             let strip = Rect::from_min_max(
                 rect.min,
-                Pos2::new(
-                    (rect.min.x + 3.0 * viewport.zoom).min(rect.max.x),
-                    rect.max.y,
-                ),
+                Pos2::new((rect.min.x + strip_w).min(rect.max.x), rect.max.y),
             );
-            painter.rect_filled(strip, CornerRadius::same(2), accent_color);
+            painter.rect_filled(strip, CornerRadius::same(3), accent_color);
 
             let raw_label = if !block.title.is_empty() {
                 block.title.clone()
@@ -1070,17 +1081,17 @@ pub fn render_page_canvas(
             } else {
                 block.block_type.clone()
             };
-            let max_chars = ((rect.width() - 14.0 * viewport.zoom)
-                / (5.8 * viewport.zoom).max(3.5))
-            .max(6.0) as usize;
+            let max_chars = ((rect.width() - 18.0 * viewport.zoom)
+                / (6.8 * viewport.zoom).max(4.5))
+            .max(8.0) as usize;
             let label = truncate_text(&raw_label, max_chars);
 
             let text_clip = painter.with_clip_rect(rect.shrink(2.0));
             text_clip.text(
-                Pos2::new(rect.min.x + 7.0 * viewport.zoom, rect.center().y),
+                Pos2::new(rect.min.x + 10.0 * viewport.zoom, rect.center().y),
                 Align2::LEFT_CENTER,
                 label,
-                FontId::proportional((10.0 * viewport.zoom).clamp(6.5, 13.0)),
+                FontId::proportional((13.0 * viewport.zoom).clamp(10.0, 19.0)),
                 TEXT_PRIMARY,
             );
 
@@ -1089,15 +1100,16 @@ pub fn render_page_canvas(
                     let is_hovered = viewport.interaction.hovered_pin.as_ref()
                         == Some(&(block.uuid.clone(), pin.key.clone()));
                     let r = if is_hovered {
-                        (4.6 * viewport.zoom).clamp(3.5, 6.5)
+                        (6.5 * viewport.zoom).clamp(5.0, 9.5)
                     } else {
-                        (2.8 * viewport.zoom).clamp(1.8, 4.5)
+                        (4.5 * viewport.zoom).clamp(3.5, 6.8)
                     };
                     painter.circle_filled(
                         anchor,
                         r,
                         if is_hovered { ACCENT_BLUE } else { WIRE_DIGITAL },
                     );
+                    painter.circle_stroke(anchor, r, Stroke::new(1.2_f32, CANVAS_BG));
                 }
             }
             continue;
@@ -1110,53 +1122,60 @@ pub fn render_page_canvas(
 
         painter.rect(
             rect,
-            CornerRadius::same(6),
+            CornerRadius::same(7),
             CARD_BG,
             border_stroke,
             egui::StrokeKind::Inside,
         );
-        painter.rect_filled(header_rect, CornerRadius::same(6), header_fill);
+        painter.rect_filled(header_rect, CornerRadius::same(7), header_fill);
+        painter.line_segment(
+            [
+                Pos2::new(header_rect.min.x, header_rect.max.y),
+                Pos2::new(header_rect.max.x, header_rect.max.y),
+            ],
+            Stroke::new(1.0_f32, CARD_BORDER),
+        );
         let strip = Rect::from_min_max(
             header_rect.min,
             Pos2::new(
-                (header_rect.min.x + 3.0 * viewport.zoom).min(header_rect.max.x),
+                (header_rect.min.x + strip_w).min(header_rect.max.x),
                 header_rect.max.y,
             ),
         );
-        painter.rect_filled(strip, CornerRadius::same(2), accent_color);
+        painter.rect_filled(strip, CornerRadius::same(3), accent_color);
 
         let raw_title = if block.title.is_empty() {
             &block.block_type
         } else {
             &block.title
         };
-        let title_max_chars = ((header_rect.width() - 14.0 * viewport.zoom)
-            / (6.0 * viewport.zoom).max(3.5))
-        .max(6.0) as usize;
+        let title_max_chars = ((header_rect.width() - 18.0 * viewport.zoom)
+            / (7.2 * viewport.zoom).max(4.5))
+        .max(8.0) as usize;
         let title = truncate_text(raw_title, title_max_chars);
-        let header_clip = painter.with_clip_rect(header_rect.shrink(1.5));
+        let header_clip = painter.with_clip_rect(header_rect.shrink(2.0));
         header_clip.text(
             Pos2::new(
-                header_rect.min.x + 7.0 * viewport.zoom,
+                header_rect.min.x + 10.0 * viewport.zoom,
                 header_rect.center().y,
             ),
             Align2::LEFT_CENTER,
             title,
-            FontId::proportional((10.5 * viewport.zoom).clamp(6.5, 14.0)),
+            FontId::proportional((13.5 * viewport.zoom).clamp(10.5, 20.0)),
             TEXT_PRIMARY,
         );
 
-        let body_top = header_rect.max.y + 4.0 * viewport.zoom;
+        let body_top = header_rect.max.y + (6.0 * viewport.zoom).max(4.0);
         let row_h = layout.row_h;
         let has_both_sides = !layout.inputs.is_empty() && !layout.outputs.is_empty();
         let avail_label_w = if has_both_sides {
-            rect.width() * 0.46 - 8.0 * viewport.zoom
+            rect.width() * 0.46 - 10.0 * viewport.zoom
         } else {
-            rect.width() - 16.0 * viewport.zoom
+            rect.width() - 20.0 * viewport.zoom
         };
         let pin_max_chars =
-            (avail_label_w / (5.4 * viewport.zoom).max(3.2)).max(4.0) as usize;
-        let pin_font = FontId::monospace((8.8 * viewport.zoom).clamp(5.5, 11.5));
+            (avail_label_w / (6.4 * viewport.zoom).max(4.0)).max(5.0) as usize;
+        let pin_font = FontId::monospace((11.5 * viewport.zoom).clamp(9.0, 16.5));
 
         for (i, pin) in layout.inputs.iter().enumerate() {
             let py = body_top + (i as f32 + 0.5) * row_h;
@@ -1164,21 +1183,22 @@ pub fn render_page_canvas(
             let is_hovered = viewport.interaction.hovered_pin.as_ref()
                 == Some(&(block.uuid.clone(), pin.key.clone()));
             let r = if is_hovered {
-                (4.4 * viewport.zoom).clamp(3.2, 6.2)
+                (6.5 * viewport.zoom).clamp(5.0, 9.5)
             } else {
-                (2.6 * viewport.zoom).clamp(1.6, 4.0)
+                (4.5 * viewport.zoom).clamp(3.5, 6.8)
             };
             painter.circle_filled(
                 anchor,
                 r,
                 if is_hovered { ACCENT_BLUE } else { WIRE_DIGITAL },
             );
+            painter.circle_stroke(anchor, r, Stroke::new(1.2_f32, CANVAS_BG));
             painter.text(
-                Pos2::new(rect.min.x + 5.5 * viewport.zoom, py),
+                Pos2::new(rect.min.x + 8.5 * viewport.zoom, py),
                 Align2::LEFT_CENTER,
                 truncate_text(&pin.key, pin_max_chars),
                 pin_font.clone(),
-                if is_hovered { TEXT_PRIMARY } else { TEXT_MUTED },
+                if is_hovered { TEXT_PRIMARY } else { pin_label_color },
             );
         }
 
@@ -1188,21 +1208,22 @@ pub fn render_page_canvas(
             let is_hovered = viewport.interaction.hovered_pin.as_ref()
                 == Some(&(block.uuid.clone(), pin.key.clone()));
             let r = if is_hovered {
-                (4.4 * viewport.zoom).clamp(3.2, 6.2)
+                (6.5 * viewport.zoom).clamp(5.0, 9.5)
             } else {
-                (2.6 * viewport.zoom).clamp(1.6, 4.0)
+                (4.5 * viewport.zoom).clamp(3.5, 6.8)
             };
             painter.circle_filled(
                 anchor,
                 r,
                 if is_hovered { ACCENT_BLUE } else { WIRE_ANALOG },
             );
+            painter.circle_stroke(anchor, r, Stroke::new(1.2_f32, CANVAS_BG));
             painter.text(
-                Pos2::new(rect.max.x - 5.5 * viewport.zoom, py),
+                Pos2::new(rect.max.x - 8.5 * viewport.zoom, py),
                 Align2::RIGHT_CENTER,
                 truncate_text(&pin.key, pin_max_chars),
                 pin_font.clone(),
-                if is_hovered { TEXT_PRIMARY } else { TEXT_MUTED },
+                if is_hovered { TEXT_PRIMARY } else { pin_label_color },
             );
         }
     }
@@ -1236,7 +1257,7 @@ pub fn render_page_canvas(
 
             let first_meta = pill_sources[0];
             let extra_count = pill_sources.len() - 1;
-            let owner_short = truncate_text(&first_meta.owner_title, 14);
+            let owner_short = truncate_text(&first_meta.owner_title, 16);
             let pin_short = truncate_text(&first_meta.pin_key, 6);
             let tag = if extra_count > 0 {
                 format!("🔗 {}:{} (+{})", owner_short, pin_short, extra_count)
@@ -1244,11 +1265,11 @@ pub fn render_page_canvas(
                 format!("🔗 {}:{}", owner_short, pin_short)
             };
 
-            let char_w = (5.2 * viewport.zoom).clamp(3.6, 6.8);
-            let pill_w = ((tag.chars().count() as f32) * char_w + 10.0 * viewport.zoom)
-                .clamp(46.0 * viewport.zoom, 138.0 * viewport.zoom);
-            let pill_h = (11.0 * viewport.zoom).clamp(7.0, 15.0);
-            let gap = 5.0 * viewport.zoom;
+            let char_w = (6.8 * viewport.zoom).clamp(5.0, 9.5);
+            let pill_w = ((tag.chars().count() as f32) * char_w + 14.0 * viewport.zoom)
+                .clamp(64.0 * viewport.zoom, 190.0 * viewport.zoom);
+            let pill_h = (18.0 * viewport.zoom).clamp(14.0, 26.0);
+            let gap = (8.0 * viewport.zoom).max(5.0);
             let pill_rect = Rect::from_min_max(
                 Pos2::new(dst_pos.x - pill_w - gap, dst_pos.y - pill_h * 0.5),
                 Pos2::new(dst_pos.x - gap, dst_pos.y + pill_h * 0.5),
@@ -1256,21 +1277,21 @@ pub fn render_page_canvas(
 
             painter.line_segment(
                 [Pos2::new(pill_rect.max.x, dst_pos.y), dst_pos],
-                Stroke::new(1.1_f32, BORDER_SUBTLE),
+                Stroke::new(1.5_f32, CARD_BORDER),
             );
             painter.rect(
                 pill_rect,
-                CornerRadius::same(3),
+                CornerRadius::same(4),
                 CARD_BG,
-                Stroke::new(1.0_f32, BORDER_SUBTLE),
+                Stroke::new(1.2_f32, CARD_BORDER),
                 egui::StrokeKind::Inside,
             );
-            let pill_clip = painter.with_clip_rect(pill_rect.shrink(1.0));
+            let pill_clip = painter.with_clip_rect(pill_rect.shrink(1.5));
             pill_clip.text(
                 pill_rect.center(),
                 Align2::CENTER_CENTER,
                 tag,
-                FontId::proportional((8.2 * viewport.zoom).clamp(5.5, 10.5)),
+                FontId::proportional((10.5 * viewport.zoom).clamp(8.5, 15.0)),
                 ACCENT_BLUE,
             );
 
@@ -1304,20 +1325,20 @@ pub fn render_page_canvas(
             let pts = cubic_bezier_points(src, dst);
             painter.add(egui::Shape::line(
                 pts.to_vec(),
-                Stroke::new(2.2_f32, ACCENT_BLUE),
+                Stroke::new(2.8_f32, ACCENT_BLUE),
             ));
-            painter.circle_filled(wire_drag.start_screen_pos, 4.5, ACCENT_BLUE);
+            painter.circle_filled(wire_drag.start_screen_pos, 5.5, ACCENT_BLUE);
         }
     }
 
     if let Some((mid_pt, _)) = selected_wire_badge {
-        painter.circle_filled(mid_pt, 9.0, Color32::from_rgb(0xD9, 0x38, 0x38));
-        painter.circle_stroke(mid_pt, 9.0, Stroke::new(1.2_f32, TEXT_PRIMARY));
+        painter.circle_filled(mid_pt, 10.5, Color32::from_rgb(0xD9, 0x38, 0x38));
+        painter.circle_stroke(mid_pt, 10.5, Stroke::new(1.4_f32, TEXT_PRIMARY));
         painter.text(
             mid_pt,
             Align2::CENTER_CENTER,
             "✕",
-            FontId::proportional(10.5),
+            FontId::proportional(11.5),
             TEXT_PRIMARY,
         );
     }

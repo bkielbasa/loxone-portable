@@ -1796,8 +1796,8 @@ mod tests {
             .unwrap();
         assert_eq!(moved_blk.px, 350.0);
         assert_eq!(moved_blk.py, 480.0);
-        assert_eq!(moved_blk.px2, 350.0 + 512.0);
-        assert_eq!(moved_blk.py2, 480.0 + 192.0);
+        assert_eq!(moved_blk.px2, 350.0 + 2112.0);
+        assert_eq!(moved_blk.py2, 480.0 + 768.0);
 
         let xml = serialize_loxone_xml(&project).expect("should serialize");
         let reparsed = parse_loxone_xml(&xml).expect("should reparse");

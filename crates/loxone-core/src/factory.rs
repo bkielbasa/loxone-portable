@@ -137,8 +137,8 @@ pub fn new_page_block(type_name: &str, title: &str, px: f32, py: f32) -> PageBlo
     };
     let category = schema.map(|s| s.category_group).unwrap_or("Logic");
     let color = default_category_color(category);
-    let px2 = px + 512.0;
-    let py2 = py + 192.0;
+    let px2 = px + 2112.0;
+    let py2 = py + 768.0;
 
     let mut raw_attributes = vec![
         ("Type".to_string(), type_name.to_string()),
@@ -213,8 +213,8 @@ pub fn new_reference_block(
         .find(|(k, _)| k == "Desc")
         .map(|(_, v)| v.clone());
 
-    let px2 = px + 512.0;
-    let py2 = py + 192.0;
+    let px2 = px + 2112.0;
+    let py2 = py + 256.0;
     let color = [238, 238, 238];
 
     let mut raw_attributes = vec![
@@ -573,8 +573,8 @@ mod tests {
         assert_eq!(block.title, "Hallway Stair Light");
         assert_eq!(block.px, 128.0);
         assert_eq!(block.py, 256.0);
-        assert_eq!(block.px2, 640.0);
-        assert_eq!(block.py2, 448.0);
+        assert_eq!(block.px2, 2240.0);
+        assert_eq!(block.py2, 1024.0);
         assert!(block
             .pins
             .iter()
