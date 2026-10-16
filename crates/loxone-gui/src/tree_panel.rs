@@ -17,6 +17,13 @@ pub enum TreeAction {
     SelectPage(usize),
     SelectObject(String),
     NavigateToBlock { page_index: usize, block_uuid: String },
+    CreatePage,
+    CreateRoom,
+    CreateCategory,
+    CreateMemoryFlag,
+    CreateVirtualIn,
+    CreateVirtualOut,
+    PlaceOnPage(String),
 }
 
 pub fn render_left_explorer(
@@ -59,6 +66,59 @@ pub fn render_left_explorer(
             .desired_width(f32::INFINITY),
     );
     ui.add_space(4.0);
+    ui.horizontal(|ui| match *active_tab {
+        LeftTab::Pages => {
+            if ui
+                .small_button(RichText::new("+ Page").color(ACCENT_BLUE))
+                .on_hover_text("Create a new schematic page")
+                .clicked()
+            {
+                action = Some(TreeAction::CreatePage);
+            }
+        }
+        LeftTab::Periphery => {
+            if ui
+                .small_button(RichText::new("+ VIn").color(ACCENT_BLUE))
+                .on_hover_text("Create a new Virtual Input")
+                .clicked()
+            {
+                action = Some(TreeAction::CreateVirtualIn);
+            }
+            if ui
+                .small_button(RichText::new("+ VOut").color(ACCENT_BLUE))
+                .on_hover_text("Create a new Virtual Output")
+                .clicked()
+            {
+                action = Some(TreeAction::CreateVirtualOut);
+            }
+        }
+        LeftTab::Rooms => {
+            if ui
+                .small_button(RichText::new("+ Room").color(ACCENT_BLUE))
+                .on_hover_text("Create a new Room")
+                .clicked()
+            {
+                action = Some(TreeAction::CreateRoom);
+            }
+            if ui
+                .small_button(RichText::new("+ Category").color(ACCENT_BLUE))
+                .on_hover_text("Create a new Category")
+                .clicked()
+            {
+                action = Some(TreeAction::CreateCategory);
+            }
+        }
+        LeftTab::System => {
+            if ui
+                .small_button(RichText::new("+ Flag").color(ACCENT_BLUE))
+                .on_hover_text("Create a new Memory Flag (Merker)")
+                .clicked()
+            {
+                action = Some(TreeAction::CreateMemoryFlag);
+            }
+        }
+    });
+    ui.add_space(2.0);
     ui.separator();
 
     let q = filter.trim().to_lowercase();
@@ -105,6 +165,12 @@ pub fn render_left_explorer(
                     if resp.clicked() {
                         action = Some(TreeAction::SelectPage(idx));
                     }
+                    resp.context_menu(|ui| {
+                        if ui.button("🔍 Inspect Page").clicked() {
+                            action = Some(TreeAction::SelectObject(page.uuid.clone()));
+                            ui.close_menu();
+                        }
+                    });
                 }
             }
             LeftTab::Periphery => {
@@ -121,7 +187,7 @@ pub fn render_left_explorer(
                     if !q.is_empty() && !place.title.to_lowercase().contains(&q) {
                         continue;
                     }
-                    egui::CollapsingHeader::new(
+                    let header = egui::CollapsingHeader::new(
                         RichText::new(&place.title).color(TEXT_PRIMARY).strong(),
                     )
                     .id_salt(&place.uuid)
@@ -155,6 +221,41 @@ pub fn render_left_explorer(
                             }
                         }
                     });
+                    if header.header_response.clicked() {
+                        action = Some(TreeAction::SelectObject(place.uuid.clone()));
+                    }
+                }
+
+                if !project.categories.is_empty() {
+                    ui.add_space(6.0);
+                    ui.separator();
+                    ui.label(
+                        RichText::new("CATEGORIES")
+                            .size(10.5)
+                            .color(TEXT_MUTED)
+                            .strong(),
+                    );
+                    let mut cats: Vec<_> = project.categories.values().collect();
+                    cats.sort_by(|a, b| a.title.cmp(&b.title));
+                    for cat in cats {
+                        if !q.is_empty() && !cat.title.to_lowercase().contains(&q) {
+                            continue;
+                        }
+                        let is_sel = selected_uuid == Some(cat.uuid.as_str());
+                        if ui
+                            .selectable_label(
+                                is_sel,
+                                RichText::new(&cat.title).color(if is_sel {
+                                    ACCENT_BLUE
+                                } else {
+                                    TEXT_PRIMARY
+                                }),
+                            )
+                            .clicked()
+                        {
+                            action = Some(TreeAction::SelectObject(cat.uuid.clone()));
+                        }
+                    }
                 }
             }
             LeftTab::System => {
@@ -183,6 +284,10 @@ fn node_matches_query(node: &TreeNode, q: &str) -> bool {
     node.children.iter().any(|c| node_matches_query(c, q))
 }
 
+fn is_placeable_tree_node(control_type: &str) -> bool {
+    crate::insert_modal::reference_kind_for_tree_node(control_type).is_some()
+}
+
 fn render_tree_node(
     ui: &mut Ui,
     project: &LoxoneProject,
@@ -201,6 +306,7 @@ fn render_tree_node(
     };
     let usages = project.xref.usages_for(&node.uuid).len();
     let is_selected = !node.uuid.is_empty() && selected_uuid == Some(node.uuid.as_str());
+    let placeable = !node.uuid.is_empty() && is_placeable_tree_node(&node.control_type);
 
     if node.children.is_empty() {
         ui.horizontal(|ui| {
@@ -209,19 +315,24 @@ fn render_tree_node(
             } else {
                 label_title.to_string()
             };
-            if ui
-                .selectable_label(
-                    is_selected,
-                    RichText::new(text).color(if is_selected {
-                        ACCENT_BLUE
-                    } else {
-                        TEXT_PRIMARY
-                    }),
-                )
-                .clicked()
-                && !node.uuid.is_empty()
-            {
+            let resp = ui.selectable_label(
+                is_selected,
+                RichText::new(text).color(if is_selected {
+                    ACCENT_BLUE
+                } else {
+                    TEXT_PRIMARY
+                }),
+            );
+            if resp.clicked() && !node.uuid.is_empty() {
                 action = Some(TreeAction::SelectObject(node.uuid.clone()));
+            }
+            if placeable {
+                resp.context_menu(|ui| {
+                    if ui.button("📥 Place on Current Page").clicked() {
+                        action = Some(TreeAction::PlaceOnPage(node.uuid.clone()));
+                        ui.close_menu();
+                    }
+                });
             }
         });
     } else {
@@ -249,6 +360,14 @@ fn render_tree_node(
         });
         if header.header_response.clicked() && !node.uuid.is_empty() {
             action = Some(TreeAction::SelectObject(node.uuid.clone()));
+        }
+        if placeable {
+            header.header_response.context_menu(|ui| {
+                if ui.button("📥 Place on Current Page").clicked() {
+                    action = Some(TreeAction::PlaceOnPage(node.uuid.clone()));
+                    ui.close_menu();
+                }
+            });
         }
     }
 

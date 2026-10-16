@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use egui::{Align2, Color32, CornerRadius, Key, Order, RichText, Stroke};
 use loxone_core::block_schema::{BlockSchema, page_block_schemas};
 use loxone_core::factory::default_category_color;

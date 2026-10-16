@@ -15,6 +15,9 @@ pub enum TopBarAction {
     ToggleRightPanel,
     OpenFile,
     SaveFile,
+    AddBlock,
+    Undo,
+    Redo,
     OpenMiniserverModal,
     OpenCommandPalette,
     ToggleCompactPins,
@@ -24,6 +27,7 @@ pub enum TopBarAction {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToolbarGroup {
     File,
+    Authoring,
     Miniserver,
     View,
 }
@@ -161,6 +165,42 @@ pub fn build_file_toolbar_items(can_save: bool, is_dirty: bool) -> Vec<ToolbarIt
     ]
 }
 
+pub fn build_authoring_toolbar_items(
+    has_project: bool,
+    can_undo: bool,
+    can_redo: bool,
+) -> Vec<ToolbarItem> {
+    vec![
+        ToolbarItem {
+            group: ToolbarGroup::Authoring,
+            icon: "➕",
+            label: "Add Block (A)".to_string(),
+            tooltip: "Insert a function block or reference on the active page (A)".to_string(),
+            action: TopBarAction::AddBlock,
+            enabled: has_project,
+            accent: true,
+        },
+        ToolbarItem {
+            group: ToolbarGroup::Authoring,
+            icon: "↶",
+            label: "Undo".to_string(),
+            tooltip: "Undo last edit (⌘Z / Ctrl+Z)".to_string(),
+            action: TopBarAction::Undo,
+            enabled: can_undo,
+            accent: false,
+        },
+        ToolbarItem {
+            group: ToolbarGroup::Authoring,
+            icon: "↷",
+            label: "Redo".to_string(),
+            tooltip: "Redo edit (⌘⇧Z / Ctrl+Y)".to_string(),
+            action: TopBarAction::Redo,
+            enabled: can_redo,
+            accent: false,
+        },
+    ]
+}
+
 pub fn build_miniserver_toolbar_items(is_busy: bool) -> Vec<ToolbarItem> {
     vec![ToolbarItem {
         group: ToolbarGroup::Miniserver,
@@ -247,6 +287,8 @@ pub fn render_top_bar(
     connection_status: &ConnectionStatus,
     configured_host: Option<&str>,
     is_dirty: bool,
+    can_undo: bool,
+    can_redo: bool,
 ) -> Option<TopBarAction> {
     let mut action = None;
     let can_save = project
@@ -306,6 +348,15 @@ pub fn render_top_bar(
                 // 2. File Group (Open, Save .Loxone)
                 let file_items = build_file_toolbar_items(can_save, is_dirty);
                 if let Some(act) = render_toolbar_items(ui, &file_items) {
+                    action = Some(act);
+                }
+
+                ui.separator();
+
+                // 2b. Authoring Group (Add Block, Undo, Redo)
+                let auth_items =
+                    build_authoring_toolbar_items(project.is_some(), can_undo, can_redo);
+                if let Some(act) = render_toolbar_items(ui, &auth_items) {
                     action = Some(act);
                 }
 
@@ -459,6 +510,16 @@ mod tests {
         assert!(file_items_dirty[1].accent);
         assert_eq!(file_items_dirty[1].label, "Save .Loxone *");
 
+        let auth_items = build_authoring_toolbar_items(true, true, false);
+        assert_eq!(auth_items.len(), 3);
+        assert_eq!(auth_items[0].group, ToolbarGroup::Authoring);
+        assert_eq!(auth_items[0].action, TopBarAction::AddBlock);
+        assert!(auth_items[0].enabled);
+        assert_eq!(auth_items[1].action, TopBarAction::Undo);
+        assert!(auth_items[1].enabled);
+        assert_eq!(auth_items[2].action, TopBarAction::Redo);
+        assert!(!auth_items[2].enabled);
+
         let ms_items_idle = build_miniserver_toolbar_items(false);
         assert!(!ms_items_idle.is_empty());
         assert_eq!(ms_items_idle[0].group, ToolbarGroup::Miniserver);
@@ -488,6 +549,8 @@ mod tests {
                 &status,
                 Some("192.168.1.100"),
                 true,
+                false,
+                false,
             );
         });
     }

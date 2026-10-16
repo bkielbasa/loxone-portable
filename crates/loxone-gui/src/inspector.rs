@@ -20,6 +20,8 @@ pub enum InspectorAction {
 pub struct InspectorOutput {
     pub nav_action: Option<InspectorAction>,
     pub edits: Vec<ProjectEdit>,
+    pub delete_uuid: Option<String>,
+    pub place_on_page_uuid: Option<String>,
 }
 
 pub fn render_right_inspector(
@@ -51,7 +53,7 @@ pub fn render_right_inspector(
     let schema = lookup_block_schema(&summary.object_type);
 
     ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-        render_kb_header_card(ui, project, summary, schema);
+        render_kb_header_card(ui, project, summary, schema, &mut output);
         ui.add_space(8.0);
         render_used_on_pages_section(ui, project, uuid, &mut output);
         ui.add_space(8.0);
@@ -111,6 +113,7 @@ fn render_kb_header_card(
     project: &LoxoneProject,
     summary: &loxone_core::xref::ObjectSummary,
     schema: Option<&'static BlockSchema>,
+    output: &mut InspectorOutput,
 ) {
     egui::Frame::new()
         .fill(CARD_BG)
@@ -182,6 +185,54 @@ fn render_kb_header_card(
                     );
                 }
             }
+
+            ui.add_space(6.0);
+            ui.horizontal_wrapped(|ui| match &summary.location {
+                ObjectLocation::PageBlock { .. } => {
+                    if ui
+                        .small_button(
+                            RichText::new("🗑 Delete Block").color(crate::theme::STATUS_ERROR),
+                        )
+                        .on_hover_text("Delete this block and its connected wires (Delete)")
+                        .clicked()
+                    {
+                        output.delete_uuid = Some(summary.uuid.clone());
+                    }
+                }
+                ObjectLocation::TreeNode { .. } => {
+                    if crate::insert_modal::reference_kind_for_tree_node(&summary.object_type)
+                        .is_some()
+                        && ui
+                            .small_button(
+                                RichText::new("📥 Place on Current Page").color(ACCENT_BLUE),
+                            )
+                            .on_hover_text("Add an Input/Output reference to this item on the active page")
+                            .clicked()
+                    {
+                        output.place_on_page_uuid = Some(summary.uuid.clone());
+                    }
+                    if matches!(
+                        summary.object_type.as_str(),
+                        "Merker" | "Memory" | "VirtualIn" | "VirtualOut" | "VirtualOutCmd"
+                    ) && ui
+                        .small_button(RichText::new("🗑 Delete").color(crate::theme::STATUS_ERROR))
+                        .on_hover_text("Delete this item and its schematic references")
+                        .clicked()
+                    {
+                        output.delete_uuid = Some(summary.uuid.clone());
+                    }
+                }
+                ObjectLocation::Category | ObjectLocation::Place | ObjectLocation::Page { .. } => {
+                    if ui
+                        .small_button(RichText::new("🗑 Delete").color(crate::theme::STATUS_ERROR))
+                        .on_hover_text("Delete this item")
+                        .clicked()
+                    {
+                        output.delete_uuid = Some(summary.uuid.clone());
+                    }
+                }
+                ObjectLocation::DocumentRoot => {}
+            });
         });
 }
 
@@ -483,7 +534,7 @@ fn render_page_block_inspector(
     }
 
     ui.add_space(6.0);
-    render_documented_pins_section(ui, project, &block.pins, schema, output);
+    render_documented_pins_section(ui, project, &block.uuid, &block.pins, schema, output);
 
     ui.add_space(6.0);
     render_advanced_xml_section(
@@ -535,7 +586,7 @@ fn render_tree_node_inspector(
     );
 
     ui.add_space(6.0);
-    render_documented_pins_section(ui, project, &node.pins, schema, output);
+    render_documented_pins_section(ui, project, &node.uuid, &node.pins, schema, output);
 
     ui.add_space(6.0);
     render_advanced_xml_section(
@@ -1075,6 +1126,7 @@ fn render_linked_target_section(
 fn render_documented_pins_section(
     ui: &mut Ui,
     project: &LoxoneProject,
+    control_uuid: &str,
     pins: &[ConnectorPin],
     schema: Option<&'static BlockSchema>,
     output: &mut InspectorOutput,
@@ -1113,29 +1165,58 @@ fn render_documented_pins_section(
                 ui.label(RichText::new(d.description).size(10.0).color(TEXT_MUTED));
             }
 
-            // Incoming wire navigation links
+            // Incoming wire navigation links + disconnect button
             for link in &pin.incoming_links {
                 if link.is_hidden() {
                     continue;
                 }
-                if let Some(src) = project.xref.pins_by_uuid.get(&link.source_pin_uuid) {
-                    if let Some(p_idx) = src.page_index {
-                        let page_name = src.page_title.as_deref().unwrap_or("Page");
-                        let btn_label = format!(
-                            "  ⬅ {}.{}: {} ({})",
-                            src.owner_title, src.pin_key, src.owner_type, page_name
-                        );
-                        if ui
-                            .small_button(RichText::new(btn_label).color(ACCENT_BLUE))
-                            .clicked()
-                        {
-                            output.nav_action = Some(InspectorAction::NavigateToBlock {
-                                page_index: p_idx,
-                                block_uuid: src.owner_uuid.clone(),
-                            });
+                ui.horizontal(|ui| {
+                    if let Some(src) = project.xref.pins_by_uuid.get(&link.source_pin_uuid) {
+                        if let Some(p_idx) = src.page_index {
+                            let page_name = src.page_title.as_deref().unwrap_or("Page");
+                            let btn_label = format!(
+                                "  ⬅ {}.{}: {} ({})",
+                                src.owner_title, src.pin_key, src.owner_type, page_name
+                            );
+                            if ui
+                                .small_button(RichText::new(btn_label).color(ACCENT_BLUE))
+                                .clicked()
+                            {
+                                output.nav_action = Some(InspectorAction::NavigateToBlock {
+                                    page_index: p_idx,
+                                    block_uuid: src.owner_uuid.clone(),
+                                });
+                            }
+                        } else {
+                            ui.label(
+                                RichText::new(format!(
+                                    "  ⬅ {}.{} ({})",
+                                    src.owner_title, src.pin_key, src.owner_type
+                                ))
+                                .size(11.0)
+                                .color(TEXT_MUTED),
+                            );
                         }
+                    } else {
+                        ui.label(
+                            RichText::new(format!("  ⬅ {}", link.source_pin_uuid))
+                                .size(10.5)
+                                .monospace()
+                                .color(TEXT_MUTED),
+                        );
                     }
-                }
+                    if ui
+                        .small_button(RichText::new("✕").color(crate::theme::STATUS_ERROR))
+                        .on_hover_text("Disconnect wire")
+                        .clicked()
+                    {
+                        output.edits.push(ProjectEdit::RemoveWireLink {
+                            target_block_uuid: control_uuid.to_string(),
+                            target_pin_key: pin.key.clone(),
+                            source_pin_uuid: link.source_pin_uuid.clone(),
+                        });
+                    }
+                });
             }
 
             // Outgoing wire navigation links

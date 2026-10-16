@@ -5,11 +5,14 @@ use egui::{Context, Key, Stroke};
 use loxone_core::miniserver::{
     BackupSnapshot, ConnectionProfile, ConnectionStatus, MiniserverClient, MiniserverCredentials,
 };
-use loxone_core::model::LoxoneProject;
+use loxone_core::model::{LoxoneProject, TreeNode, TreeSectionKind};
 use loxone_core::parser::{load_loxone_file, parse_loxone_xml};
+use loxone_core::writer::ProjectEdit;
+use loxone_core::xref::ObjectLocation;
 
 use crate::canvas::{render_page_canvas, CanvasAction, CanvasViewport};
 use crate::command_palette::{CommandPaletteState, PaletteAction};
+use crate::insert_modal::{show_insert_modal, InsertModalSelection, InsertModalState};
 use crate::inspector::{render_right_inspector, InspectorAction};
 use crate::miniserver_modal::{
     render_miniserver_modal, MiniserverModalAction, MiniserverModalState,
@@ -38,6 +41,10 @@ pub struct LoxonePortableApp {
     pub project: Option<LoxoneProject>,
     pub loaded_path: Option<PathBuf>,
     pub is_dirty: bool,
+    pub undo_stack: Vec<ProjectEdit>,
+    pub redo_stack: Vec<ProjectEdit>,
+    pub insert_modal: InsertModalState,
+    pub next_created_counter: usize,
     pub error_banner: Option<String>,
     pub active_page_index: usize,
     pub selected_uuid: Option<String>,
@@ -67,6 +74,10 @@ impl Default for LoxonePortableApp {
             project: None,
             loaded_path: None,
             is_dirty: false,
+            undo_stack: Vec::new(),
+            redo_stack: Vec::new(),
+            insert_modal: InsertModalState::default(),
+            next_created_counter: 1,
             error_banner: None,
             active_page_index: 0,
             selected_uuid: None,
@@ -103,6 +114,10 @@ impl LoxonePortableApp {
                 self.project = Some(proj);
                 self.loaded_path = Some(path.to_path_buf());
                 self.is_dirty = false;
+                self.undo_stack.clear();
+                self.redo_stack.clear();
+                self.insert_modal.close();
+                self.viewport.interaction = Default::default();
                 self.error_banner = None;
                 self.active_page_index = 0;
                 self.selected_uuid = None;
@@ -125,6 +140,10 @@ impl LoxonePortableApp {
         self.project = Some(proj);
         self.loaded_path = None;
         self.is_dirty = false;
+        self.undo_stack.clear();
+        self.redo_stack.clear();
+        self.insert_modal.close();
+        self.viewport.interaction = Default::default();
         self.error_banner = None;
         self.active_page_index = 0;
         self.selected_uuid = None;
@@ -139,17 +158,68 @@ impl LoxonePortableApp {
         Ok(())
     }
 
-    pub fn apply_project_edit(&mut self, edit: loxone_core::writer::ProjectEdit) {
+    pub fn can_undo(&self) -> bool {
+        !self.undo_stack.is_empty()
+    }
+
+    pub fn can_redo(&self) -> bool {
+        !self.redo_stack.is_empty()
+    }
+
+    pub fn execute_edit(&mut self, edit: ProjectEdit) {
         if let Some(proj) = &mut self.project {
-            match loxone_core::writer::apply_edit(proj, &edit) {
-                Ok(()) => {
+            match loxone_core::writer::apply_edit_with_inverse(proj, &edit) {
+                Ok(inverse) => {
+                    self.undo_stack.push(inverse);
+                    self.redo_stack.clear();
                     self.is_dirty = true;
+                    self.error_banner = None;
                 }
                 Err(e) => {
                     self.error_banner = Some(format!("Edit error: {}", e));
                 }
             }
         }
+    }
+
+    pub fn undo(&mut self) {
+        let Some(inv) = self.undo_stack.pop() else {
+            return;
+        };
+        if let Some(proj) = &mut self.project {
+            match loxone_core::writer::apply_edit_with_inverse(proj, &inv) {
+                Ok(redo_edit) => {
+                    self.redo_stack.push(redo_edit);
+                    self.is_dirty = true;
+                    self.error_banner = None;
+                }
+                Err(e) => {
+                    self.error_banner = Some(format!("Undo error: {}", e));
+                }
+            }
+        }
+    }
+
+    pub fn redo(&mut self) {
+        let Some(redo_edit) = self.redo_stack.pop() else {
+            return;
+        };
+        if let Some(proj) = &mut self.project {
+            match loxone_core::writer::apply_edit_with_inverse(proj, &redo_edit) {
+                Ok(undo_edit) => {
+                    self.undo_stack.push(undo_edit);
+                    self.is_dirty = true;
+                    self.error_banner = None;
+                }
+                Err(e) => {
+                    self.error_banner = Some(format!("Redo error: {}", e));
+                }
+            }
+        }
+    }
+
+    pub fn apply_project_edit(&mut self, edit: ProjectEdit) {
+        self.execute_edit(edit);
     }
 
     pub fn save_xml_to_path(&mut self, path: &Path) -> Result<(), String> {
@@ -339,6 +409,17 @@ impl LoxonePortableApp {
             TopBarAction::SaveFile => {
                 self.execute_palette_action(PaletteAction::SaveFile);
             }
+            TopBarAction::AddBlock => {
+                if self.project.is_some() {
+                    self.insert_modal.open_at(None);
+                }
+            }
+            TopBarAction::Undo => {
+                self.undo();
+            }
+            TopBarAction::Redo => {
+                self.redo();
+            }
             TopBarAction::OpenMiniserverModal => {
                 self.open_miniserver_modal();
             }
@@ -350,6 +431,335 @@ impl LoxonePortableApp {
             }
             TopBarAction::FitPage => {
                 self.needs_initial_fit = true;
+            }
+        }
+    }
+
+    pub fn delete_object_by_uuid(&mut self, uuid: &str) {
+        let Some(proj) = &self.project else {
+            return;
+        };
+        let Some(summary) = proj.xref.objects_by_uuid.get(uuid).cloned() else {
+            return;
+        };
+        match summary.location {
+            ObjectLocation::PageBlock { page_index, .. } => {
+                if let Some(page) = proj.pages.get(page_index) {
+                    let page_uuid = page.uuid.clone();
+                    self.execute_edit(ProjectEdit::RemovePageBlock {
+                        page_uuid,
+                        block_uuid: uuid.to_string(),
+                    });
+                }
+            }
+            ObjectLocation::Page { .. } => {
+                if proj.pages.len() <= 1 {
+                    self.error_banner =
+                        Some("Cannot delete the last remaining page.".to_string());
+                    return;
+                }
+                self.execute_edit(ProjectEdit::RemovePage {
+                    page_uuid: uuid.to_string(),
+                });
+                if let Some(p) = &self.project {
+                    if self.active_page_index >= p.pages.len() && !p.pages.is_empty() {
+                        self.active_page_index = p.pages.len() - 1;
+                    }
+                }
+            }
+            ObjectLocation::Place => {
+                self.execute_edit(ProjectEdit::RemoveRoom {
+                    room_uuid: uuid.to_string(),
+                });
+            }
+            ObjectLocation::Category => {
+                self.execute_edit(ProjectEdit::RemoveCategory {
+                    category_uuid: uuid.to_string(),
+                });
+            }
+            ObjectLocation::TreeNode { .. } => {
+                self.execute_edit(ProjectEdit::RemoveTreeNode {
+                    node_uuid: uuid.to_string(),
+                });
+            }
+            ObjectLocation::DocumentRoot => return,
+        }
+        if self.selected_uuid.as_deref() == Some(uuid) {
+            self.selected_uuid = None;
+        }
+    }
+
+    pub fn place_tree_node_on_active_page(
+        &mut self,
+        target_uuid: &str,
+        pos: Option<(f32, f32)>,
+    ) {
+        let Some(proj) = &self.project else {
+            return;
+        };
+        let Some(node) = find_tree_node_recursive(&proj.periphery_tree, target_uuid)
+            .or_else(|| find_tree_node_recursive(&proj.system_tree, target_uuid))
+            .cloned()
+        else {
+            return;
+        };
+        let Some(ref_type) = crate::insert_modal::reference_kind_for_tree_node(&node.control_type)
+        else {
+            return;
+        };
+        let Some(page) = proj.pages.get(self.active_page_index) else {
+            return;
+        };
+        let page_uuid = page.uuid.clone();
+        let (px, py) = pos.unwrap_or((192.0, 192.0));
+        let block = loxone_core::factory::new_reference_block(ref_type, &node, px, py);
+        let new_uuid = block.uuid.clone();
+        self.execute_edit(ProjectEdit::AddPageBlock { page_uuid, block });
+        self.selected_uuid = Some(new_uuid);
+        self.show_right_panel = true;
+    }
+
+    pub fn handle_insert_selection(&mut self, sel: InsertModalSelection) {
+        let Some(proj) = &self.project else {
+            return;
+        };
+        let Some(page) = proj.pages.get(self.active_page_index) else {
+            return;
+        };
+        let page_uuid = page.uuid.clone();
+        match sel {
+            InsertModalSelection::NewFunctionBlock {
+                type_name,
+                title,
+                px,
+                py,
+            } => {
+                let block = loxone_core::factory::new_page_block(&type_name, &title, px, py);
+                let new_uuid = block.uuid.clone();
+                self.execute_edit(ProjectEdit::AddPageBlock { page_uuid, block });
+                self.selected_uuid = Some(new_uuid);
+                self.show_right_panel = true;
+            }
+            InsertModalSelection::NewReferenceBlock {
+                ref_type,
+                target_uuid,
+                px,
+                py,
+            } => {
+                if let Some(node) = find_tree_node_recursive(&proj.periphery_tree, &target_uuid)
+                    .or_else(|| find_tree_node_recursive(&proj.system_tree, &target_uuid))
+                    .cloned()
+                {
+                    let block =
+                        loxone_core::factory::new_reference_block(&ref_type, &node, px, py);
+                    let new_uuid = block.uuid.clone();
+                    self.execute_edit(ProjectEdit::AddPageBlock { page_uuid, block });
+                    self.selected_uuid = Some(new_uuid);
+                    self.show_right_panel = true;
+                }
+            }
+        }
+    }
+
+    pub fn handle_tree_action(&mut self, act: TreeAction) {
+        match act {
+            TreeAction::SelectPage(idx) => {
+                self.active_page_index = idx;
+                self.needs_initial_fit = true;
+            }
+            TreeAction::SelectObject(uuid) => {
+                self.selected_uuid = Some(uuid);
+                self.show_right_panel = true;
+            }
+            TreeAction::NavigateToBlock {
+                page_index,
+                block_uuid,
+            } => {
+                self.execute_palette_action(PaletteAction::NavigateToBlock {
+                    page_index,
+                    block_uuid,
+                });
+            }
+            TreeAction::CreatePage => {
+                let n = self.next_created_counter;
+                self.next_created_counter += 1;
+                let page = loxone_core::factory::new_page(&format!("New Page {}", n));
+                let page_uuid = page.uuid.clone();
+                self.execute_edit(ProjectEdit::AddPage { page });
+                if let Some(proj) = &self.project {
+                    if let Some(idx) = proj.pages.iter().position(|p| p.uuid == page_uuid) {
+                        self.active_page_index = idx;
+                    }
+                }
+                self.selected_uuid = Some(page_uuid);
+                self.show_right_panel = true;
+                self.needs_initial_fit = true;
+            }
+            TreeAction::CreateRoom => {
+                let n = self.next_created_counter;
+                self.next_created_counter += 1;
+                let room = loxone_core::factory::new_room(&format!("New Room {}", n));
+                let uuid = room.uuid.clone();
+                self.execute_edit(ProjectEdit::AddRoom { room });
+                self.selected_uuid = Some(uuid);
+                self.show_right_panel = true;
+            }
+            TreeAction::CreateCategory => {
+                let n = self.next_created_counter;
+                self.next_created_counter += 1;
+                let category =
+                    loxone_core::factory::new_category(&format!("New Category {}", n), "lights");
+                let uuid = category.uuid.clone();
+                self.execute_edit(ProjectEdit::AddCategory { category });
+                self.selected_uuid = Some(uuid);
+                self.show_right_panel = true;
+            }
+            TreeAction::CreateMemoryFlag => {
+                let n = self.next_created_counter;
+                self.next_created_counter += 1;
+                let node =
+                    loxone_core::factory::new_tree_node("Memory", &format!("Memory Flag {}", n));
+                let uuid = node.uuid.clone();
+                let parent_uuid = self
+                    .project
+                    .as_ref()
+                    .and_then(|p| find_tree_node_by_type_recursive(&p.system_tree, "MemoryCaption"))
+                    .map(|n| n.uuid.clone());
+                self.execute_edit(ProjectEdit::AddTreeNode {
+                    section: TreeSectionKind::System,
+                    parent_uuid,
+                    node,
+                });
+                self.selected_uuid = Some(uuid);
+                self.show_right_panel = true;
+            }
+            TreeAction::CreateVirtualIn => {
+                let n = self.next_created_counter;
+                self.next_created_counter += 1;
+                let node = loxone_core::factory::new_tree_node(
+                    "VirtualIn",
+                    &format!("Virtual Input {}", n),
+                );
+                let uuid = node.uuid.clone();
+                let parent_uuid = self.project.as_ref().and_then(|p| {
+                    find_tree_node_by_type_recursive(&p.periphery_tree, "VirtualInCaption")
+                        .or_else(|| find_tree_node_by_type_recursive(&p.periphery_tree, "LoxLIVE"))
+                        .map(|n| n.uuid.clone())
+                });
+                self.execute_edit(ProjectEdit::AddTreeNode {
+                    section: TreeSectionKind::Periphery,
+                    parent_uuid,
+                    node,
+                });
+                self.selected_uuid = Some(uuid);
+                self.show_right_panel = true;
+            }
+            TreeAction::CreateVirtualOut => {
+                let n = self.next_created_counter;
+                self.next_created_counter += 1;
+                let node = loxone_core::factory::new_tree_node(
+                    "VirtualOut",
+                    &format!("Virtual Output {}", n),
+                );
+                let uuid = node.uuid.clone();
+                let parent_uuid = self.project.as_ref().and_then(|p| {
+                    find_tree_node_by_type_recursive(&p.periphery_tree, "VirtualOutCaption")
+                        .or_else(|| find_tree_node_by_type_recursive(&p.periphery_tree, "LoxLIVE"))
+                        .map(|n| n.uuid.clone())
+                });
+                self.execute_edit(ProjectEdit::AddTreeNode {
+                    section: TreeSectionKind::Periphery,
+                    parent_uuid,
+                    node,
+                });
+                self.selected_uuid = Some(uuid);
+                self.show_right_panel = true;
+            }
+            TreeAction::PlaceOnPage(target_uuid) => {
+                self.place_tree_node_on_active_page(&target_uuid, None);
+            }
+        }
+    }
+
+    pub fn handle_canvas_action(&mut self, canvas_act: CanvasAction) {
+        match canvas_act {
+            CanvasAction::SelectObject(uuid) => {
+                self.selected_uuid = Some(uuid);
+                self.show_right_panel = true;
+            }
+            CanvasAction::ClearSelection => {
+                self.selected_uuid = None;
+            }
+            CanvasAction::NavigateToBlock {
+                page_index,
+                block_uuid,
+            } => {
+                self.execute_palette_action(PaletteAction::NavigateToBlock {
+                    page_index,
+                    block_uuid,
+                });
+            }
+            CanvasAction::MoveBlock {
+                page_uuid,
+                block_uuid,
+                px,
+                py,
+            } => {
+                self.execute_edit(ProjectEdit::MovePageBlock {
+                    page_uuid,
+                    block_uuid,
+                    px,
+                    py,
+                });
+            }
+            CanvasAction::DeleteBlock { block_uuid, .. } => {
+                self.delete_object_by_uuid(&block_uuid);
+            }
+            CanvasAction::ConnectPins {
+                target_block_uuid,
+                target_pin_key,
+                source_pin_uuid,
+            } => {
+                let mut resolved_src_uuid = source_pin_uuid.clone();
+                if let Some((src_block_uuid, src_pin_key)) = source_pin_uuid.split_once(':') {
+                    if let Some(proj) = &mut self.project {
+                        let mut found = None;
+                        for page in &mut proj.pages {
+                            if let Some(blk) =
+                                page.blocks.iter_mut().find(|b| b.uuid == src_block_uuid)
+                            {
+                                loxone_core::factory::ensure_schema_pins_on_block(blk);
+                                if let Some(pin) = blk.pins.iter().find(|p| p.key == src_pin_key) {
+                                    found = Some(pin.uuid.clone());
+                                }
+                                break;
+                            }
+                        }
+                        if let Some(real_uuid) = found {
+                            proj.xref = loxone_core::xref::XrefIndex::build(proj);
+                            resolved_src_uuid = real_uuid;
+                        }
+                    }
+                }
+                self.execute_edit(ProjectEdit::AddWireLink {
+                    target_block_uuid,
+                    target_pin_key,
+                    source_pin_uuid: resolved_src_uuid,
+                });
+            }
+            CanvasAction::DisconnectWire {
+                target_block_uuid,
+                target_pin_key,
+                source_pin_uuid,
+            } => {
+                self.execute_edit(ProjectEdit::RemoveWireLink {
+                    target_block_uuid,
+                    target_pin_key,
+                    source_pin_uuid,
+                });
+            }
+            CanvasAction::OpenInsertModalAt { px, py } => {
+                self.insert_modal.open_at(Some((px, py)));
             }
         }
     }
@@ -447,6 +857,7 @@ impl LoxonePortableApp {
                 self.palette.close();
             } else {
                 self.miniserver_modal.is_open = false;
+                self.insert_modal.close();
                 self.palette.open();
             }
         }
@@ -457,8 +868,19 @@ impl LoxonePortableApp {
         if cmd_or_ctrl && shift && ctx.input(|i| i.key_pressed(Key::D)) {
             self.open_miniserver_modal();
         }
-        if self.miniserver_modal.is_open {
+        if self.miniserver_modal.is_open || self.insert_modal.is_open {
             return;
+        }
+
+        if cmd_or_ctrl && ctx.input(|i| i.key_pressed(Key::Z)) {
+            if shift {
+                self.redo();
+            } else {
+                self.undo();
+            }
+        }
+        if cmd_or_ctrl && ctx.input(|i| i.key_pressed(Key::Y)) {
+            self.redo();
         }
 
         if cmd_or_ctrl && ctx.input(|i| i.key_pressed(Key::B)) {
@@ -475,6 +897,20 @@ impl LoxonePortableApp {
         }
 
         if !ctx.wants_keyboard_input() {
+            if !cmd_or_ctrl && ctx.input(|i| i.key_pressed(Key::A)) && self.project.is_some() {
+                self.insert_modal.open_at(None);
+            }
+            if ctx.input(|i| i.key_pressed(Key::Delete) || i.key_pressed(Key::Backspace)) {
+                if let Some(wire) = self.viewport.interaction.selected_wire.take() {
+                    self.execute_edit(ProjectEdit::RemoveWireLink {
+                        target_block_uuid: wire.target_block_uuid,
+                        target_pin_key: wire.target_pin_key,
+                        source_pin_uuid: wire.source_pin_uuid,
+                    });
+                } else if let Some(sel_uuid) = self.selected_uuid.clone() {
+                    self.delete_object_by_uuid(&sel_uuid);
+                }
+            }
             if ctx.input(|i| i.key_pressed(Key::F)) {
                 self.needs_initial_fit = true;
             }
@@ -486,6 +922,33 @@ impl LoxonePortableApp {
             }
         }
     }
+}
+
+fn find_tree_node_recursive<'a>(nodes: &'a [TreeNode], uuid: &str) -> Option<&'a TreeNode> {
+    for node in nodes {
+        if node.uuid == uuid {
+            return Some(node);
+        }
+        if let Some(found) = find_tree_node_recursive(&node.children, uuid) {
+            return Some(found);
+        }
+    }
+    None
+}
+
+fn find_tree_node_by_type_recursive<'a>(
+    nodes: &'a [TreeNode],
+    control_type: &str,
+) -> Option<&'a TreeNode> {
+    for node in nodes {
+        if node.control_type == control_type && !node.uuid.is_empty() {
+            return Some(node);
+        }
+        if let Some(found) = find_tree_node_by_type_recursive(&node.children, control_type) {
+            return Some(found);
+        }
+    }
+    None
 }
 
 impl eframe::App for LoxonePortableApp {
@@ -508,6 +971,8 @@ impl eframe::App for LoxonePortableApp {
             &self.connection_status,
             Some(&self.miniserver_modal.host),
             self.is_dirty,
+            self.can_undo(),
+            self.can_redo(),
         ) {
             self.execute_top_bar_action(top_act);
         }
@@ -520,8 +985,8 @@ impl eframe::App for LoxonePortableApp {
 
         // Left Explorer Panel
         if self.show_left_panel {
+            let mut tree_act = None;
             if let Some(proj) = &self.project {
-                let mut tree_act = None;
                 egui::SidePanel::left("left_explorer")
                     .default_width(250.0)
                     .frame(
@@ -540,28 +1005,10 @@ impl eframe::App for LoxonePortableApp {
                             self.selected_uuid.as_deref(),
                         );
                     });
+            }
 
-                if let Some(act) = tree_act {
-                    match act {
-                        TreeAction::SelectPage(idx) => {
-                            self.active_page_index = idx;
-                            self.needs_initial_fit = true;
-                        }
-                        TreeAction::SelectObject(uuid) => {
-                            self.selected_uuid = Some(uuid);
-                            self.show_right_panel = true;
-                        }
-                        TreeAction::NavigateToBlock {
-                            page_index,
-                            block_uuid,
-                        } => {
-                            self.execute_palette_action(PaletteAction::NavigateToBlock {
-                                page_index,
-                                block_uuid,
-                            });
-                        }
-                    }
-                }
+            if let Some(act) = tree_act {
+                self.handle_tree_action(act);
             }
         }
 
@@ -587,6 +1034,14 @@ impl eframe::App for LoxonePortableApp {
                 self.apply_project_edit(edit);
             }
 
+            if let Some(del_uuid) = insp_out.delete_uuid {
+                self.delete_object_by_uuid(&del_uuid);
+            }
+
+            if let Some(place_uuid) = insp_out.place_on_page_uuid {
+                self.place_tree_node_on_active_page(&place_uuid, None);
+            }
+
             if let Some(act) = insp_out.nav_action {
                 match act {
                     InspectorAction::NavigateToBlock {
@@ -610,6 +1065,7 @@ impl eframe::App for LoxonePortableApp {
             .frame(egui::Frame::new().fill(crate::theme::CANVAS_BG))
             .show(ctx, |ui| {
                 let view_size = ui.available_size();
+                let mut pending_canvas_act = None;
                 if let Some(proj) = &self.project {
                     if self.needs_initial_fit {
                         if let Some(page) = proj.pages.get(self.active_page_index) {
@@ -631,33 +1087,13 @@ impl eframe::App for LoxonePortableApp {
                         }
                     }
 
-                    if let Some(canvas_act) = render_page_canvas(
+                    pending_canvas_act = render_page_canvas(
                         ui,
                         proj,
                         self.active_page_index,
                         &mut self.viewport,
                         self.selected_uuid.as_deref(),
-                    ) {
-                        match canvas_act {
-                            CanvasAction::SelectObject(uuid) | CanvasAction::SelectBlock(uuid) => {
-                                self.selected_uuid = Some(uuid);
-                                self.show_right_panel = true;
-                            }
-                            CanvasAction::ClearSelection => {
-                                self.selected_uuid = None;
-                            }
-                            CanvasAction::NavigateToBlock {
-                                page_index,
-                                block_uuid,
-                            } => {
-                                self.execute_palette_action(PaletteAction::NavigateToBlock {
-                                    page_index,
-                                    block_uuid,
-                                });
-                            }
-                            _ => {}
-                        }
-                    }
+                    );
                 } else {
                     ui.centered_and_justified(|ui| {
                         ui.horizontal(|ui| {
@@ -676,7 +1112,20 @@ impl eframe::App for LoxonePortableApp {
                         });
                     });
                 }
+
+                if let Some(canvas_act) = pending_canvas_act {
+                    self.handle_canvas_action(canvas_act);
+                }
             });
+
+        // Insert Block / Reference Modal Overlay
+        if self.insert_modal.is_open {
+            if let Some(sel) =
+                show_insert_modal(ctx, &mut self.insert_modal, self.project.as_ref())
+            {
+                self.handle_insert_selection(sel);
+            }
+        }
 
         // Miniserver Connection & Backup Browser Modal Overlay
         if let Some(modal_act) = render_miniserver_modal(
@@ -900,4 +1349,210 @@ mod tests {
         assert_eq!(blk.pins[0].default_value.as_deref(), Some("77.5"));
         assert_eq!(blk.room_uuid.as_deref(), Some(first_room_uuid.as_str()));
     }
+
+    #[test]
+    fn test_app_execute_edit_and_undo_redo_updates_dirty_and_restores_state() {
+        use loxone_core::factory::new_page_block;
+        use loxone_core::writer::ProjectEdit;
+
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../Klimczaki.Loxone");
+        let mut app = LoxonePortableApp::default();
+        app.load_file(&path);
+        assert!(!app.is_dirty);
+        assert!(!app.can_undo());
+        assert!(!app.can_redo());
+
+        let page_uuid = app.project.as_ref().unwrap().pages[0].uuid.clone();
+        let initial_count = app.project.as_ref().unwrap().pages[0].blocks.len();
+        let new_blk = new_page_block("StairwellLight", "Hallway Stair Light", 256.0, 256.0);
+        let new_blk_uuid = new_blk.uuid.clone();
+
+        app.execute_edit(ProjectEdit::AddPageBlock {
+            page_uuid: page_uuid.clone(),
+            block: new_blk,
+        });
+
+        assert!(app.is_dirty);
+        assert!(app.can_undo());
+        assert!(!app.can_redo());
+        assert_eq!(
+            app.project.as_ref().unwrap().pages[0].blocks.len(),
+            initial_count + 1
+        );
+        assert!(app.project.as_ref().unwrap().pages[0]
+            .blocks
+            .iter()
+            .any(|b| b.uuid == new_blk_uuid));
+
+        app.undo();
+        assert!(app.is_dirty);
+        assert!(!app.can_undo());
+        assert!(app.can_redo());
+        assert_eq!(
+            app.project.as_ref().unwrap().pages[0].blocks.len(),
+            initial_count
+        );
+        assert!(!app.project.as_ref().unwrap().pages[0]
+            .blocks
+            .iter()
+            .any(|b| b.uuid == new_blk_uuid));
+
+        app.redo();
+        assert!(app.is_dirty);
+        assert!(app.can_undo());
+        assert!(!app.can_redo());
+        assert_eq!(
+            app.project.as_ref().unwrap().pages[0].blocks.len(),
+            initial_count + 1
+        );
+        assert!(app.project.as_ref().unwrap().pages[0]
+            .blocks
+            .iter()
+            .any(|b| b.uuid == new_blk_uuid));
+    }
+
+    #[test]
+    fn test_app_authoring_tree_canvas_insert_and_xml_roundtrip() {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../Klimczaki.Loxone");
+        let mut app = LoxonePortableApp::default();
+        app.load_file(&path);
+
+        let initial_pages = app.project.as_ref().unwrap().pages.len();
+        let initial_places = app.project.as_ref().unwrap().places.len();
+        let initial_categories = app.project.as_ref().unwrap().categories.len();
+
+        // 1. Create a new page via TreeAction::CreatePage
+        app.handle_tree_action(TreeAction::CreatePage);
+        assert_eq!(app.project.as_ref().unwrap().pages.len(), initial_pages + 1);
+        assert_eq!(app.active_page_index, initial_pages);
+        let created_page_uuid = app.project.as_ref().unwrap().pages[initial_pages].uuid.clone();
+
+        // 2. Create a room, category, memory flag, virtual in, and virtual out via TreeAction
+        app.handle_tree_action(TreeAction::CreateRoom);
+        let created_room_uuid = app.selected_uuid.clone().unwrap();
+        assert_eq!(app.project.as_ref().unwrap().places.len(), initial_places + 1);
+
+        app.handle_tree_action(TreeAction::CreateCategory);
+        let created_cat_uuid = app.selected_uuid.clone().unwrap();
+        assert_eq!(
+            app.project.as_ref().unwrap().categories.len(),
+            initial_categories + 1
+        );
+
+        app.handle_tree_action(TreeAction::CreateMemoryFlag);
+        let created_flag_uuid = app.selected_uuid.clone().unwrap();
+
+        app.handle_tree_action(TreeAction::CreateVirtualIn);
+        let created_vi_uuid = app.selected_uuid.clone().unwrap();
+
+        app.handle_tree_action(TreeAction::CreateVirtualOut);
+        let created_vo_uuid = app.selected_uuid.clone().unwrap();
+
+        // 3. Place the created Memory Flag on the new page via TreeAction::PlaceOnPage
+        app.handle_tree_action(TreeAction::PlaceOnPage(created_flag_uuid.clone()));
+        let placed_ref_uuid = app.selected_uuid.clone().unwrap();
+        assert_eq!(
+            app.project.as_ref().unwrap().pages[initial_pages].blocks.len(),
+            1
+        );
+
+        // 4. Open insert modal at canvas coords and insert a StairwellLight function block
+        app.handle_canvas_action(CanvasAction::OpenInsertModalAt {
+            px: 480.0,
+            py: 240.0,
+        });
+        assert!(app.insert_modal.is_open);
+        app.handle_insert_selection(InsertModalSelection::NewFunctionBlock {
+            type_name: "StairwellLight".to_string(),
+            title: "Stairwell Light".to_string(),
+            px: 480.0,
+            py: 240.0,
+        });
+        let stair_uuid = app.selected_uuid.clone().unwrap();
+        assert_eq!(
+            app.project.as_ref().unwrap().pages[initial_pages].blocks.len(),
+            2
+        );
+
+        // 5. Connect wire from placed MemoryFlag ("Q") to StairwellLight ("Dis")
+        let source_pin_uuid = format!("{}:Q", placed_ref_uuid);
+        app.handle_canvas_action(CanvasAction::ConnectPins {
+            target_block_uuid: stair_uuid.clone(),
+            target_pin_key: "Dis".to_string(),
+            source_pin_uuid,
+        });
+        let dis_pin = app.project.as_ref().unwrap().pages[initial_pages]
+            .blocks
+            .iter()
+            .find(|b| b.uuid == stair_uuid)
+            .unwrap()
+            .pins
+            .iter()
+            .find(|p| p.key == "Dis")
+            .unwrap();
+        assert_eq!(dis_pin.incoming_links.len(), 1);
+
+        // 6. Move StairwellLight block via CanvasAction::MoveBlock
+        app.handle_canvas_action(CanvasAction::MoveBlock {
+            page_uuid: created_page_uuid.clone(),
+            block_uuid: stair_uuid.clone(),
+            px: 640.0,
+            py: 320.0,
+        });
+        let moved_blk = app.project.as_ref().unwrap().pages[initial_pages]
+            .blocks
+            .iter()
+            .find(|b| b.uuid == stair_uuid)
+            .unwrap();
+        assert_eq!((moved_blk.px, moved_blk.py), (640.0, 320.0));
+
+        // 7. Undo move and redo move via TopBarAction
+        app.execute_top_bar_action(TopBarAction::Undo);
+        let undone_blk = app.project.as_ref().unwrap().pages[initial_pages]
+            .blocks
+            .iter()
+            .find(|b| b.uuid == stair_uuid)
+            .unwrap();
+        assert_eq!((undone_blk.px, undone_blk.py), (480.0, 240.0));
+
+        app.execute_top_bar_action(TopBarAction::Redo);
+        let redone_blk = app.project.as_ref().unwrap().pages[initial_pages]
+            .blocks
+            .iter()
+            .find(|b| b.uuid == stair_uuid)
+            .unwrap();
+        assert_eq!((redone_blk.px, redone_blk.py), (640.0, 320.0));
+
+        // 8. Save modified project to disk and reload in a fresh LoxonePortableApp
+        let temp_file = std::env::temp_dir().join(format!(
+            "loxone_app_full_authoring_roundtrip_{}.Loxone",
+            std::process::id()
+        ));
+        app.save_xml_to_path(&temp_file)
+            .expect("save_xml_to_path should succeed after full authoring");
+
+        let mut reloaded = LoxonePortableApp::default();
+        reloaded.load_file(&temp_file);
+        let _ = std::fs::remove_file(&temp_file);
+
+        let rproj = reloaded.project.as_ref().unwrap();
+        assert!(rproj.pages.iter().any(|p| p.uuid == created_page_uuid));
+        assert!(rproj.places.contains_key(&created_room_uuid));
+        assert!(rproj.categories.contains_key(&created_cat_uuid));
+        assert!(find_tree_node_recursive(&rproj.system_tree, &created_flag_uuid).is_some());
+        assert!(find_tree_node_recursive(&rproj.periphery_tree, &created_vi_uuid).is_some());
+        assert!(find_tree_node_recursive(&rproj.periphery_tree, &created_vo_uuid).is_some());
+
+        let rpage = rproj
+            .pages
+            .iter()
+            .find(|p| p.uuid == created_page_uuid)
+            .unwrap();
+        assert_eq!(rpage.blocks.len(), 2);
+        let r_stair = rpage.blocks.iter().find(|b| b.uuid == stair_uuid).unwrap();
+        assert_eq!((r_stair.px, r_stair.py), (640.0, 320.0));
+        let r_dis = r_stair.pins.iter().find(|p| p.key == "Dis").unwrap();
+        assert_eq!(r_dis.incoming_links.len(), 1);
+    }
 }
+

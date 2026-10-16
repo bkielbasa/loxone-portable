@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use std::collections::HashMap;
 
 use egui::{Align2, Color32, CornerRadius, FontId, Pos2, Rect, Sense, Stroke, Ui, Vec2};
@@ -13,7 +11,6 @@ use crate::theme::{
 };
 
 pub const LOXONE_UNITS_PER_PX: f32 = 8.0;
-pub const LOXONE_UNITS_PER_SCREEN_PX: f32 = LOXONE_UNITS_PER_PX;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct BlockDragState {
@@ -32,8 +29,6 @@ pub struct WireDragState {
     pub is_output: bool,
     pub start_screen_pos: Pos2,
 }
-
-pub type WireDrawState = WireDragState;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SelectedWire {
@@ -63,7 +58,6 @@ pub struct CanvasInteractionState {
     pub wiring_from: Option<WireDragState>,
     pub selected_wire: Option<SelectedWire>,
     pub hovered_pin: Option<(String, String)>,
-    pub context_menu_pos: Option<(Pos2, f32, f32)>,
     pub context_menu: Option<CanvasContextMenu>,
 }
 
@@ -74,8 +68,6 @@ pub struct CanvasViewport {
     pub compact_pins: bool,
     pub interaction: CanvasInteractionState,
 }
-
-pub type CanvasState = CanvasViewport;
 
 impl Default for CanvasViewport {
     fn default() -> Self {
@@ -91,7 +83,6 @@ impl Default for CanvasViewport {
 #[derive(Debug, Clone, PartialEq)]
 pub enum CanvasAction {
     SelectObject(String),
-    SelectBlock(String),
     ClearSelection,
     NavigateToBlock {
         page_index: usize,
@@ -150,10 +141,6 @@ pub fn snap_to_loxone_grid(val: f32) -> f32 {
     (val / 64.0).round() * 64.0
 }
 
-pub fn snap_to_grid_units(val: f32) -> f32 {
-    snap_to_loxone_grid(val)
-}
-
 pub fn cubic_bezier_point(p0: Pos2, p1: Pos2, p2: Pos2, p3: Pos2, t: f32) -> Pos2 {
     let u = 1.0 - t;
     let u2 = u * u;
@@ -199,11 +186,6 @@ pub fn point_to_bezier_distance(point: Pos2, points: &[Pos2]) -> f32 {
         .windows(2)
         .map(|seg| point_to_segment_distance(point, seg[0], seg[1]))
         .fold(f32::INFINITY, f32::min)
-}
-
-pub fn distance_to_cubic_bezier(point: Pos2, src: Pos2, dst: Pos2) -> f32 {
-    let pts = cubic_bezier_points(src, dst);
-    point_to_bezier_distance(point, &pts)
 }
 
 pub fn wire_midpoint(points: &[Pos2]) -> Pos2 {
@@ -363,6 +345,7 @@ fn truncate_text(text: &str, max_chars: usize) -> String {
     }
 }
 
+#[cfg(test)]
 pub fn segment_hits_rect(a: Pos2, b: Pos2, rect: Rect) -> bool {
     let min_x = a.x.min(b.x);
     let max_x = a.x.max(b.x);
@@ -380,11 +363,13 @@ pub fn segment_hits_rect(a: Pos2, b: Pos2, rect: Rect) -> bool {
     }
 }
 
+#[cfg(test)]
 fn path_hits_obstacles(pts: &[Pos2], obstacles: &[Rect]) -> bool {
     pts.windows(2)
         .any(|w| obstacles.iter().any(|&r| segment_hits_rect(w[0], w[1], r)))
 }
 
+#[cfg(test)]
 pub fn compute_wire_waypoints(
     src: Pos2,
     dst: Pos2,
@@ -507,63 +492,6 @@ pub fn compute_wire_waypoints(
         dst,
     ]
 }
-
-fn draw_rounded_orthogonal_wire(
-    painter: &egui::Painter,
-    waypoints: &[Pos2],
-    stroke: Stroke,
-    zoom: f32,
-) {
-    let mut clean: Vec<Pos2> = Vec::with_capacity(waypoints.len());
-    for &p in waypoints {
-        if clean.last().is_none_or(|&last| last.distance(p) > 0.5) {
-            clean.push(p);
-        }
-    }
-    if clean.len() < 2 {
-        return;
-    }
-    if clean.len() == 2 {
-        painter.line_segment([clean[0], clean[1]], stroke);
-        return;
-    }
-
-    let radius = (5.0 * zoom).clamp(2.5, 8.0);
-    let mut poly: Vec<Pos2> = Vec::with_capacity(clean.len() * 3);
-    poly.push(clean[0]);
-
-    for i in 1..(clean.len() - 1) {
-        let prev = clean[i - 1];
-        let curr = clean[i];
-        let next = clean[i + 1];
-        let v1 = curr - prev;
-        let v2 = next - curr;
-        let l1 = v1.length();
-        let l2 = v2.length();
-        if l1 < 1.0 || l2 < 1.0 {
-            poly.push(curr);
-            continue;
-        }
-        let d1 = v1 / l1;
-        let d2 = v2 / l2;
-        if (d1.x * d2.x + d1.y * d2.y).abs() > 0.98 {
-            continue;
-        }
-        let r = radius.min(l1 * 0.45).min(l2 * 0.45);
-        let p_in = curr - d1 * r;
-        let p_out = curr + d2 * r;
-        let p_mid = Pos2::new(
-            0.25 * p_in.x + 0.5 * curr.x + 0.25 * p_out.x,
-            0.25 * p_in.y + 0.5 * curr.y + 0.25 * p_out.y,
-        );
-        poly.push(p_in);
-        poly.push(p_mid);
-        poly.push(p_out);
-    }
-    poly.push(*clean.last().unwrap());
-    painter.add(egui::Shape::line(poly, stroke));
-}
-
 
 pub fn collect_block_display_pins(
     block: &PageBlock,
@@ -693,7 +621,6 @@ pub fn render_page_canvas(
     let positioned_blocks: Vec<&PageBlock> =
         page.blocks.iter().filter(|b| b.has_position).collect();
     let mut layouts: Vec<BlockLayout> = Vec::with_capacity(positioned_blocks.len());
-    let mut block_rects: Vec<Rect> = Vec::with_capacity(positioned_blocks.len());
     let mut pin_hit_targets: Vec<PinHitTarget> = Vec::new();
 
     // Pass 1: Precompute positioned block rects and pin screen coordinates
@@ -726,7 +653,6 @@ pub fn render_page_canvas(
                 inputs: Vec::new(),
                 outputs: Vec::new(),
             });
-            block_rects.push(rect);
             continue;
         }
 
@@ -759,7 +685,6 @@ pub fn render_page_canvas(
                 inputs: Vec::new(),
                 outputs: Vec::new(),
             });
-            block_rects.push(rect);
             continue;
         }
 
@@ -808,7 +733,6 @@ pub fn render_page_canvas(
             inputs,
             outputs,
         });
-        block_rects.push(rect);
     }
 
     // Detect closest hovered pin within 8.0 px
@@ -1017,7 +941,9 @@ pub fn render_page_canvas(
                                     target_pin_key: candidate_wire.target_pin_key.clone(),
                                     source_pin_uuid: candidate_wire.source_pin_uuid.clone(),
                                 });
-                            } else if point_to_bezier_distance(pos, &bezier_pts) <= 7.0 {
+                            } else if point_to_bezier_distance(pos, &bezier_pts) <= 7.0
+                                && !layouts.iter().any(|l| l.rect.contains(pos))
+                            {
                                 clicked_any_pin_or_wire = true;
                                 viewport.interaction.selected_wire = Some(candidate_wire.clone());
                             }
@@ -1415,7 +1341,6 @@ pub fn render_page_canvas(
                 let (lx, ly) = viewport.screen_to_loxone(origin, pos);
                 let snapped_lx = snap_to_loxone_grid(lx.max(0.0));
                 let snapped_ly = snap_to_loxone_grid(ly.max(0.0));
-                viewport.interaction.context_menu_pos = Some((pos, snapped_lx, snapped_ly));
                 viewport.interaction.context_menu = Some(CanvasContextMenu::EmptyCanvas {
                     screen_pos: pos,
                     lx: snapped_lx,
@@ -1622,7 +1547,6 @@ mod tests {
         assert_eq!(snap_to_loxone_grid(31.0), 0.0);
         assert_eq!(snap_to_loxone_grid(33.0), 64.0);
         assert_eq!(snap_to_loxone_grid(500.0), 512.0);
-        assert_eq!(snap_to_grid_units(500.0), 512.0);
     }
 
     #[test]
@@ -1636,8 +1560,6 @@ mod tests {
 
         assert!(point_to_bezier_distance(near, &pts) <= 8.0);
         assert!(point_to_bezier_distance(far, &pts) > 8.0);
-        assert!(distance_to_cubic_bezier(near, src, dst) <= 8.0);
-        assert!(distance_to_cubic_bezier(far, src, dst) > 8.0);
     }
 
     #[test]
