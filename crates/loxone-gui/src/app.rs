@@ -37,6 +37,7 @@ pub enum MiniserverWorkerEvent {
 pub struct LoxonePortableApp {
     pub project: Option<LoxoneProject>,
     pub loaded_path: Option<PathBuf>,
+    pub is_dirty: bool,
     pub error_banner: Option<String>,
     pub active_page_index: usize,
     pub selected_uuid: Option<String>,
@@ -65,6 +66,7 @@ impl Default for LoxonePortableApp {
         Self {
             project: None,
             loaded_path: None,
+            is_dirty: false,
             error_banner: None,
             active_page_index: 0,
             selected_uuid: None,
@@ -100,6 +102,7 @@ impl LoxonePortableApp {
                 self.miniserver_modal.apply_project_fallback_host(Some(&proj));
                 self.project = Some(proj);
                 self.loaded_path = Some(path.to_path_buf());
+                self.is_dirty = false;
                 self.error_banner = None;
                 self.active_page_index = 0;
                 self.selected_uuid = None;
@@ -121,6 +124,7 @@ impl LoxonePortableApp {
         self.miniserver_modal.apply_project_fallback_host(Some(&proj));
         self.project = Some(proj);
         self.loaded_path = None;
+        self.is_dirty = false;
         self.error_banner = None;
         self.active_page_index = 0;
         self.selected_uuid = None;
@@ -135,15 +139,38 @@ impl LoxonePortableApp {
         Ok(())
     }
 
+    pub fn apply_project_edit(&mut self, edit: loxone_core::writer::ProjectEdit) {
+        if let Some(proj) = &mut self.project {
+            match loxone_core::writer::apply_edit(proj, &edit) {
+                Ok(()) => {
+                    self.is_dirty = true;
+                }
+                Err(e) => {
+                    self.error_banner = Some(format!("Edit error: {}", e));
+                }
+            }
+        }
+    }
+
     pub fn save_xml_to_path(&mut self, path: &Path) -> Result<(), String> {
-        let raw_xml = self
-            .project
-            .as_ref()
-            .and_then(|p| p.raw_xml.as_deref())
-            .ok_or_else(|| "No project XML loaded to save".to_string())?;
-        std::fs::write(path, raw_xml)
-            .map_err(|e| format!("Failed to write {}: {}", path.display(), e))?;
+        if self.is_dirty {
+            let proj = self
+                .project
+                .as_mut()
+                .ok_or_else(|| "No project XML loaded to save".to_string())?;
+            loxone_core::writer::save_loxone_file(path, proj)
+                .map_err(|e| format!("Failed to write {}: {}", path.display(), e))?;
+        } else {
+            let raw_xml = self
+                .project
+                .as_ref()
+                .and_then(|p| p.raw_xml.as_deref())
+                .ok_or_else(|| "No project XML loaded to save".to_string())?;
+            std::fs::write(path, raw_xml)
+                .map_err(|e| format!("Failed to write {}: {}", path.display(), e))?;
+        }
         self.loaded_path = Some(path.to_path_buf());
+        self.is_dirty = false;
         self.error_banner = None;
         Ok(())
     }
@@ -341,6 +368,12 @@ impl LoxonePortableApp {
                 if self.project.as_ref().and_then(|p| p.raw_xml.as_ref()).is_none() {
                     return;
                 }
+                if let Some(existing_path) = self.loaded_path.clone() {
+                    if let Err(err) = self.save_xml_to_path(&existing_path) {
+                        self.error_banner = Some(err);
+                    }
+                    return;
+                }
                 let default_name = self
                     .project
                     .as_ref()
@@ -474,6 +507,7 @@ impl eframe::App for LoxonePortableApp {
             self.viewport.zoom,
             &self.connection_status,
             Some(&self.miniserver_modal.host),
+            self.is_dirty,
         ) {
             self.execute_top_bar_action(top_act);
         }
@@ -533,8 +567,8 @@ impl eframe::App for LoxonePortableApp {
 
         // Right Inspector Panel
         if self.show_right_panel {
+            let mut insp_out = crate::inspector::InspectorOutput::default();
             if let Some(proj) = &self.project {
-                let mut insp_out = crate::inspector::InspectorOutput::default();
                 egui::SidePanel::right("right_inspector")
                     .default_width(300.0)
                     .frame(
@@ -547,21 +581,25 @@ impl eframe::App for LoxonePortableApp {
                         insp_out =
                             render_right_inspector(ui, proj, self.selected_uuid.as_deref());
                     });
+            }
 
-                if let Some(act) = insp_out.nav_action {
-                    match act {
-                        InspectorAction::NavigateToBlock {
+            for edit in insp_out.edits {
+                self.apply_project_edit(edit);
+            }
+
+            if let Some(act) = insp_out.nav_action {
+                match act {
+                    InspectorAction::NavigateToBlock {
+                        page_index,
+                        block_uuid,
+                    } => {
+                        self.execute_palette_action(PaletteAction::NavigateToBlock {
                             page_index,
                             block_uuid,
-                        } => {
-                            self.execute_palette_action(PaletteAction::NavigateToBlock {
-                                page_index,
-                                block_uuid,
-                            });
-                        }
-                        InspectorAction::SelectObject(uuid) => {
-                            self.selected_uuid = Some(uuid);
-                        }
+                        });
+                    }
+                    InspectorAction::SelectObject(uuid) => {
+                        self.selected_uuid = Some(uuid);
                     }
                 }
             }
@@ -778,5 +816,87 @@ mod tests {
         assert_eq!(saved_contents, downloaded_xml);
         assert_eq!(app.loaded_path.as_deref(), Some(temp_file.as_path()));
         let _ = std::fs::remove_file(&temp_file);
+    }
+
+    #[test]
+    fn test_app_apply_project_edit_dirty_state_and_save_roundtrip() {
+        use loxone_core::writer::ProjectEdit;
+
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../Klimczaki.Loxone");
+        let mut app = LoxonePortableApp::default();
+        assert!(!app.is_dirty);
+
+        app.load_file(&path);
+        assert!(!app.is_dirty);
+
+        let target_block_uuid = app.project.as_ref().unwrap().pages[0].blocks[0].uuid.clone();
+        let target_pin_key = app.project.as_ref().unwrap().pages[0].blocks[0].pins[0]
+            .key
+            .clone();
+        let first_room_uuid = app
+            .project
+            .as_ref()
+            .unwrap()
+            .places
+            .keys()
+            .next()
+            .unwrap()
+            .clone();
+
+        app.apply_project_edit(ProjectEdit::SetControlAttr {
+            control_uuid: target_block_uuid.clone(),
+            attr_name: "Title".to_string(),
+            value: Some("App Edited Block".to_string()),
+        });
+        assert!(app.is_dirty);
+
+        app.apply_project_edit(ProjectEdit::SetPinDefault {
+            control_uuid: target_block_uuid.clone(),
+            pin_key: target_pin_key.clone(),
+            default_value: Some("77.5".to_string()),
+        });
+        app.apply_project_edit(ProjectEdit::SetChildTagAttr {
+            control_uuid: target_block_uuid.clone(),
+            child_tag: "IoData".to_string(),
+            attr_name: "Pr".to_string(),
+            value: Some(first_room_uuid.clone()),
+        });
+
+        let temp_file = std::env::temp_dir().join(format!(
+            "loxone_app_dirty_roundtrip_{}.Loxone",
+            std::process::id()
+        ));
+        app.save_xml_to_path(&temp_file)
+            .expect("save_xml_to_path should succeed on dirty project");
+        assert!(!app.is_dirty);
+        assert_eq!(app.loaded_path.as_deref(), Some(temp_file.as_path()));
+
+        // Also verify PaletteAction::SaveFile saves directly to existing loaded_path without dialog
+        app.apply_project_edit(ProjectEdit::SetControlAttr {
+            control_uuid: target_block_uuid.clone(),
+            attr_name: "Desc".to_string(),
+            value: Some("Saved via PaletteAction".to_string()),
+        });
+        assert!(app.is_dirty);
+        app.execute_palette_action(PaletteAction::SaveFile);
+        assert!(!app.is_dirty);
+
+        let mut reloaded_app = LoxonePortableApp::default();
+        reloaded_app.load_file(&temp_file);
+        let _ = std::fs::remove_file(&temp_file);
+
+        assert!(!reloaded_app.is_dirty);
+        let blk = &reloaded_app.project.as_ref().unwrap().pages[0].blocks[0];
+        assert_eq!(blk.uuid, target_block_uuid);
+        assert_eq!(blk.title, "App Edited Block");
+        assert_eq!(
+            blk.raw_attributes
+                .iter()
+                .find(|(k, _)| k == "Desc")
+                .map(|(_, v)| v.as_str()),
+            Some("Saved via PaletteAction")
+        );
+        assert_eq!(blk.pins[0].default_value.as_deref(), Some("77.5"));
+        assert_eq!(blk.room_uuid.as_deref(), Some(first_room_uuid.as_str()));
     }
 }

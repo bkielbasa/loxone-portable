@@ -133,7 +133,12 @@ pub fn paint_status_indicator(ui: &mut Ui, visuals: &StatusBadgeVisuals) {
     }
 }
 
-pub fn build_file_toolbar_items(can_save: bool) -> Vec<ToolbarItem> {
+pub fn build_file_toolbar_items(can_save: bool, is_dirty: bool) -> Vec<ToolbarItem> {
+    let save_label = if is_dirty {
+        "Save .Loxone *".to_string()
+    } else {
+        "Save .Loxone".to_string()
+    };
     vec![
         ToolbarItem {
             group: ToolbarGroup::File,
@@ -147,11 +152,11 @@ pub fn build_file_toolbar_items(can_save: bool) -> Vec<ToolbarItem> {
         ToolbarItem {
             group: ToolbarGroup::File,
             icon: "💾",
-            label: "Save .Loxone".to_string(),
+            label: save_label,
             tooltip: "Save current project as .Loxone XML file (Ctrl+S)".to_string(),
             action: TopBarAction::SaveFile,
             enabled: can_save,
-            accent: false,
+            accent: is_dirty,
         },
     ]
 }
@@ -241,6 +246,7 @@ pub fn render_top_bar(
     zoom: f32,
     connection_status: &ConnectionStatus,
     configured_host: Option<&str>,
+    is_dirty: bool,
 ) -> Option<TopBarAction> {
     let mut action = None;
     let can_save = project
@@ -277,6 +283,7 @@ pub fn render_top_bar(
                     action = Some(TopBarAction::ToggleLeftPanel);
                 }
 
+                let dirty_suffix = if is_dirty { " *" } else { "" };
                 let title_str = project
                     .map(|p| {
                         let page_name = p
@@ -284,7 +291,7 @@ pub fn render_top_bar(
                             .get(active_page_index)
                             .map(|pg| pg.title.as_str())
                             .unwrap_or("No Page");
-                        format!("{}  /  {}", p.metadata.title, page_name)
+                        format!("{}{}  /  {}", p.metadata.title, dirty_suffix, page_name)
                     })
                     .unwrap_or_else(|| "Loxone Portable".to_string());
                 let title_resp = ui.label(RichText::new(title_str).color(TEXT_PRIMARY).strong());
@@ -297,7 +304,7 @@ pub fn render_top_bar(
                 ui.separator();
 
                 // 2. File Group (Open, Save .Loxone)
-                let file_items = build_file_toolbar_items(can_save);
+                let file_items = build_file_toolbar_items(can_save, is_dirty);
                 if let Some(act) = render_toolbar_items(ui, &file_items) {
                     action = Some(act);
                 }
@@ -434,14 +441,23 @@ mod tests {
 
     #[test]
     fn test_declarative_toolbar_groups_and_headless_render() {
-        let file_items_no_save = build_file_toolbar_items(false);
+        let file_items_no_save = build_file_toolbar_items(false, false);
         assert_eq!(file_items_no_save.len(), 2);
         assert_eq!(file_items_no_save[0].group, ToolbarGroup::File);
         assert!(file_items_no_save[0].enabled);
         assert!(!file_items_no_save[1].enabled);
+        assert!(!file_items_no_save[1].accent);
+        assert_eq!(file_items_no_save[1].label, "Save .Loxone");
 
-        let file_items_with_save = build_file_toolbar_items(true);
-        assert!(file_items_with_save[1].enabled);
+        let file_items_clean = build_file_toolbar_items(true, false);
+        assert!(file_items_clean[1].enabled);
+        assert!(!file_items_clean[1].accent);
+        assert_eq!(file_items_clean[1].label, "Save .Loxone");
+
+        let file_items_dirty = build_file_toolbar_items(true, true);
+        assert!(file_items_dirty[1].enabled);
+        assert!(file_items_dirty[1].accent);
+        assert_eq!(file_items_dirty[1].label, "Save .Loxone *");
 
         let ms_items_idle = build_miniserver_toolbar_items(false);
         assert!(!ms_items_idle.is_empty());
@@ -471,6 +487,7 @@ mod tests {
                 1.0,
                 &status,
                 Some("192.168.1.100"),
+                true,
             );
         });
     }
