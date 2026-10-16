@@ -1,4 +1,5 @@
 pub mod block_schema;
+pub mod factory;
 pub mod loxcc;
 pub mod miniserver;
 pub mod model;

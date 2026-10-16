@@ -2060,6 +2060,800 @@ static PAGE_SCHEMAS_3: &[BlockSchema] = &[
     ),
 ];
 
+static PAGE_SCHEMAS_4: &[BlockSchema] = &[
+    // Digital & Switching
+    schema!(
+        "Switch",
+        "Switch",
+        "Logic",
+        "https://www.loxone.com/enen/kb/switch/",
+        "Bistable toggle switch (RS flip-flop with pulse input) with optional automatic off timer and remanence.",
+        &[
+            attr!("Rem", "Remanence", None, ValueKind::Bool, Some("false"), "Restore output state after Miniserver reboot"),
+        ],
+        &[
+            param!("Ta", "Auto-Off Time", Some("s"), ValueKind::DurationSeconds, "0", "Automatic switch-off delay (0 = disabled)"),
+        ],
+        &[
+            pin_in!("Tr", "Trigger", "Toggles output Q on rising edge"),
+            pin_in!("S", "Set", "Sets output Q to 1"),
+            pin_in!("R", "Reset", "Resets output Q to 0"),
+            pin_out!("Q", "Output", "Switched digital output"),
+            pin_out!("Qon", "Switch-On Pulse", "Short pulse when Q switches on"),
+            pin_out!("Qoff", "Switch-Off Pulse", "Short pulse when Q switches off"),
+        ],
+        &[ChildConfigKind::IoData]
+    ),
+    schema!(
+        "Pushbutton",
+        "Pushbutton",
+        "Pushbuttons",
+        "https://www.loxone.com/enen/kb/pushbutton/",
+        "Virtual pushbutton generating a short digital pulse when triggered from the visualization or logic.",
+        &[],
+        &[
+            param!("Ti", "Impulse Duration", Some("s"), ValueKind::DurationSeconds, "0.5", "Duration of the output pulse"),
+        ],
+        &[
+            pin_in!("Tr", "Trigger", "Triggers an output pulse"),
+            pin_out!("Q", "Pulse Output", "High for duration Ti when triggered"),
+        ],
+        &[ChildConfigKind::IoData]
+    ),
+    schema!(
+        "StairwellLight",
+        "Stairwell Light Switch",
+        "Lighting",
+        "https://www.loxone.com/enen/kb/stairwell-light-switch/",
+        "Timed lighting switch with pre-warning before switch-off and optional permanent-on double-click mode.",
+        &[
+            attr!("Rem", "Remanence", None, ValueKind::Bool, Some("false"), "Persist state across reboots"),
+        ],
+        &[
+            param!("T", "On Duration", Some("s"), ValueKind::DurationSeconds, "120", "Duration output Q remains active after trigger"),
+            param!("Tw", "Warning Time", Some("s"), ValueKind::DurationSeconds, "15", "Pre-warning time before light turns off"),
+        ],
+        &[
+            pin_in!("Tr", "Trigger", "Starts or restarts the stairwell timer"),
+            pin_in!("Perm", "Permanent On", "Holds output Q permanently active"),
+            pin_in!("Off", "Switch Off", "Immediately switches off output Q"),
+            pin_out!("Q", "Light Output", "Active while timer is running or Perm is high"),
+            pin_out!("Qw", "Pre-Warning Output", "Active during pre-warning window before switch-off"),
+            pin_out!("Rt", "Remaining Time", "Remaining active time in seconds"),
+        ],
+        &[ChildConfigKind::IoData]
+    ),
+    schema!(
+        "OffDelay",
+        "Off-Delay",
+        "Times",
+        "https://www.loxone.com/enen/kb/delayed-pulse/",
+        "Delays the falling edge of an input signal by a configurable duration.",
+        &[],
+        &[
+            param!("T", "Off-Delay Time", Some("s"), ValueKind::DurationSeconds, "5", "Delay before output Q turns off after Tr falls"),
+        ],
+        &[
+            pin_in!("Tr", "Input", "Digital input signal"),
+            pin_in!("R", "Reset", "Immediately resets output Q to 0"),
+            pin_out!("Q", "Delayed Output", "Turns on immediately with Tr and turns off after delay T"),
+        ],
+        &[ChildConfigKind::IoData]
+    ),
+    schema!(
+        "DoubleClick",
+        "Multi-Click (Single / Double / Triple Click)",
+        "Pushbuttons",
+        "https://www.loxone.com/enen/kb/double-click/",
+        "Distinguishes single, double, triple clicks and long press on a single pushbutton input.",
+        &[],
+        &[
+            param!("Td", "Max Click Interval", Some("s"), ValueKind::DurationSeconds, "0.4", "Maximum interval between consecutive clicks"),
+            param!("Tl", "Long-Press Time", Some("s"), ValueKind::DurationSeconds, "0.8", "Hold duration required to trigger long-press output"),
+        ],
+        &[
+            pin_in!("Tr", "Pushbutton Input", "Connected digital pushbutton"),
+            pin_out!("Q1", "Single Click", "Pulse on single click"),
+            pin_out!("Q2", "Double Click", "Pulse on double click"),
+            pin_out!("Q3", "Triple Click", "Pulse on triple click"),
+            pin_out!("Ql", "Long Press", "Active while held longer than Tl"),
+        ],
+        &[ChildConfigKind::IoData]
+    ),
+    // Analog & Math
+    schema!(
+        "ThresholdSwitch",
+        "Threshold Switch",
+        "Logic",
+        "https://www.loxone.com/enen/kb/threshold-switch/",
+        "Compares an analog input against configurable upper and lower switching thresholds.",
+        &[],
+        &[
+            param!("To", "Upper Threshold", None, ValueKind::Float, "50", "Threshold above which Q turns on"),
+            param!("Tu", "Lower Threshold", None, ValueKind::Float, "40", "Threshold below which Q turns off"),
+        ],
+        &[
+            pin_in!("V", "Analog Input", "Monitored analog value"),
+            pin_out!("Q", "Threshold Output", "Digital output switched by To / Tu"),
+        ],
+        &[ChildConfigKind::IoData]
+    ),
+    schema!(
+        "Hysteresis",
+        "Hysteresis",
+        "Logic",
+        "https://www.loxone.com/enen/kb/hysteresis/",
+        "Switches a digital output based on an analog input with symmetric or asymmetric hysteresis band.",
+        &[],
+        &[
+            param!("On", "Switch-On Value", None, ValueKind::Float, "60", "Value at which Q switches to 1"),
+            param!("Off", "Switch-Off Value", None, ValueKind::Float, "40", "Value at which Q switches to 0"),
+        ],
+        &[
+            pin_in!("I", "Analog Input", "Analog signal to evaluate"),
+            pin_out!("Q", "Output", "Hysteresis digital output"),
+        ],
+        &[ChildConfigKind::IoData]
+    ),
+    schema!(
+        "Limiter",
+        "Limiter",
+        "Logic",
+        "https://www.loxone.com/enen/kb/limiter/",
+        "Clamps an analog value between configurable minimum and maximum bounds.",
+        &[],
+        &[
+            param!("Min", "Minimum Limit", None, ValueKind::Float, "0", "Lower clamp limit"),
+            param!("Max", "Maximum Limit", None, ValueKind::Float, "100", "Upper clamp limit"),
+        ],
+        &[
+            pin_in!("I", "Analog Input", "Unclamped input value"),
+            pin_out!("AQ", "Clamped Output", "Input value constrained to [Min, Max]"),
+            pin_out!("Qmin", "At Minimum", "High when input is at or below Min"),
+            pin_out!("Qmax", "At Maximum", "High when input is at or above Max"),
+        ],
+        &[ChildConfigKind::IoData]
+    ),
+    schema!(
+        "Average",
+        "Average",
+        "Logic",
+        "https://www.loxone.com/enen/kb/average/",
+        "Computes the arithmetic mean of connected analog inputs or moving time average.",
+        &[],
+        &[
+            param!("T", "Averaging Window", Some("s"), ValueKind::DurationSeconds, "0", "Time window for moving average (0 = instantaneous mean)"),
+        ],
+        &[
+            pin_in!("I1", "Input 1", "First analog value"),
+            pin_in!("I2", "Input 2", "Second analog value"),
+            pin_in!("I3", "Input 3", "Third analog value"),
+            pin_in!("I4", "Input 4", "Fourth analog value"),
+            pin_out!("AQ", "Average Output", "Calculated average value"),
+        ],
+        &[ChildConfigKind::IoData]
+    ),
+    schema!(
+        "MinMax",
+        "Min / Max",
+        "Logic",
+        "https://www.loxone.com/enen/kb/min-max/",
+        "Outputs the minimum and maximum values across multiple analog inputs.",
+        &[],
+        &[],
+        &[
+            pin_in!("I1", "Input 1", "First analog input"),
+            pin_in!("I2", "Input 2", "Second analog input"),
+            pin_in!("I3", "Input 3", "Third analog input"),
+            pin_in!("I4", "Input 4", "Fourth analog input"),
+            pin_in!("R", "Reset", "Resets tracked historical min/max"),
+            pin_out!("AQmin", "Minimum Output", "Smallest input value"),
+            pin_out!("AQmax", "Maximum Output", "Largest input value"),
+        ],
+        &[ChildConfigKind::IoData]
+    ),
+    schema!(
+        "ChangeRate",
+        "Rate of Change / Slew Rate",
+        "Logic",
+        "https://www.loxone.com/enen/kb/rate-of-change/",
+        "Measures or limits the rate of change (gradient per second) of an analog signal.",
+        &[],
+        &[
+            param!("T", "Measurement Interval", Some("s"), ValueKind::DurationSeconds, "1", "Time interval for gradient calculation"),
+        ],
+        &[
+            pin_in!("I", "Analog Input", "Monitored analog signal"),
+            pin_out!("AQ", "Rate of Change", "Calculated change per time interval"),
+        ],
+        &[ChildConfigKind::IoData]
+    ),
+    schema!(
+        "ValueSelector",
+        "Value Selector / Multiplexer",
+        "Logic",
+        "https://www.loxone.com/enen/kb/value-selector/",
+        "Selects one of several analog inputs based on a selector index or digital enable.",
+        &[],
+        &[
+            param!("Sel", "Selected Input Index", None, ValueKind::Int, "1", "Active input channel index (1..8)"),
+        ],
+        &[
+            pin_in!("S", "Selector", "Selects active input channel"),
+            pin_in!("I1", "Value 1", "Analog input channel 1"),
+            pin_in!("I2", "Value 2", "Analog input channel 2"),
+            pin_in!("I3", "Value 3", "Analog input channel 3"),
+            pin_in!("I4", "Value 4", "Analog input channel 4"),
+            pin_out!("AQ", "Selected Output", "Value of the currently selected input"),
+        ],
+        &[ChildConfigKind::IoData]
+    ),
+    schema!(
+        "Scale",
+        "Scaler / Range Mapper",
+        "Logic",
+        "https://www.loxone.com/enen/kb/scale/",
+        "Linearly maps an input range [Ilow..Ihigh] to an output range [Olow..Ohigh].",
+        &[],
+        &[
+            param!("Ilow", "Input Low", None, ValueKind::Float, "0", "Lower bound of input range"),
+            param!("Ihigh", "Input High", None, ValueKind::Float, "10", "Upper bound of input range"),
+            param!("Olow", "Output Low", None, ValueKind::Float, "0", "Lower bound of output range"),
+            param!("Ohigh", "Output High", None, ValueKind::Float, "100", "Upper bound of output range"),
+        ],
+        &[
+            pin_in!("I", "Analog Input", "Raw input signal"),
+            pin_out!("AQ", "Scaled Output", "Linearly scaled output value"),
+        ],
+        &[ChildConfigKind::IoData]
+    ),
+    schema!(
+        "Linearity",
+        "Linearization Table",
+        "Logic",
+        "https://www.loxone.com/enen/kb/linearization/",
+        "Piecewise-linear interpolation block converting non-linear sensor curves into calibrated engineering units.",
+        &[
+            attr!("Points", "Interpolation Points", None, ValueKind::Text, Some("0=0;10=100"), "Semicolon-separated X=Y calibration points"),
+        ],
+        &[],
+        &[
+            pin_in!("I", "Raw Input", "Non-linear sensor value"),
+            pin_out!("AQ", "Linearized Output", "Interpolated output value"),
+        ],
+        &[ChildConfigKind::IoData]
+    ),
+    // Shading & Windows
+    schema!(
+        "CentralJalousie",
+        "Central Shading Controller",
+        "Shading",
+        "https://www.loxone.com/enen/kb/central-shading/",
+        "Coordinates multiple Automatic Blinds blocks for facade-wide shading, storm protection, and central up/down commands.",
+        &[
+            attr!("Players", "Linked Shading Blocks", None, ValueKind::Text, None, "UUID list of controlled shading blocks"),
+        ],
+        &[],
+        &[
+            pin_in!("Cu", "Central Up", "Raises all linked blinds"),
+            pin_in!("Cd", "Central Down", "Lowers all linked blinds"),
+            pin_in!("S", "Central Shade", "Activates sun shading on all linked blinds"),
+            pin_in!("Sp", "Safety / Wind Lock", "Retracts and locks all blinds for storm protection"),
+            pin_out!("Q", "Active Movement", "High while any linked blind is moving"),
+        ],
+        &[ChildConfigKind::IoData]
+    ),
+    schema!(
+        "CentralGate",
+        "Central Gate Controller",
+        "Shading",
+        "https://www.loxone.com/enen/kb/central-gate/",
+        "Centralized control and status aggregation for multiple Gate / Garage Door blocks.",
+        &[
+            attr!("Players", "Linked Gate Blocks", None, ValueKind::Text, None, "UUID list of linked gate controllers"),
+        ],
+        &[],
+        &[
+            pin_in!("O", "Open All", "Opens all linked gates"),
+            pin_in!("C", "Close All", "Closes all linked gates"),
+            pin_out!("Qo", "Any Gate Open", "High when at least one gate is open"),
+        ],
+        &[ChildConfigKind::IoData]
+    ),
+    schema!(
+        "RoofWindowShading",
+        "Roof Window & Awning Controller",
+        "Shading",
+        "https://www.loxone.com/enen/kb/roof-window-shading/",
+        "Controls motorized skylights, roof windows, and integrated rain/wind-protected awnings.",
+        &[],
+        &[
+            param!("To", "Opening Run Time", Some("s"), ValueKind::DurationSeconds, "30", "Full travel time for opening"),
+            param!("Tc", "Closing Run Time", Some("s"), ValueKind::DurationSeconds, "30", "Full travel time for closing"),
+        ],
+        &[
+            pin_in!("Op", "Open", "Opens the roof window"),
+            pin_in!("Cl", "Close", "Closes the roof window"),
+            pin_in!("Rain", "Rain Alarm", "Automatically closes roof window on rain"),
+            pin_out!("Qo", "Open Output", "Actuator output for opening"),
+            pin_out!("Qc", "Close Output", "Actuator output for closing"),
+        ],
+        &[ChildConfigKind::IoData]
+    ),
+    schema!(
+        "WindowMonitor",
+        "Window & Door Monitor",
+        "Security & Safety",
+        "https://www.loxone.com/enen/kb/window-door-monitor/",
+        "Monitors open, tilted, and locked states of windows and doors across rooms with visualization summary.",
+        &[],
+        &[],
+        &[
+            pin_in!("I1", "Contact 1", "Window/door reed contact 1"),
+            pin_in!("I2", "Contact 2", "Window/door reed contact 2"),
+            pin_in!("I3", "Contact 3", "Window/door reed contact 3"),
+            pin_in!("I4", "Contact 4", "Window/door reed contact 4"),
+            pin_out!("Q", "Any Open", "High when at least one monitored window or door is open"),
+            pin_out!("No", "Number Open", "Count of currently open contacts"),
+            pin_out!("TQ", "Open Windows Text", "Formatted list of open windows"),
+        ],
+        &[ChildConfigKind::IoData]
+    ),
+    // Climate & Control
+    schema!(
+        "PID",
+        "PID Controller",
+        "Climate",
+        "https://www.loxone.com/enen/kb/pid-controller/",
+        "Continuous proportional-integral-derivative closed-loop controller for temperature, pressure, or flow regulation.",
+        &[],
+        &[
+            param!("Kp", "Proportional Gain", None, ValueKind::Float, "5", "Proportional gain factor Kp"),
+            param!("Ki", "Integral Gain", None, ValueKind::Float, "0.1", "Integral gain factor Ki"),
+            param!("Kd", "Derivative Gain", None, ValueKind::Float, "0", "Derivative gain factor Kd"),
+            param!("Min", "Minimum Output", Some("%"), ValueKind::Percent, "0", "Lower output clamp"),
+            param!("Max", "Maximum Output", Some("%"), ValueKind::Percent, "100", "Upper output clamp"),
+        ],
+        &[
+            pin_in!("T", "Setpoint", "Target value"),
+            pin_in!("I", "Actual Value", "Measured process variable"),
+            pin_in!("R", "Reset", "Resets integral accumulator and disables output"),
+            pin_out!("AQ", "Control Output", "PID manipulated variable (Min..Max)"),
+        ],
+        &[ChildConfigKind::IoData]
+    ),
+    schema!(
+        "HeatingCurve",
+        "Heating Curve",
+        "Climate",
+        "https://www.loxone.com/enen/kb/heating-curve/",
+        "Calculates weather-compensated flow temperature setpoint from outdoor temperature.",
+        &[],
+        &[
+            param!("Tl", "Min Flow Temperature", Some("°C"), ValueKind::TemperatureCelsius, "25", "Minimum flow temperature at warm outdoor temp"),
+            param!("Th", "Max Flow Temperature", Some("°C"), ValueKind::TemperatureCelsius, "55", "Maximum flow temperature at design winter outdoor temp"),
+            param!("Otl", "Outdoor Temp @ Max Flow", Some("°C"), ValueKind::TemperatureCelsius, "-15", "Outdoor temperature corresponding to Th"),
+            param!("Oth", "Outdoor Temp @ Min Flow", Some("°C"), ValueKind::TemperatureCelsius, "20", "Outdoor temperature corresponding to Tl"),
+        ],
+        &[
+            pin_in!("Ot", "Outdoor Temperature", "Measured outdoor temperature in °C"),
+            pin_in!("So", "Setpoint Offset", "Parallel shift of flow temperature in °C"),
+            pin_out!("AQ", "Flow Setpoint", "Calculated target flow temperature in °C"),
+        ],
+        &[ChildConfigKind::IoData]
+    ),
+    schema!(
+        "PWM",
+        "Pulse Width Modulation (PWM)",
+        "Climate",
+        "https://www.loxone.com/enen/kb/pwm/",
+        "Converts a 0-100% analog control value into a time-proportioned digital switching signal for thermal actuators.",
+        &[],
+        &[
+            param!("Tp", "PWM Period", Some("s"), ValueKind::DurationSeconds, "600", "Cycle period duration"),
+            param!("Tm", "Min Pulse Width", Some("s"), ValueKind::DurationSeconds, "10", "Minimum on/off switching duration"),
+        ],
+        &[
+            pin_in!("I", "Duty Cycle Input", "Input value (0..100%)"),
+            pin_out!("Q", "PWM Digital Output", "Time-proportioned digital actuator output"),
+        ],
+        &[ChildConfigKind::IoData]
+    ),
+    schema!(
+        "TwoPointController",
+        "2-Point Controller",
+        "Climate",
+        "https://www.loxone.com/enen/kb/2-point-controller/",
+        "On/off thermostat controller comparing actual value and target setpoint with configurable switching hysteresis.",
+        &[],
+        &[
+            param!("H", "Hysteresis", Some("°C"), ValueKind::TemperatureCelsius, "1.0", "Total switching hysteresis around setpoint"),
+        ],
+        &[
+            pin_in!("T", "Setpoint", "Target temperature or value"),
+            pin_in!("I", "Actual Value", "Measured temperature or value"),
+            pin_out!("Q", "Control Output", "Digital heating/cooling actuator output"),
+        ],
+        &[ChildConfigKind::IoData]
+    ),
+    schema!(
+        "ClimateController",
+        "Climate Controller",
+        "Climate",
+        "https://www.loxone.com/enen/kb/climate-controller/",
+        "Central HVAC demand controller coordinating multiple Intelligent Room Controllers to switch heating and cooling sources.",
+        &[
+            attr!("Players", "Linked Room Controllers", None, ValueKind::Text, None, "UUIDs of connected Intelligent Room Controllers"),
+        ],
+        &[
+            param!("To", "Heating Outdoor Cutoff", Some("°C"), ValueKind::TemperatureCelsius, "18", "Outdoor temperature above which heating is locked"),
+        ],
+        &[
+            pin_in!("Ot", "Outdoor Temperature", "Current outdoor temperature"),
+            pin_out!("Qh", "Heating Demand", "High when rooms require heating"),
+            pin_out!("Qc", "Cooling Demand", "High when rooms require cooling"),
+            pin_out!("AQh", "Flow Temp Setpoint Heating", "Required heating supply temperature"),
+            pin_out!("AQc", "Flow Temp Setpoint Cooling", "Required cooling supply temperature"),
+        ],
+        &[ChildConfigKind::IoData]
+    ),
+    schema!(
+        "CeilingFan",
+        "Ceiling Fan Controller",
+        "Climate",
+        "https://www.loxone.com/enen/kb/ceiling-fan/",
+        "Controls multi-speed or 0-10V ceiling fans with automatic temperature assistance and summer/winter direction.",
+        &[],
+        &[
+            param!("Tmin", "Start Temperature", Some("°C"), ValueKind::TemperatureCelsius, "24", "Room temperature at which automatic fan operation starts"),
+        ],
+        &[
+            pin_in!("Tr", "Toggle / Speed Step", "Steps through fan speed levels"),
+            pin_in!("Temp", "Room Temperature", "Current room temperature"),
+            pin_out!("AQ", "Fan Speed Output", "Fan speed 0..100%"),
+            pin_out!("Q", "Fan Active", "High when fan is running"),
+        ],
+        &[ChildConfigKind::IoData]
+    ),
+    schema!(
+        "Dehumidifier",
+        "Dehumidifier / Humidity Controller",
+        "Climate",
+        "https://www.loxone.com/enen/kb/dehumidifier/",
+        "Controls room dehumidification or humidification based on relative humidity setpoint and hysteresis.",
+        &[],
+        &[
+            param!("Sp", "Target Max Humidity", Some("%"), ValueKind::Percent, "60", "Humidity threshold above which dehumidification starts"),
+            param!("H", "Hysteresis", Some("%"), ValueKind::Percent, "5", "Humidity switching hysteresis"),
+        ],
+        &[
+            pin_in!("Hu", "Relative Humidity", "Measured room relative humidity in %"),
+            pin_in!("Dis", "Disable", "Disables dehumidifier output"),
+            pin_out!("Q", "Dehumidifier Output", "High when dehumidification is active"),
+        ],
+        &[ChildConfigKind::IoData]
+    ),
+    // Lighting & Audio
+    schema!(
+        "MoodSwitch",
+        "Mood Switch",
+        "Lighting",
+        "https://www.loxone.com/enen/kb/lighting-controller/",
+        "Cycles through or directly selects lighting moods on a connected Lighting Controller.",
+        &[],
+        &[],
+        &[
+            pin_in!("Bp", "Next Mood", "Cycles to the next lighting mood"),
+            pin_in!("Bm", "Previous Mood", "Cycles to the previous lighting mood"),
+            pin_in!("Off", "All Off", "Selects the Off mood (0)"),
+            pin_out!("AQ", "Active Mood ID", "Outputs selected mood ID to Lighting Controller"),
+        ],
+        &[ChildConfigKind::IoData]
+    ),
+    schema!(
+        "LightScene",
+        "Lighting Scene / RGBW Controller",
+        "Lighting",
+        "https://www.loxone.com/enen/kb/light-controller/",
+        "Controls individual dimmable and RGBW luminaire channels with smooth fade transitions.",
+        &[],
+        &[
+            param!("Fade", "Fade Time", Some("s"), ValueKind::DurationSeconds, "1.5", "Transition duration between scenes"),
+        ],
+        &[
+            pin_in!("T", "Touch / Toggle", "Toggles light scene on/off"),
+            pin_in!("Bri", "Brightness", "Target brightness 0..100%"),
+            pin_out!("AQ1", "Channel 1 Output", "Dimmer output 1 (0..100%)"),
+            pin_out!("AQ2", "Channel 2 Output", "Dimmer output 2 (0..100%)"),
+            pin_out!("Q", "Scene Active", "High when any channel is on"),
+        ],
+        &[ChildConfigKind::IoData]
+    ),
+    schema!(
+        "PresenceLight",
+        "Presence Lighting",
+        "Lighting",
+        "https://www.loxone.com/enen/kb/presence-controller/",
+        "Combines motion/presence detection and ambient brightness threshold to automatically control room lighting.",
+        &[],
+        &[
+            param!("Th", "Brightness Threshold", Some("lx"), ValueKind::Lux, "150", "Ambient lux below which lighting is activated"),
+            param!("T", "Overrun Time", Some("s"), ValueKind::DurationSeconds, "300", "Hold time after last detected motion"),
+        ],
+        &[
+            pin_in!("P", "Presence Input", "Motion or presence sensor input"),
+            pin_in!("Br", "Brightness Input", "Ambient brightness sensor in lx"),
+            pin_in!("Dis", "Disable", "Locks automatic presence activation"),
+            pin_out!("Q", "Light Trigger", "Active when presence is detected and room is dark"),
+        ],
+        &[ChildConfigKind::IoData]
+    ),
+    schema!(
+        "StereoExtension",
+        "Stereo Extension / Zone Amplifier",
+        "Audio",
+        "https://www.loxone.com/enen/kb/stereo-extension/",
+        "Controls a 2-channel amplified audio zone with volume, mute, and line-out routing.",
+        &[],
+        &[
+            param!("Vol", "Default Volume", Some("%"), ValueKind::Percent, "35", "Initial playback volume"),
+        ],
+        &[
+            pin_in!("On", "Power / Play", "Activates amplifier zone"),
+            pin_in!("Vp", "Volume Up", "Increases zone volume"),
+            pin_in!("Vm", "Volume Down", "Decreases zone volume"),
+            pin_out!("Q", "Zone Active", "High when audio zone is active"),
+            pin_out!("AQv", "Current Volume", "Current volume level 0..100%"),
+        ],
+        &[ChildConfigKind::IoData]
+    ),
+    // Timing, Counters & Schedule
+    schema!(
+        "IntervalImpulse",
+        "Interval Pulse Generator (Clock)",
+        "Times",
+        "https://www.loxone.com/enen/kb/interval-impulse/",
+        "Generates a periodic clock signal with configurable on-pulse width and pause duration while enabled.",
+        &[],
+        &[
+            param!("Ti", "Pulse Width", Some("s"), ValueKind::DurationSeconds, "1", "Duration output Q stays high"),
+            param!("Tp", "Pause Duration", Some("s"), ValueKind::DurationSeconds, "1", "Duration output Q stays low between pulses"),
+        ],
+        &[
+            pin_in!("En", "Enable", "Enables periodic pulse generation while high"),
+            pin_out!("Q", "Clock Output", "Periodic pulse output"),
+        ],
+        &[ChildConfigKind::IoData]
+    ),
+    schema!(
+        "Stopwatch",
+        "Stopwatch",
+        "Times",
+        "https://www.loxone.com/enen/kb/stopwatch/",
+        "Measures elapsed time in seconds with start, stop, lap, and reset inputs.",
+        &[],
+        &[],
+        &[
+            pin_in!("St", "Start / Stop", "Starts or pauses time measurement"),
+            pin_in!("R", "Reset", "Resets elapsed time to zero"),
+            pin_out!("AQ", "Elapsed Time", "Elapsed time in seconds"),
+            pin_out!("Q", "Running", "High while stopwatch is running"),
+        ],
+        &[ChildConfigKind::IoData]
+    ),
+    schema!(
+        "OperatingHoursCounter",
+        "Operating Hours Counter",
+        "Times",
+        "https://www.loxone.com/enen/kb/operating-hours-counter/",
+        "Accumulates runtime hours of an equipment input and triggers a maintenance alarm when service interval is reached.",
+        &[
+            attr!("Rem", "Remanence", None, ValueKind::Bool, Some("true"), "Persist accumulated hours across reboots"),
+        ],
+        &[
+            param!("Max", "Service Interval", Some("h"), ValueKind::Float, "1000", "Operating hours threshold for maintenance alarm"),
+        ],
+        &[
+            pin_in!("En", "Equipment Running", "Accumulates runtime while high"),
+            pin_in!("R", "Reset Counter", "Resets accumulated hours after maintenance"),
+            pin_out!("AQ", "Operating Hours", "Total accumulated runtime in hours"),
+            pin_out!("Qm", "Maintenance Due", "High when operating hours reach Max"),
+        ],
+        &[ChildConfigKind::IoData]
+    ),
+    schema!(
+        "Schedule",
+        "Time Switch / Schedule",
+        "Times",
+        "https://www.loxone.com/enen/kb/schedule/",
+        "Weekly and calendar-based time switch outputting digital on/off states or analog schedule values.",
+        &[
+            attr!("Analog", "Analog Schedule", None, ValueKind::Bool, Some("false"), "Output scheduled analog values instead of digital 0/1"),
+        ],
+        &[],
+        &[
+            pin_in!("Dis", "Disable", "Disables schedule output while high"),
+            pin_in!("Ov", "Override", "Manual override input"),
+            pin_out!("Q", "Schedule Active", "Digital output active during scheduled time windows"),
+            pin_out!("AQ", "Scheduled Value", "Analog value for current schedule slot"),
+        ],
+        &[ChildConfigKind::IoData]
+    ),
+    // Security, Safety & Access
+    schema!(
+        "AccessCode",
+        "NFC Code Touch / Access Code",
+        "Access",
+        "https://www.loxone.com/enen/kb/nfc-code-touch/",
+        "Evaluates PIN codes, one-time codes, and NFC tags for doors, gates, and alarm arming.",
+        &[],
+        &[],
+        &[
+            pin_in!("Dis", "Lock / Disable", "Disables access authentication while high"),
+            pin_out!("Q1", "Authorized Output 1", "Pulse when valid primary code/tag is presented"),
+            pin_out!("Q2", "Authorized Output 2", "Pulse when secondary code is presented"),
+            pin_out!("Qe", "Denied / Error", "Pulse when invalid code or tag is presented"),
+            pin_out!("TQu", "User Name", "Name of the authenticated user"),
+        ],
+        &[ChildConfigKind::IoData]
+    ),
+    schema!(
+        "FireEmergency",
+        "Fire & Water Emergency Alarm",
+        "Security & Safety",
+        "https://www.loxone.com/enen/kb/fire-water-alarm/",
+        "Life-safety alarm controller monitoring smoke, heat, and CO detectors with emergency escape route lighting and shading retraction.",
+        &[],
+        &[
+            param!("Td", "Verification Delay", Some("s"), ValueKind::DurationSeconds, "0", "Delay before triggering full external alarm"),
+        ],
+        &[
+            pin_in!("I1", "Smoke / Fire Detector 1", "Fire sensor zone 1"),
+            pin_in!("I2", "Smoke / Fire Detector 2", "Fire sensor zone 2"),
+            pin_in!("Ack", "Acknowledge / Silence", "Acknowledges and silences acoustic alarm"),
+            pin_out!("Q", "Alarm Active", "High when fire emergency is active"),
+            pin_out!("Qs", "Siren Output", "Acoustic siren trigger"),
+            pin_out!("Ql", "Escape Lighting", "Turns on emergency escape lighting"),
+            pin_out!("Qj", "Retract Blinds", "Raises all blinds to clear escape routes"),
+        ],
+        &[ChildConfigKind::IoData]
+    ),
+    schema!(
+        "WaterCentral",
+        "Water Alarm Central",
+        "Security & Safety",
+        "https://www.loxone.com/enen/kb/fire-water-alarm/",
+        "Monitors water leak sensors and flow meters to automatically shut off the main water valve upon leak detection.",
+        &[],
+        &[],
+        &[
+            pin_in!("I1", "Water Sensor 1", "Leak sensor input 1"),
+            pin_in!("I2", "Water Sensor 2", "Leak sensor input 2"),
+            pin_in!("Ack", "Acknowledge", "Resets latched water alarm after inspection"),
+            pin_out!("Q", "Leak Alarm", "High when water leak is detected"),
+            pin_out!("Qv", "Main Valve Shutoff", "Closes main water shutoff valve on alarm"),
+        ],
+        &[ChildConfigKind::IoData]
+    ),
+    // Energy, Pool, Sauna & EV
+    schema!(
+        "PoolController",
+        "Pool Controller",
+        "Energy",
+        "https://www.loxone.com/enen/kb/pool-controller/",
+        "Automates swimming pool filtration cycles, backwashing, heating, cover control, and counter-current jet.",
+        &[],
+        &[
+            param!("Ts", "Target Water Temperature", Some("°C"), ValueKind::TemperatureCelsius, "28", "Desired pool water temperature"),
+            param!("Tf", "Daily Filter Runtime", Some("h"), ValueKind::Float, "6", "Minimum filtration hours per day"),
+        ],
+        &[
+            pin_in!("T", "Water Temperature", "Measured pool water temperature"),
+            pin_in!("Cov", "Cover Closed", "High when pool cover is closed"),
+            pin_out!("Qf", "Filter Pump", "Controls main circulation pump"),
+            pin_out!("Qh", "Pool Heating", "Controls heat exchanger or heat pump"),
+        ],
+        &[ChildConfigKind::IoData]
+    ),
+    schema!(
+        "SaunaController",
+        "Sauna Controller",
+        "Climate",
+        "https://www.loxone.com/enen/kb/sauna-controller/",
+        "Controls Finnish sauna and bio-sauna heaters with evaporator humidity control, drying phase, and safety temperature limit.",
+        &[],
+        &[
+            param!("Ts", "Target Temperature", Some("°C"), ValueKind::TemperatureCelsius, "85", "Target sauna cabin temperature"),
+            param!("Hs", "Target Humidity", Some("%"), ValueKind::Percent, "15", "Target relative humidity for evaporator mode"),
+        ],
+        &[
+            pin_in!("On", "Start / Stop Sauna", "Switches sauna session on or off"),
+            pin_in!("T", "Cabin Temperature", "Bench temperature sensor in °C"),
+            pin_in!("Stl", "Safety Temp Limiter", "Hardware safety cut-out contact"),
+            pin_out!("Qh", "Heater Output", "Controls sauna heater contactor"),
+            pin_out!("Qv", "Evaporator Output", "Controls steam evaporator"),
+            pin_out!("Ql", "Sauna Light", "Cabin lighting output"),
+        ],
+        &[ChildConfigKind::IoData]
+    ),
+    schema!(
+        "SolarController",
+        "Solar Thermal / PV Controller",
+        "Energy",
+        "https://www.loxone.com/enen/kb/solar-controller/",
+        "Differential temperature controller for solar thermal collectors and buffer storage tank charging with overheat protection.",
+        &[],
+        &[
+            param!("Ton", "Switch-On Delta T", Some("°C"), ValueKind::TemperatureCelsius, "6", "Collector-to-tank temperature difference to start pump"),
+            param!("Toff", "Switch-Off Delta T", Some("°C"), ValueKind::TemperatureCelsius, "3", "Collector-to-tank temperature difference to stop pump"),
+            param!("Tmax", "Max Buffer Temp", Some("°C"), ValueKind::TemperatureCelsius, "85", "Maximum allowed storage tank temperature"),
+        ],
+        &[
+            pin_in!("Tc", "Collector Temperature", "Solar collector temperature in °C"),
+            pin_in!("Tb", "Buffer Tank Temperature", "Lower buffer storage temperature in °C"),
+            pin_out!("Qp", "Solar Pump", "Circulation pump output"),
+            pin_out!("AQp", "Pump Speed", "Modulating solar pump speed 0..100%"),
+        ],
+        &[ChildConfigKind::IoData]
+    ),
+    schema!(
+        "LoadManager",
+        "Load Manager",
+        "Energy",
+        "https://www.loxone.com/enen/kb/load-manager/",
+        "Monitors building grid power and sheds prioritized electrical loads to prevent peak overload or fuse tripping.",
+        &[],
+        &[
+            param!("Pmax", "Max Grid Power", Some("kW"), ValueKind::Float, "15", "Maximum allowed grid import power"),
+        ],
+        &[
+            pin_in!("P", "Current Grid Power", "Measured grid power in kW"),
+            pin_out!("Q1", "Load Shed Channel 1", "Locks load 1 when peak threshold is exceeded"),
+            pin_out!("Q2", "Load Shed Channel 2", "Locks load 2 when peak threshold is exceeded"),
+            pin_out!("Q3", "Load Shed Channel 3", "Locks load 3 when peak threshold is exceeded"),
+            pin_out!("AQ", "Available Power", "Remaining power margin in kW"),
+        ],
+        &[ChildConfigKind::IoData]
+    ),
+    schema!(
+        "Wallbox2",
+        "Wallbox EV Charger Controller",
+        "Energy",
+        "https://www.loxone.com/enen/kb/wallbox/",
+        "Manages electric vehicle charging with PV surplus tracking, dynamic load management, and charging mode selection.",
+        &[],
+        &[
+            param!("Pmin", "Min Charging Power", Some("kW"), ValueKind::Float, "1.4", "Minimum allowed EV charging power"),
+            param!("Pmax", "Max Charging Power", Some("kW"), ValueKind::Float, "11.0", "Maximum hardware charging power"),
+        ],
+        &[
+            pin_in!("En", "Enable Charging", "Allows charging session when high"),
+            pin_in!("Sp", "Surplus Power", "Available solar surplus power in kW"),
+            pin_out!("AQp", "Target Charge Power", "Assigned charging power limit in kW"),
+            pin_out!("Q", "Charging Active", "High while vehicle is actively charging"),
+            pin_out!("Qc", "Vehicle Connected", "High while EV cable is plugged in"),
+        ],
+        &[ChildConfigKind::IoData]
+    ),
+    schema!(
+        "SpotPriceOptimizer",
+        "Spot Price Optimizer",
+        "Energy",
+        "https://www.loxone.com/enen/kb/spot-price-optimizer/",
+        "Activates flexible consumers during the cheapest electricity spot-market hours of the day.",
+        &[],
+        &[
+            param!("Hours", "Required Runtime Hours", Some("h"), ValueKind::Float, "4", "Number of cheapest hours per day to activate output"),
+        ],
+        &[
+            pin_in!("En", "Enable Optimization", "Enables spot price scheduling"),
+            pin_out!("Q", "Cheap Tariff Active", "High during the selected lowest-price hours"),
+            pin_out!("AQ", "Current Spot Price", "Current electricity spot price"),
+        ],
+        &[ChildConfigKind::IoData]
+    ),
+];
+
 macro_rules! tree_schema {
     ($ty:expr, $name:expr, $cat:expr, $url:expr, $sum:expr) => {
         BlockSchema {
@@ -3281,11 +4075,20 @@ static TREE_SCHEMAS_2: &[BlockSchema] = &[
     ),
 ];
 
+pub fn page_block_schemas() -> impl Iterator<Item = &'static BlockSchema> {
+    BLOCK_SCHEMAS
+        .iter()
+        .chain(PAGE_SCHEMAS_2.iter())
+        .chain(PAGE_SCHEMAS_3.iter())
+        .chain(PAGE_SCHEMAS_4.iter())
+}
+
 pub fn lookup_block_schema(type_name: &str) -> Option<&'static BlockSchema> {
     for slice in [
         BLOCK_SCHEMAS,
         PAGE_SCHEMAS_2,
         PAGE_SCHEMAS_3,
+        PAGE_SCHEMAS_4,
         TREE_SCHEMAS_1,
         TREE_SCHEMAS_2,
     ] {
