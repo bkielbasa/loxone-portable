@@ -7,6 +7,7 @@ mod icons;
 mod insert_modal;
 mod inspector;
 mod miniserver_modal;
+mod object_config_modal;
 mod project_launcher;
 mod theme;
 mod top_bar;

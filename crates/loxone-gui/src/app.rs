@@ -18,6 +18,9 @@ use crate::inspector::{render_right_inspector, InspectorAction, LiveCommand};
 use crate::miniserver_modal::{
     render_miniserver_modal, MiniserverModalAction, MiniserverModalState,
 };
+use crate::object_config_modal::{
+    render_object_config_modal, ObjectConfigModalAction, ObjectConfigModalState,
+};
 use crate::project_launcher::{
     record_recent_project, render_project_launcher, LauncherAction, ProjectLauncherState,
 };
@@ -79,6 +82,7 @@ pub struct LoxonePortableApp {
     pub pending_dirty_action: Option<PendingDirtyAction>,
     pub allow_close_after_discard: bool,
     pub insert_modal: InsertModalState,
+    pub object_config_modal: ObjectConfigModalState,
     pub next_created_counter: usize,
     pub error_banner: Option<String>,
     pub active_page_index: usize,
@@ -124,6 +128,7 @@ impl Default for LoxonePortableApp {
             pending_dirty_action: None,
             allow_close_after_discard: false,
             insert_modal: InsertModalState::default(),
+            object_config_modal: ObjectConfigModalState::default(),
             next_created_counter: 1,
             error_banner: None,
             active_page_index: 0,
@@ -179,6 +184,7 @@ impl LoxonePortableApp {
                 self.cached_diagnostics.clear();
                 self.pending_dirty_action = None;
                 self.insert_modal.close();
+                self.object_config_modal.is_open = false;
                 self.viewport.interaction = Default::default();
                 self.error_banner = None;
                 self.active_page_index = 0;
@@ -214,6 +220,7 @@ impl LoxonePortableApp {
         self.cached_diagnostics.clear();
         self.pending_dirty_action = None;
         self.insert_modal.close();
+        self.object_config_modal.is_open = false;
         self.viewport.interaction = Default::default();
         self.error_banner = None;
         self.active_page_index = 0;
@@ -1280,6 +1287,18 @@ impl LoxonePortableApp {
                     &target_page_uuid,
                 );
             }
+            CanvasAction::OpenObjectConfig(block_uuid) => {
+                self.open_object_config_modal(&block_uuid);
+            }
+        }
+    }
+
+    pub fn open_object_config_modal(&mut self, block_uuid: &str) {
+        if let Some(proj) = &self.project {
+            if self.object_config_modal.open_for_block(proj, block_uuid) {
+                self.selected_uuid = Some(block_uuid.to_string());
+                self.show_right_panel = true;
+            }
         }
     }
 
@@ -1553,6 +1572,7 @@ impl LoxonePortableApp {
         }
         if self.miniserver_modal.is_open
             || self.insert_modal.is_open
+            || self.object_config_modal.is_open
             || self.pending_dirty_action.is_some()
         {
             return;
@@ -1814,6 +1834,9 @@ impl eframe::App for LoxonePortableApp {
                     InspectorAction::SelectObject(uuid) => {
                         self.selected_uuid = Some(uuid);
                     }
+                    InspectorAction::OpenObjectConfig(block_uuid) => {
+                        self.open_object_config_modal(&block_uuid);
+                    }
                 }
             }
         }
@@ -1884,6 +1907,30 @@ impl eframe::App for LoxonePortableApp {
                 show_insert_modal(ctx, &mut self.insert_modal, self.project.as_ref())
             {
                 self.handle_insert_selection(sel);
+            }
+        }
+
+        // Loxone Config "Konfiguracja obiektu" ("Object Configuration") Modal Overlay
+        if let Some(obj_cfg_act) = render_object_config_modal(ctx, &mut self.object_config_modal) {
+            match obj_cfg_act {
+                ObjectConfigModalAction::Apply {
+                    page_uuid,
+                    block_uuid,
+                    rows,
+                } => {
+                    let edits = if let Some(proj) = &self.project {
+                        loxone_core::build_object_config_edits(proj, &page_uuid, &block_uuid, &rows)
+                    } else {
+                        Vec::new()
+                    };
+                    if !edits.is_empty() {
+                        self.execute_edit(ProjectEdit::Batch(edits));
+                    }
+                }
+                ObjectConfigModalAction::InspectObject(uuid) => {
+                    self.selected_uuid = Some(uuid);
+                    self.show_right_panel = true;
+                }
             }
         }
 

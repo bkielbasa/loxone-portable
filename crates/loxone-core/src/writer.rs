@@ -495,6 +495,9 @@ fn apply_edit_inner(
                         incoming_links: Vec::new(),
                     });
                 }
+                let is_hidden_link = !block.has_position
+                    || target_pin_key.starts_with("HI")
+                    || target_pin_key.starts_with("InputAir");
                 if let Some(pin) = block.pins.iter_mut().find(|p| p.key == *target_pin_key) {
                     if pin.pin_kind == PinKind::Parameter {
                         pin.pin_kind = PinKind::Input;
@@ -506,7 +509,11 @@ fn apply_edit_inner(
                     {
                         pin.incoming_links.push(WireLink {
                             source_pin_uuid: source_pin_uuid.clone(),
-                            flags: None,
+                            flags: if is_hidden_link {
+                                Some("1".to_string())
+                            } else {
+                                None
+                            },
                         });
                     }
                 }

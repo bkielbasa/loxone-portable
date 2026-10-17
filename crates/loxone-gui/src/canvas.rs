@@ -191,6 +191,7 @@ pub enum CanvasAction {
         pin_key: Option<String>,
         command: String,
     },
+    OpenObjectConfig(String),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1219,21 +1220,29 @@ pub fn render_page_canvas(
         }
     }
 
-    // Double-click a block -> open inline rename popover
+    // Double-click a block -> open Object Configuration modal (for Alarm / Central / Room Controller blocks)
+    // or inline rename popover for standard blocks
     if response.double_clicked() {
         if let Some(pos) = pointer_pos.or(hover_pos) {
             if let Some(hit_layout) = layouts.iter().rev().find(|l| l.rect.contains(pos)) {
-                let current_title = if hit_layout.block.title.is_empty() {
-                    hit_layout.block.block_type.clone()
+                if loxone_core::supports_object_config(hit_layout.block) {
+                    viewport.interaction.selected_blocks = vec![hit_layout.block.uuid.clone()];
+                    action = Some(CanvasAction::OpenObjectConfig(
+                        hit_layout.block.uuid.clone(),
+                    ));
                 } else {
-                    hit_layout.block.title.clone()
-                };
-                viewport.interaction.inline_rename = Some(InlineRenameState {
-                    screen_pos: Pos2::new(hit_layout.rect.min.x, hit_layout.rect.min.y - 4.0),
-                    block_uuid: hit_layout.block.uuid.clone(),
-                    title_input: current_title,
-                });
-                action = Some(CanvasAction::SelectObject(hit_layout.block.uuid.clone()));
+                    let current_title = if hit_layout.block.title.is_empty() {
+                        hit_layout.block.block_type.clone()
+                    } else {
+                        hit_layout.block.title.clone()
+                    };
+                    viewport.interaction.inline_rename = Some(InlineRenameState {
+                        screen_pos: Pos2::new(hit_layout.rect.min.x, hit_layout.rect.min.y - 4.0),
+                        block_uuid: hit_layout.block.uuid.clone(),
+                        title_input: current_title,
+                    });
+                    action = Some(CanvasAction::SelectObject(hit_layout.block.uuid.clone()));
+                }
             }
         }
     }
@@ -2413,11 +2422,24 @@ pub fn render_page_canvas(
                                         .color(TEXT_PRIMARY),
                                 );
                                 ui.separator();
+                                if page
+                                    .blocks
+                                    .iter()
+                                    .find(|b| &b.uuid == block_uuid)
+                                    .is_some_and(loxone_core::supports_object_config)
+                                    && ui
+                                        .button("⚙ Konfiguracja obiektu… (Double-click)")
+                                        .clicked()
+                                {
+                                    action =
+                                        Some(CanvasAction::OpenObjectConfig(block_uuid.clone()));
+                                    close_menu = true;
+                                }
                                 if ui.button("🔍 Inspect Block").clicked() {
                                     action = Some(CanvasAction::SelectObject(block_uuid.clone()));
                                     close_menu = true;
                                 }
-                                if ui.button("✏ Rename Title… (Double-click)").clicked() {
+                                if ui.button("✏ Rename Title…").clicked() {
                                     viewport.interaction.inline_rename = Some(InlineRenameState {
                                         screen_pos: *screen_pos,
                                         block_uuid: block_uuid.clone(),

@@ -15,6 +15,7 @@ use crate::theme::{ACCENT_BLUE, BORDER_SUBTLE, CARD_BG, TEXT_MUTED, TEXT_PRIMARY
 pub enum InspectorAction {
     NavigateToBlock { page_index: usize, block_uuid: String },
     SelectObject(String),
+    OpenObjectConfig(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -673,6 +674,39 @@ fn render_page_block_inspector(
     schema: Option<&'static BlockSchema>,
     output: &mut InspectorOutput,
 ) {
+    if loxone_core::supports_object_config(block) {
+        let obj_count = get_raw_attr(&block.raw_attributes, "Objects")
+            .or_else(|| get_raw_attr(&block.raw_attributes, "UO"))
+            .map(|s| s.split(',').filter(|part| !part.trim().is_empty()).count())
+            .unwrap_or(0);
+        let btn_label = if obj_count > 0 {
+            format!(
+                "⚙ Konfiguracja obiektu ({} powiązanych wejść/wyjść)…",
+                obj_count
+            )
+        } else {
+            "⚙ Konfiguracja obiektu (Konfiguracja wejść i wyjść)…".to_string()
+        };
+        if ui
+            .add_sized(
+                [ui.available_width(), 28.0],
+                egui::Button::new(
+                    RichText::new(btn_label)
+                        .size(12.0)
+                        .color(egui::Color32::from_rgb(0x69, 0xC8, 0x32))
+                        .strong(),
+                ),
+            )
+            .on_hover_text(
+                "Otwórz okno 'Konfiguracja obiektu' (przypisywanie czujników obecności, kontaktów, oświetlenia, rolet i sygnalizatorów)",
+            )
+            .clicked()
+        {
+            output.nav_action = Some(InspectorAction::OpenObjectConfig(block.uuid.clone()));
+        }
+        ui.add_space(6.0);
+    }
+
     render_general_and_visu_section(
         ui,
         project,
