@@ -1,0 +1,144 @@
+name: Release Binaries (Windows, Linux, macOS)
+
+on:
+  release:
+    types: [published]
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build-release:
+    name: Build (${{ matrix.artifact_name }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            artifact_name: loxone-portable-linux-x86_64
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            artifact_name: loxone-portable-windows-x86_64
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            artifact_name: loxone-portable-macos-aarch64
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            artifact_name: loxone-portable-macos-x86_64
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Linux system dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config \
+            libssl-dev \
+            libxcb-render0-dev \
+            libxcb-shape0-dev \
+            libxcb-xfixes0-dev \
+            libxkbcommon-dev \
+            libxkbcommon-x11-dev \
+            libwayland-dev \
+            libgtk-3-dev \
+            libasound2-dev \
+            libfontconfig1-dev \
+            libgl1-mesa-dev
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache Cargo build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Build release binary
+        run: cargo build --release --locked -p loxone-gui --target ${{ matrix.target }}
+
+      - name: Package Linux archive
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          mkdir -p dist staging
+          cp "target/${{ matrix.target }}/release/loxone-gui" "staging/loxone-portable"
+          chmod +x "staging/loxone-portable"
+          tar -C staging -czf "dist/${{ matrix.artifact_name }}.tar.gz" loxone-portable
+          (cd dist && sha256sum "${{ matrix.artifact_name }}.tar.gz" > "${{ matrix.artifact_name }}.tar.gz.sha256")
+
+      - name: Package macOS archive and .app bundle
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          mkdir -p dist staging
+          cp "target/${{ matrix.target }}/release/loxone-gui" "staging/loxone-portable"
+          chmod +x "staging/loxone-portable"
+          tar -C staging -czf "dist/${{ matrix.artifact_name }}.tar.gz" loxone-portable
+
+          APP_DIR="staging/Loxone Portable.app/Contents"
+          mkdir -p "$APP_DIR/MacOS" "$APP_DIR/Resources"
+          cp "staging/loxone-portable" "$APP_DIR/MacOS/loxone-portable"
+          cat > "$APP_DIR/Info.plist" <<'PLIST'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>CFBundleName</key>
+            <string>Loxone Portable</string>
+            <key>CFBundleDisplayName</key>
+            <string>Loxone Portable</string>
+            <key>CFBundleIdentifier</key>
+            <string>io.loxone-portable.app</string>
+            <key>CFBundleVersion</key>
+            <string>0.1.0</string>
+            <key>CFBundleShortVersionString</key>
+            <string>0.1.0</string>
+            <key>CFBundlePackageType</key>
+            <string>APPL</string>
+            <key>CFBundleExecutable</key>
+            <string>loxone-portable</string>
+            <key>NSHighResolutionCapable</key>
+            <true/>
+          </dict>
+          </plist>
+          PLIST
+          (cd staging && ditto -c -k --sequesterRsrc --keepParent "Loxone Portable.app" "../dist/${{ matrix.artifact_name }}-app.zip")
+          (cd dist && shasum -a 256 "${{ matrix.artifact_name }}.tar.gz" > "${{ matrix.artifact_name }}.tar.gz.sha256")
+          (cd dist && shasum -a 256 "${{ matrix.artifact_name }}-app.zip" > "${{ matrix.artifact_name }}-app.zip.sha256")
+
+      - name: Package Windows archive
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist, staging | Out-Null
+          Copy-Item "target/${{ matrix.target }}/release/loxone-gui.exe" "staging/loxone-portable.exe"
+          Compress-Archive -Path "staging/loxone-portable.exe" -DestinationPath "dist/${{ matrix.artifact_name }}.zip" -Force
+          $hash = (Get-FileHash "dist/${{ matrix.artifact_name }}.zip" -Algorithm SHA256).Hash.ToLower()
+          "$hash  ${{ matrix.artifact_name }}.zip" | Out-File -Encoding ascii "dist/${{ matrix.artifact_name }}.zip.sha256"
+
+      - name: Upload workflow artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: dist/*
+
+      - name: Attach binaries to GitHub Release
+        if: github.event_name == 'release' || startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true
