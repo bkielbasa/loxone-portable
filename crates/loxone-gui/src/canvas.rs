@@ -63,6 +63,22 @@ pub struct LiveValuePopupState {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct BlockResizeState {
+    pub block_uuid: String,
+    pub start_px2: f32,
+    pub start_py2: f32,
+    pub current_px2: f32,
+    pub current_py2: f32,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct InlineRenameState {
+    pub screen_pos: Pos2,
+    pub block_uuid: String,
+    pub title_input: String,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct RefBarChromeLayout {
     pub badge: String,
     pub capsule_rect: Rect,
@@ -76,6 +92,7 @@ pub struct RefBarChromeLayout {
 pub struct CanvasInteractionState {
     pub dragging_block: Option<BlockDragState>,
     pub dragging_blocks: Vec<BlockDragState>,
+    pub resizing_block: Option<BlockResizeState>,
     pub selected_blocks: Vec<String>,
     pub marquee_start: Option<Pos2>,
     pub marquee_current: Option<Pos2>,
@@ -85,6 +102,7 @@ pub struct CanvasInteractionState {
     pub hovered_pin: Option<(String, String)>,
     pub context_menu: Option<CanvasContextMenu>,
     pub live_value_popup: Option<LiveValuePopupState>,
+    pub inline_rename: Option<InlineRenameState>,
 }
 
 #[derive(Debug, Clone)]
@@ -123,6 +141,28 @@ pub enum CanvasAction {
     MoveBlocks {
         page_uuid: String,
         moves: Vec<(String, f32, f32)>,
+    },
+    ResizeBlock {
+        page_uuid: String,
+        block_uuid: String,
+        px2: f32,
+        py2: f32,
+    },
+    RenameBlockTitle {
+        block_uuid: String,
+        new_title: String,
+    },
+    CopySelectedBlocks,
+    DuplicateSelectedBlocks,
+    PasteClipboardAt {
+        px: f32,
+        py: f32,
+    },
+    SendOutputToPage {
+        source_page_uuid: String,
+        source_block_uuid: String,
+        source_pin_key: String,
+        target_page_uuid: String,
     },
     ConnectPins {
         target_block_uuid: String,
@@ -1012,7 +1052,20 @@ pub fn render_page_canvas(
                     .as_ref()
                     .filter(|d| d.block_uuid == block.uuid)
             });
-        let mut rect = if let Some(drag) = active_drag {
+        let mut rect = if let Some(resize) = viewport
+            .interaction
+            .resizing_block
+            .as_ref()
+            .filter(|r| r.block_uuid == block.uuid)
+        {
+            viewport.loxone_coords_rect_to_screen(
+                origin,
+                block.px,
+                block.py,
+                resize.current_px2,
+                resize.current_py2,
+            )
+        } else if let Some(drag) = active_drag {
             let w_lx = (block.px2 - block.px).max(512.0);
             let h_ly = (block.py2 - block.py).max(192.0);
             viewport.loxone_coords_rect_to_screen(
@@ -1147,6 +1200,8 @@ pub fn render_page_canvas(
         viewport.interaction.wiring_from = None;
         viewport.interaction.context_menu = None;
         viewport.interaction.selected_wire = None;
+        viewport.interaction.inline_rename = None;
+        viewport.interaction.resizing_block = None;
         viewport.interaction.marquee_start = None;
         viewport.interaction.marquee_current = None;
         if viewport.interaction.selected_blocks.len() > 1 {
@@ -1161,6 +1216,25 @@ pub fn render_page_canvas(
                 target_pin_key: sel.target_pin_key,
                 source_pin_uuid: sel.source_pin_uuid,
             });
+        }
+    }
+
+    // Double-click a block -> open inline rename popover
+    if response.double_clicked() {
+        if let Some(pos) = pointer_pos.or(hover_pos) {
+            if let Some(hit_layout) = layouts.iter().rev().find(|l| l.rect.contains(pos)) {
+                let current_title = if hit_layout.block.title.is_empty() {
+                    hit_layout.block.block_type.clone()
+                } else {
+                    hit_layout.block.title.clone()
+                };
+                viewport.interaction.inline_rename = Some(InlineRenameState {
+                    screen_pos: Pos2::new(hit_layout.rect.min.x, hit_layout.rect.min.y - 4.0),
+                    block_uuid: hit_layout.block.uuid.clone(),
+                    title_input: current_title,
+                });
+                action = Some(CanvasAction::SelectObject(hit_layout.block.uuid.clone()));
+            }
         }
     }
 
@@ -1195,34 +1269,57 @@ pub fn render_page_canvas(
                 viewport.interaction.context_menu = None;
             } else if let Some(hit_layout) = layouts.iter().rev().find(|l| l.rect.contains(ppos)) {
                 let hit_uuid = hit_layout.block.uuid.clone();
-                let already_selected = viewport.interaction.selected_blocks.contains(&hit_uuid)
-                    || selected_uuid == Some(hit_uuid.as_str());
-                if !already_selected {
-                    if multi_mod {
+                let handle_sz = (16.0 * viewport.zoom).clamp(12.0, 22.0);
+                let resize_corner = Rect::from_min_max(
+                    Pos2::new(
+                        hit_layout.rect.max.x - handle_sz,
+                        hit_layout.rect.max.y - handle_sz,
+                    ),
+                    hit_layout.rect.max,
+                );
+                if hit_layout.block.is_note() && resize_corner.contains(ppos) {
+                    let start_px2 = hit_layout.block.px2.max(hit_layout.block.px + 512.0);
+                    let start_py2 = hit_layout.block.py2.max(hit_layout.block.py + 192.0);
+                    viewport.interaction.resizing_block = Some(BlockResizeState {
+                        block_uuid: hit_uuid.clone(),
+                        start_px2,
+                        start_py2,
+                        current_px2: start_px2,
+                        current_py2: start_py2,
+                    });
+                    viewport.interaction.selected_blocks = vec![hit_uuid.clone()];
+                    viewport.interaction.context_menu = None;
+                    action = Some(CanvasAction::SelectObject(hit_uuid));
+                } else {
+                    let already_selected = viewport.interaction.selected_blocks.contains(&hit_uuid)
+                        || selected_uuid == Some(hit_uuid.as_str());
+                    if !already_selected {
+                        if multi_mod {
+                            viewport.interaction.selected_blocks.push(hit_uuid.clone());
+                        } else {
+                            viewport.interaction.selected_blocks = vec![hit_uuid.clone()];
+                        }
+                    } else if viewport.interaction.selected_blocks.is_empty() {
                         viewport.interaction.selected_blocks.push(hit_uuid.clone());
-                    } else {
-                        viewport.interaction.selected_blocks = vec![hit_uuid.clone()];
                     }
-                } else if viewport.interaction.selected_blocks.is_empty() {
-                    viewport.interaction.selected_blocks.push(hit_uuid.clone());
-                }
 
-                let mut drag_group = Vec::new();
-                for &blk in &positioned_blocks {
-                    if viewport.interaction.selected_blocks.contains(&blk.uuid) {
-                        drag_group.push(BlockDragState {
-                            block_uuid: blk.uuid.clone(),
-                            start_px: blk.px,
-                            start_py: blk.py,
-                            current_px: blk.px,
-                            current_py: blk.py,
-                        });
+                    let mut drag_group = Vec::new();
+                    for &blk in &positioned_blocks {
+                        if viewport.interaction.selected_blocks.contains(&blk.uuid) {
+                            drag_group.push(BlockDragState {
+                                block_uuid: blk.uuid.clone(),
+                                start_px: blk.px,
+                                start_py: blk.py,
+                                current_px: blk.px,
+                                current_py: blk.py,
+                            });
+                        }
                     }
+                    viewport.interaction.dragging_block = drag_group.first().cloned();
+                    viewport.interaction.dragging_blocks = drag_group;
+                    viewport.interaction.context_menu = None;
+                    action = Some(CanvasAction::SelectObject(hit_uuid));
                 }
-                viewport.interaction.dragging_block = drag_group.first().cloned();
-                viewport.interaction.dragging_blocks = drag_group;
-                viewport.interaction.context_menu = None;
-                action = Some(CanvasAction::SelectObject(hit_uuid));
             } else {
                 // Drag started on empty canvas -> begin marquee selection box
                 viewport.interaction.marquee_start = Some(ppos);
@@ -1242,7 +1339,12 @@ pub fn render_page_canvas(
 
     if response.dragged_by(egui::PointerButton::Primary) {
         let delta = response.drag_delta();
-        if !viewport.interaction.dragging_blocks.is_empty() {
+        if let Some(resize) = &mut viewport.interaction.resizing_block {
+            let dlx = delta.x / viewport.zoom * LOXONE_UNITS_PER_PX;
+            let dly = delta.y / viewport.zoom * LOXONE_UNITS_PER_PX;
+            resize.current_px2 = (resize.current_px2 + dlx).max(64.0);
+            resize.current_py2 = (resize.current_py2 + dly).max(64.0);
+        } else if !viewport.interaction.dragging_blocks.is_empty() {
             let dlx = delta.x / viewport.zoom * LOXONE_UNITS_PER_PX;
             let dly = delta.y / viewport.zoom * LOXONE_UNITS_PER_PX;
             for drag in &mut viewport.interaction.dragging_blocks {
@@ -1274,6 +1376,20 @@ pub fn render_page_canvas(
     }
 
     if response.drag_stopped_by(egui::PointerButton::Primary) {
+        if let Some(resize) = viewport.interaction.resizing_block.take() {
+            let snapped_px2 = snap_to_loxone_grid(resize.current_px2);
+            let snapped_py2 = snap_to_loxone_grid(resize.current_py2);
+            if (snapped_px2 - resize.start_px2).abs() > 0.5
+                || (snapped_py2 - resize.start_py2).abs() > 0.5
+            {
+                action = Some(CanvasAction::ResizeBlock {
+                    page_uuid: page.uuid.clone(),
+                    block_uuid: resize.block_uuid,
+                    px2: snapped_px2,
+                    py2: snapped_py2,
+                });
+            }
+        }
         let mut dragged = std::mem::take(&mut viewport.interaction.dragging_blocks);
         if dragged.is_empty() {
             if let Some(single) = viewport.interaction.dragging_block.take() {
@@ -1580,6 +1696,27 @@ pub fn render_page_canvas(
                 FontId::proportional((13.0 * viewport.zoom).clamp(10.0, 19.0)),
                 TEXT_PRIMARY,
             );
+            let grip_sz = (12.0 * viewport.zoom).clamp(9.0, 16.0);
+            let grip_rect = Rect::from_min_max(
+                Pos2::new(rect.max.x - grip_sz, rect.max.y - grip_sz),
+                rect.max,
+            );
+            if hover_pos.is_some_and(|hp| grip_rect.contains(hp)) {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeNwSe);
+            }
+            for step_i in [3.5_f32, 7.0, 10.5] {
+                let d = step_i * viewport.zoom;
+                painter.line_segment(
+                    [
+                        Pos2::new(rect.max.x - d, rect.max.y - 2.0),
+                        Pos2::new(rect.max.x - 2.0, rect.max.y - d),
+                    ],
+                    Stroke::new(
+                        1.2_f32,
+                        if is_selected { ACCENT_BLUE } else { TEXT_MUTED },
+                    ),
+                );
+            }
             continue;
         }
 
@@ -2215,7 +2352,7 @@ pub fn render_page_canvas(
                     .fill(CARD_BG)
                     .stroke(Stroke::new(1.0_f32, BORDER_SUBTLE))
                     .show(ui, |ui| {
-                        ui.set_min_width(210.0);
+                        ui.set_min_width(225.0);
                         match &menu {
                             CanvasContextMenu::EmptyCanvas { lx, ly, .. } => {
                                 if ui
@@ -2228,12 +2365,19 @@ pub fn render_page_canvas(
                                     });
                                     close_menu = true;
                                 }
+                                if ui.button("📋 Paste Clipboard Here (Cmd+V)").clicked() {
+                                    action = Some(CanvasAction::PasteClipboardAt {
+                                        px: *lx,
+                                        py: *ly,
+                                    });
+                                    close_menu = true;
+                                }
                             }
                             CanvasContextMenu::Block {
                                 page_uuid,
                                 block_uuid,
                                 block_title,
-                                ..
+                                screen_pos,
                             } => {
                                 ui.label(
                                     egui::RichText::new(block_title)
@@ -2245,6 +2389,71 @@ pub fn render_page_canvas(
                                     action = Some(CanvasAction::SelectObject(block_uuid.clone()));
                                     close_menu = true;
                                 }
+                                if ui.button("✏ Rename Title… (Double-click)").clicked() {
+                                    viewport.interaction.inline_rename = Some(InlineRenameState {
+                                        screen_pos: *screen_pos,
+                                        block_uuid: block_uuid.clone(),
+                                        title_input: block_title.clone(),
+                                    });
+                                    close_menu = true;
+                                }
+                                if ui.button("📋 Copy (Cmd+C)").clicked() {
+                                    if !viewport.interaction.selected_blocks.contains(block_uuid) {
+                                        viewport.interaction.selected_blocks =
+                                            vec![block_uuid.clone()];
+                                    }
+                                    action = Some(CanvasAction::CopySelectedBlocks);
+                                    close_menu = true;
+                                }
+                                if ui.button("⧉ Duplicate (Cmd+D)").clicked() {
+                                    if !viewport.interaction.selected_blocks.contains(block_uuid) {
+                                        viewport.interaction.selected_blocks =
+                                            vec![block_uuid.clone()];
+                                    }
+                                    action = Some(CanvasAction::DuplicateSelectedBlocks);
+                                    close_menu = true;
+                                }
+                                if project.pages.len() > 1 {
+                                    if let Some(blk) =
+                                        page.blocks.iter().find(|b| &b.uuid == block_uuid)
+                                    {
+                                        let (_, out_pins) = collect_block_display_pins(
+                                            blk,
+                                            &project.xref,
+                                            true,
+                                        );
+                                        if let Some(first_out) = out_pins.first() {
+                                            let out_key = first_out.key.clone();
+                                            ui.menu_button(
+                                                format!("📤 Send Output ({}) to Page…", out_key),
+                                                |ui| {
+                                                    for target_p in &project.pages {
+                                                        if target_p.uuid == *page_uuid {
+                                                            continue;
+                                                        }
+                                                        if ui.button(&target_p.title).clicked() {
+                                                            action = Some(
+                                                                CanvasAction::SendOutputToPage {
+                                                                    source_page_uuid: page_uuid
+                                                                        .clone(),
+                                                                    source_block_uuid: block_uuid
+                                                                        .clone(),
+                                                                    source_pin_key: out_key.clone(),
+                                                                    target_page_uuid: target_p
+                                                                        .uuid
+                                                                        .clone(),
+                                                                },
+                                                            );
+                                                            close_menu = true;
+                                                            ui.close_menu();
+                                                        }
+                                                    }
+                                                },
+                                            );
+                                        }
+                                    }
+                                }
+                                ui.separator();
                                 let multi_count = viewport.interaction.selected_blocks.len();
                                 if multi_count > 1
                                     && viewport.interaction.selected_blocks.contains(block_uuid)
@@ -2280,6 +2489,61 @@ pub fn render_page_canvas(
         }
         if close_menu {
             viewport.interaction.context_menu = None;
+        }
+    }
+
+    // Render active inline rename popover
+    if let Some(mut rename) = viewport.interaction.inline_rename.clone() {
+        let mut close_rename = false;
+        let area_resp = egui::Area::new(egui::Id::new("canvas_inline_rename_popup"))
+            .order(egui::Order::Foreground)
+            .fixed_pos(rename.screen_pos)
+            .show(ui.ctx(), |ui| {
+                egui::Frame::popup(ui.style())
+                    .fill(CARD_BG)
+                    .stroke(Stroke::new(1.5_f32, ACCENT_BLUE))
+                    .corner_radius(CornerRadius::same(6))
+                    .inner_margin(egui::Margin::same(8))
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                egui::RichText::new("✏ Rename:")
+                                    .size(11.5)
+                                    .strong()
+                                    .color(TEXT_MUTED),
+                            );
+                            let resp = ui.add(
+                                egui::TextEdit::singleline(&mut rename.title_input)
+                                    .desired_width(185.0),
+                            );
+                            let enter_pressed =
+                                resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                            if enter_pressed || ui.small_button("✓ Save").clicked() {
+                                let trimmed = rename.title_input.trim().to_string();
+                                if !trimmed.is_empty() {
+                                    action = Some(CanvasAction::RenameBlockTitle {
+                                        block_uuid: rename.block_uuid.clone(),
+                                        new_title: trimmed,
+                                    });
+                                }
+                                close_rename = true;
+                            }
+                            if ui.small_button("✕").clicked() {
+                                close_rename = true;
+                            }
+                        });
+                    });
+            });
+        if clicked
+            && !response.double_clicked()
+            && !area_resp.response.rect.contains(pointer_pos.unwrap_or_default())
+        {
+            close_rename = true;
+        }
+        if close_rename {
+            viewport.interaction.inline_rename = None;
+        } else {
+            viewport.interaction.inline_rename = Some(rename);
         }
     }
 

@@ -17,11 +17,13 @@ use crate::theme::{
 pub enum TopBarAction {
     ToggleLeftPanel,
     ToggleRightPanel,
+    ShowProjectLauncher,
     OpenFile,
     SaveFile,
     AddBlock,
     Undo,
     Redo,
+    VerifyProject,
     OpenMiniserverModal,
     ToggleLiveView,
     OpenCommandPalette,
@@ -49,6 +51,7 @@ pub enum ToolbarIcon {
     AddBlock,
     Undo,
     Redo,
+    VerifyCheck,
     Download,
     LivePulse { active: bool },
     Search,
@@ -271,6 +274,14 @@ pub fn paint_toolbar_icon(painter: &Painter, rect: Rect, icon: ToolbarIcon, fg: 
                 stroke,
             ));
         }
+        ToolbarIcon::VerifyCheck => {
+            // Shield/circle with checkmark
+            painter.circle_stroke(p(0.50, 0.50), w * 0.38, stroke);
+            painter.add(Shape::line(
+                vec![p(0.32, 0.52), p(0.45, 0.65), p(0.70, 0.36)],
+                Stroke::new((sw * 1.15).max(1.5), fg),
+            ));
+        }
         ToolbarIcon::Download => {
             // Downward arrow into tray
             painter.line_segment([p(0.50, 0.14), p(0.50, 0.64)], stroke);
@@ -431,6 +442,18 @@ pub fn build_authoring_toolbar_items(
             tooltip: "Redo edit (⌘⇧Z / Ctrl+Y)".to_string(),
             action: TopBarAction::Redo,
             enabled: can_redo,
+            accent: false,
+        },
+        ToolbarItem {
+            group: ToolbarGroup::Authoring,
+            icon: "✓",
+            vector_icon: ToolbarIcon::VerifyCheck,
+            label: "Verify".to_string(),
+            shortcut_hint: None,
+            tooltip: "Run Project Health Check / Linter (dangling references, missing Room/Category, unconnected blocks)"
+                .to_string(),
+            action: TopBarAction::VerifyProject,
+            enabled: has_project,
             accent: false,
         },
     ]
@@ -793,17 +816,25 @@ pub fn render_top_bar(
                             })
                             .unwrap_or("Loxone Portable");
                         let dirty_suffix = if is_dirty { " *" } else { "" };
-                        let title_resp = ui.label(
-                            RichText::new(format!("{}{}", proj_title, dirty_suffix))
-                                .size(12.0)
-                                .color(TEXT_PRIMARY)
-                                .strong(),
-                        );
+                        let title_resp = ui
+                            .label(
+                                RichText::new(format!("{}{}", proj_title, dirty_suffix))
+                                    .size(12.0)
+                                    .color(TEXT_PRIMARY)
+                                    .strong(),
+                            )
+                            .interact(Sense::click());
+                        if title_resp.clicked() && project.is_some() {
+                            action = Some(TopBarAction::ShowProjectLauncher);
+                        }
                         if let Some(loaded) = loaded_path {
-                            title_resp.on_hover_text(loaded.display().to_string());
+                            title_resp.on_hover_text(format!(
+                                "{}\nClick to switch project / show project list",
+                                loaded.display()
+                            ));
                         } else if project.is_some() {
                             title_resp.on_hover_text(
-                                "Downloaded from Miniserver (unsaved in-memory project)",
+                                "Downloaded from Miniserver (unsaved in-memory project)\nClick to switch project / show project list",
                             );
                         }
 
@@ -1185,7 +1216,7 @@ mod tests {
         assert_eq!(file_items_dirty[1].label, "Save .Loxone *");
 
         let auth_items = build_authoring_toolbar_items(true, true, false);
-        assert_eq!(auth_items.len(), 3);
+        assert_eq!(auth_items.len(), 4);
         assert_eq!(auth_items[0].group, ToolbarGroup::Authoring);
         assert_eq!(auth_items[0].action, TopBarAction::AddBlock);
         assert_eq!(auth_items[0].vector_icon, ToolbarIcon::AddBlock);
@@ -1197,6 +1228,9 @@ mod tests {
         assert_eq!(auth_items[2].action, TopBarAction::Redo);
         assert_eq!(auth_items[2].vector_icon, ToolbarIcon::Redo);
         assert!(!auth_items[2].enabled);
+        assert_eq!(auth_items[3].action, TopBarAction::VerifyProject);
+        assert_eq!(auth_items[3].vector_icon, ToolbarIcon::VerifyCheck);
+        assert!(auth_items[3].enabled);
 
         let ms_items_idle = build_miniserver_toolbar_items(false);
         assert!(!ms_items_idle.is_empty());

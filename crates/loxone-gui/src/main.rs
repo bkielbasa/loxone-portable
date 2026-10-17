@@ -5,6 +5,7 @@ mod icons;
 mod insert_modal;
 mod inspector;
 mod miniserver_modal;
+mod project_launcher;
 mod theme;
 mod top_bar;
 mod tree_panel;
@@ -19,10 +20,6 @@ fn resolve_initial_project_path() -> Option<PathBuf> {
         if p.exists() {
             return Some(p);
         }
-    }
-    let default_path = PathBuf::from("Klimczaki.Loxone");
-    if default_path.exists() {
-        return Some(default_path);
     }
     None
 }

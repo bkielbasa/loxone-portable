@@ -18,6 +18,9 @@ use crate::inspector::{render_right_inspector, InspectorAction, LiveCommand};
 use crate::miniserver_modal::{
     render_miniserver_modal, MiniserverModalAction, MiniserverModalState,
 };
+use crate::project_launcher::{
+    record_recent_project, render_project_launcher, LauncherAction, ProjectLauncherState,
+};
 use crate::theme::{apply_minimalist_theme, BORDER_SUBTLE, PANEL_BG};
 use crate::top_bar::{render_top_bar, TopBarAction};
 use crate::tree_panel::{render_left_explorer, LeftTab, TreeAction};
@@ -36,16 +39,38 @@ pub enum MiniserverWorkerEvent {
         host: String,
         result: Result<(String, String), String>,
     },
+    ProjectUploaded {
+        host: String,
+        result: Result<loxone_core::miniserver::UploadProjectResult, String>,
+    },
     LiveValuesPolled(Vec<(String, LiveControlSnapshot)>),
     LiveCommandSent(Result<(String, LiveControlSnapshot), String>),
+}
+
+#[derive(Debug, Clone)]
+pub enum PendingDirtyAction {
+    OpenFile,
+    ShowProjectLauncher,
+    DownloadLatest(MiniserverCredentials),
+    DownloadSnapshot {
+        creds: MiniserverCredentials,
+        filename: String,
+    },
+    CloseWindow,
 }
 
 pub struct LoxonePortableApp {
     pub project: Option<LoxoneProject>,
     pub loaded_path: Option<PathBuf>,
+    pub project_launcher: ProjectLauncherState,
     pub is_dirty: bool,
     pub undo_stack: Vec<ProjectEdit>,
     pub redo_stack: Vec<ProjectEdit>,
+    pub clipboard_blocks: Vec<loxone_core::model::PageBlock>,
+    pub show_diagnostics_modal: bool,
+    pub cached_diagnostics: Vec<loxone_core::linter::ProjectDiagnostic>,
+    pub pending_dirty_action: Option<PendingDirtyAction>,
+    pub allow_close_after_discard: bool,
     pub insert_modal: InsertModalState,
     pub next_created_counter: usize,
     pub error_banner: Option<String>,
@@ -80,9 +105,15 @@ impl Default for LoxonePortableApp {
         Self {
             project: None,
             loaded_path: None,
+            project_launcher: ProjectLauncherState::default(),
             is_dirty: false,
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
+            clipboard_blocks: Vec::new(),
+            show_diagnostics_modal: false,
+            cached_diagnostics: Vec::new(),
+            pending_dirty_action: None,
+            allow_close_after_discard: false,
             insert_modal: InsertModalState::default(),
             next_created_counter: 1,
             error_banner: None,
@@ -121,6 +152,8 @@ impl LoxonePortableApp {
     pub fn load_file(&mut self, path: &Path) {
         match load_loxone_file(path) {
             Ok(proj) => {
+                record_recent_project(path);
+                self.project_launcher.refresh();
                 self.miniserver_modal.apply_project_fallback_host(Some(&proj));
                 self.live_store = LiveValueStore::default();
                 self.live_store.seed_project_defaults(&proj);
@@ -130,6 +163,9 @@ impl LoxonePortableApp {
                 self.is_dirty = false;
                 self.undo_stack.clear();
                 self.redo_stack.clear();
+                self.show_diagnostics_modal = false;
+                self.cached_diagnostics.clear();
+                self.pending_dirty_action = None;
                 self.insert_modal.close();
                 self.viewport.interaction = Default::default();
                 self.error_banner = None;
@@ -159,6 +195,9 @@ impl LoxonePortableApp {
         self.is_dirty = false;
         self.undo_stack.clear();
         self.redo_stack.clear();
+        self.show_diagnostics_modal = false;
+        self.cached_diagnostics.clear();
+        self.pending_dirty_action = None;
         self.insert_modal.close();
         self.viewport.interaction = Default::default();
         self.error_banner = None;
@@ -256,10 +295,34 @@ impl LoxonePortableApp {
             std::fs::write(path, raw_xml)
                 .map_err(|e| format!("Failed to write {}: {}", path.display(), e))?;
         }
+        record_recent_project(path);
+        self.project_launcher.refresh();
         self.loaded_path = Some(path.to_path_buf());
         self.is_dirty = false;
         self.error_banner = None;
         Ok(())
+    }
+
+    pub fn show_project_launcher(&mut self) {
+        if self.is_dirty {
+            self.pending_dirty_action = Some(PendingDirtyAction::ShowProjectLauncher);
+            return;
+        }
+        self.show_project_launcher_immediate();
+    }
+
+    pub fn show_project_launcher_immediate(&mut self) {
+        self.project = None;
+        self.loaded_path = None;
+        self.is_dirty = false;
+        self.undo_stack.clear();
+        self.redo_stack.clear();
+        self.show_diagnostics_modal = false;
+        self.cached_diagnostics.clear();
+        self.selected_uuid = None;
+        self.insert_modal.close();
+        self.viewport.interaction = Default::default();
+        self.project_launcher.refresh();
     }
 
     pub fn open_miniserver_modal(&mut self) {
@@ -325,12 +388,68 @@ impl LoxonePortableApp {
                 });
             }
             MiniserverModalAction::DownloadLatest(creds) => {
+                if self.is_dirty {
+                    self.pending_dirty_action = Some(PendingDirtyAction::DownloadLatest(creds));
+                    return;
+                }
                 self.start_download_worker(creds, None);
             }
             MiniserverModalAction::DownloadSnapshot { creds, filename } => {
+                if self.is_dirty {
+                    self.pending_dirty_action =
+                        Some(PendingDirtyAction::DownloadSnapshot { creds, filename });
+                    return;
+                }
                 self.start_download_worker(creds, Some(filename));
             }
+            MiniserverModalAction::UploadProject { creds, restart_sps } => {
+                self.start_upload_worker(creds, restart_sps);
+            }
         }
+    }
+
+    fn start_upload_worker(&mut self, creds: MiniserverCredentials, restart_sps: bool) {
+        self.persist_profile_best_effort();
+        let Some(proj) = &mut self.project else {
+            self.miniserver_modal.status_message =
+                Some("No project loaded to upload.".to_string());
+            return;
+        };
+        let xml = if self.is_dirty || proj.raw_xml.is_none() {
+            match loxone_core::writer::serialize_loxone_xml(proj) {
+                Ok(s) => {
+                    proj.raw_xml = Some(s.clone());
+                    s
+                }
+                Err(e) => {
+                    self.miniserver_modal.status_message =
+                        Some(format!("Failed to serialize project XML: {}", e));
+                    return;
+                }
+            }
+        } else {
+            proj.raw_xml.clone().unwrap_or_default()
+        };
+        let project_name = if proj.metadata.title.trim().is_empty() {
+            "Project".to_string()
+        } else {
+            proj.metadata.title.clone()
+        };
+        let host = creds.host.clone();
+        self.connection_status = ConnectionStatus::Connecting {
+            host: host.clone(),
+            message: "Uploading project to Miniserver…".to_string(),
+        };
+        self.miniserver_modal.status_message = Some(format!(
+            "Saving local safety backup and uploading {} to {}…",
+            project_name, host
+        ));
+        let tx = self.worker_tx.clone();
+        std::thread::spawn(move || {
+            let result = MiniserverClient::upload_project_xml(&creds, &xml, None, restart_sps)
+                .map_err(|e| e.to_string());
+            let _ = tx.send(MiniserverWorkerEvent::ProjectUploaded { host, result });
+        });
     }
 
     fn start_download_worker(&mut self, creds: MiniserverCredentials, filename: Option<String>) {
@@ -399,6 +518,39 @@ impl LoxonePortableApp {
                             self.miniserver_modal.status_message = Some(err.clone());
                             self.error_banner = Some(err);
                         }
+                    }
+                    Err(err) => {
+                        self.connection_status = ConnectionStatus::Error {
+                            host,
+                            error: err.clone(),
+                        };
+                        self.miniserver_modal.status_message = Some(err);
+                    }
+                },
+                MiniserverWorkerEvent::ProjectUploaded { host, result } => match result {
+                    Ok(res) => {
+                        self.is_dirty = false;
+                        self.miniserver_modal.show_upload_panel = false;
+                        self.miniserver_modal.confirm_upload = false;
+                        let restart_suffix = if res.restarted_sps {
+                            " · SPS restarted"
+                        } else {
+                            ""
+                        };
+                        let backup_info = res
+                            .backup_path
+                            .as_ref()
+                            .map(|p| format!(" · Pre-upload backup: {}", p.display()))
+                            .unwrap_or_default();
+                        let msg = format!(
+                            "Uploaded {}{}{}",
+                            res.uploaded_filename, restart_suffix, backup_info
+                        );
+                        self.connection_status = ConnectionStatus::Connected {
+                            host,
+                            server_info: format!("Uploaded {}", res.uploaded_filename),
+                        };
+                        self.miniserver_modal.status_message = Some(msg);
                     }
                     Err(err) => {
                         self.connection_status = ConnectionStatus::Error {
@@ -582,6 +734,9 @@ impl LoxonePortableApp {
             TopBarAction::ToggleRightPanel => {
                 self.show_right_panel = !self.show_right_panel;
             }
+            TopBarAction::ShowProjectLauncher => {
+                self.show_project_launcher();
+            }
             TopBarAction::OpenFile => {
                 self.execute_palette_action(PaletteAction::OpenFile);
             }
@@ -598,6 +753,9 @@ impl LoxonePortableApp {
             }
             TopBarAction::Redo => {
                 self.redo();
+            }
+            TopBarAction::VerifyProject => {
+                self.run_project_verification();
             }
             TopBarAction::OpenMiniserverModal => {
                 self.open_miniserver_modal();
@@ -1011,18 +1169,225 @@ impl LoxonePortableApp {
                     command,
                 });
             }
+            CanvasAction::ResizeBlock {
+                page_uuid,
+                block_uuid,
+                px2,
+                py2,
+            } => {
+                self.execute_edit(ProjectEdit::ResizePageBlock {
+                    page_uuid,
+                    block_uuid,
+                    px2,
+                    py2,
+                });
+            }
+            CanvasAction::RenameBlockTitle {
+                block_uuid,
+                new_title,
+            } => {
+                self.execute_edit(ProjectEdit::SetControlAttr {
+                    control_uuid: block_uuid,
+                    attr_name: "Title".to_string(),
+                    value: Some(new_title),
+                });
+            }
+            CanvasAction::CopySelectedBlocks => {
+                self.copy_selected_blocks_to_clipboard();
+            }
+            CanvasAction::DuplicateSelectedBlocks => {
+                self.duplicate_selected_blocks();
+            }
+            CanvasAction::PasteClipboardAt { px, py } => {
+                self.paste_clipboard_blocks(Some((px, py)));
+            }
+            CanvasAction::SendOutputToPage {
+                source_page_uuid,
+                source_block_uuid,
+                source_pin_key,
+                target_page_uuid,
+            } => {
+                self.send_block_output_to_page(
+                    &source_page_uuid,
+                    &source_block_uuid,
+                    &source_pin_key,
+                    &target_page_uuid,
+                );
+            }
+        }
+    }
+
+    pub fn run_project_verification(&mut self) {
+        if let Some(proj) = &self.project {
+            self.cached_diagnostics = loxone_core::linter::lint_project(proj);
+            self.show_diagnostics_modal = true;
+        }
+    }
+
+    pub fn copy_selected_blocks_to_clipboard(&mut self) {
+        let Some(proj) = &self.project else {
+            return;
+        };
+        let Some(page) = proj.pages.get(self.active_page_index) else {
+            return;
+        };
+        let selected_ids: Vec<String> = if !self.viewport.interaction.selected_blocks.is_empty() {
+            self.viewport.interaction.selected_blocks.clone()
+        } else if let Some(sel) = &self.selected_uuid {
+            vec![sel.clone()]
+        } else {
+            Vec::new()
+        };
+        if selected_ids.is_empty() {
+            return;
+        }
+        let copied: Vec<loxone_core::model::PageBlock> = page
+            .blocks
+            .iter()
+            .filter(|b| selected_ids.contains(&b.uuid))
+            .cloned()
+            .collect();
+        if !copied.is_empty() {
+            self.clipboard_blocks = copied;
+        }
+    }
+
+    pub fn paste_clipboard_blocks(&mut self, at_pos: Option<(f32, f32)>) {
+        if self.clipboard_blocks.is_empty() {
+            return;
+        }
+        let Some(proj) = &self.project else {
+            return;
+        };
+        let Some(page) = proj.pages.get(self.active_page_index) else {
+            return;
+        };
+        let page_uuid = page.uuid.clone();
+        let (dx, dy) = if let Some((target_px, target_py)) = at_pos {
+            let min_px = self
+                .clipboard_blocks
+                .iter()
+                .map(|b| b.px)
+                .fold(f32::INFINITY, f32::min);
+            let min_py = self
+                .clipboard_blocks
+                .iter()
+                .map(|b| b.py)
+                .fold(f32::INFINITY, f32::min);
+            if min_px.is_finite() && min_py.is_finite() {
+                (target_px - min_px, target_py - min_py)
+            } else {
+                (64.0, 64.0)
+            }
+        } else {
+            (64.0, 64.0)
+        };
+        let cloned = loxone_core::writer::clone_blocks_for_paste(&self.clipboard_blocks, dx, dy);
+        if cloned.is_empty() {
+            return;
+        }
+        let new_uuids: Vec<String> = cloned.iter().map(|b| b.uuid.clone()).collect();
+        let edits: Vec<ProjectEdit> = cloned
+            .into_iter()
+            .map(|block| ProjectEdit::AddPageBlock {
+                page_uuid: page_uuid.clone(),
+                block,
+            })
+            .collect();
+        self.execute_edit(ProjectEdit::Batch(edits));
+        self.selected_uuid = new_uuids.first().cloned();
+        self.viewport.interaction.selected_blocks = new_uuids;
+    }
+
+    pub fn duplicate_selected_blocks(&mut self) {
+        self.copy_selected_blocks_to_clipboard();
+        self.paste_clipboard_blocks(None);
+    }
+
+    pub fn cut_selected_blocks(&mut self) {
+        self.copy_selected_blocks_to_clipboard();
+        let Some(proj) = &self.project else {
+            return;
+        };
+        let Some(page) = proj.pages.get(self.active_page_index) else {
+            return;
+        };
+        let page_uuid = page.uuid.clone();
+        let block_uuids: Vec<String> = if !self.viewport.interaction.selected_blocks.is_empty() {
+            self.viewport.interaction.selected_blocks.clone()
+        } else if let Some(sel) = &self.selected_uuid {
+            vec![sel.clone()]
+        } else {
+            Vec::new()
+        };
+        if !block_uuids.is_empty() {
+            self.handle_canvas_action(CanvasAction::DeleteBlocks {
+                page_uuid,
+                block_uuids,
+            });
+        }
+    }
+
+    pub fn send_block_output_to_page(
+        &mut self,
+        source_page_uuid: &str,
+        source_block_uuid: &str,
+        source_pin_key: &str,
+        target_page_uuid: &str,
+    ) {
+        if let Some(proj) = &mut self.project {
+            if let Some(src_page) = proj.pages.iter_mut().find(|p| p.uuid == source_page_uuid) {
+                if let Some(src_blk) = src_page
+                    .blocks
+                    .iter_mut()
+                    .find(|b| b.uuid == source_block_uuid)
+                {
+                    loxone_core::factory::ensure_schema_pins_on_block(src_blk);
+                }
+            }
+        }
+        let Some(proj) = &self.project else {
+            return;
+        };
+        let batch_opt = loxone_core::writer::create_cross_page_link_edits(
+            proj,
+            source_page_uuid,
+            source_block_uuid,
+            source_pin_key,
+            target_page_uuid,
+            256.0,
+            256.0,
+        );
+        let target_idx = proj.pages.iter().position(|p| p.uuid == target_page_uuid);
+        if let Some(batch) = batch_opt {
+            self.execute_edit(batch);
+            if let Some(idx) = target_idx {
+                self.active_page_index = idx;
+                self.needs_initial_fit = true;
+            }
+        }
+    }
+
+    pub fn open_file_dialog_immediate(&mut self) {
+        if let Some(path) = rfd::FileDialog::new()
+            .add_filter("Loxone Project", &["Loxone", "loxone", "xml"])
+            .pick_file()
+        {
+            self.load_file(&path);
         }
     }
 
     pub fn execute_palette_action(&mut self, action: PaletteAction) {
         match action {
+            PaletteAction::ShowProjectLauncher => {
+                self.show_project_launcher();
+            }
             PaletteAction::OpenFile => {
-                if let Some(path) = rfd::FileDialog::new()
-                    .add_filter("Loxone Project", &["Loxone", "loxone", "xml"])
-                    .pick_file()
-                {
-                    self.load_file(&path);
+                if self.is_dirty {
+                    self.pending_dirty_action = Some(PendingDirtyAction::OpenFile);
+                    return;
                 }
+                self.open_file_dialog_immediate();
             }
             PaletteAction::SaveFile => {
                 if self.project.as_ref().and_then(|p| p.raw_xml.as_ref()).is_none() {
@@ -1120,7 +1485,10 @@ impl LoxonePortableApp {
         if cmd_or_ctrl && shift && ctx.input(|i| i.key_pressed(Key::D)) {
             self.open_miniserver_modal();
         }
-        if self.miniserver_modal.is_open || self.insert_modal.is_open {
+        if self.miniserver_modal.is_open
+            || self.insert_modal.is_open
+            || self.pending_dirty_action.is_some()
+        {
             return;
         }
 
@@ -1149,6 +1517,18 @@ impl LoxonePortableApp {
         }
 
         if !ctx.wants_keyboard_input() {
+            if cmd_or_ctrl && ctx.input(|i| i.key_pressed(Key::C)) {
+                self.copy_selected_blocks_to_clipboard();
+            }
+            if cmd_or_ctrl && ctx.input(|i| i.key_pressed(Key::X)) {
+                self.cut_selected_blocks();
+            }
+            if cmd_or_ctrl && ctx.input(|i| i.key_pressed(Key::V)) {
+                self.paste_clipboard_blocks(None);
+            }
+            if cmd_or_ctrl && !shift && ctx.input(|i| i.key_pressed(Key::D)) {
+                self.duplicate_selected_blocks();
+            }
             if cmd_or_ctrl && ctx.input(|i| i.key_pressed(Key::A)) {
                 if let Some(proj) = &self.project {
                     if let Some(page) = proj.pages.get(self.active_page_index) {
@@ -1244,6 +1624,14 @@ fn find_tree_node_by_type_recursive<'a>(
 
 impl eframe::App for LoxonePortableApp {
     fn update(&mut self, ctx: &Context, _frame: &mut eframe::Frame) {
+        if ctx.input(|i| i.viewport().close_requested())
+            && self.is_dirty
+            && !self.allow_close_after_discard
+        {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            self.pending_dirty_action = Some(PendingDirtyAction::CloseWindow);
+        }
+
         self.poll_miniserver_worker();
         if self.connection_status.is_connecting() {
             ctx.request_repaint_after(std::time::Duration::from_millis(80));
@@ -1400,23 +1788,23 @@ impl eframe::App for LoxonePortableApp {
                         self.selected_uuid.as_deref(),
                         live_opt,
                     );
-                } else {
-                    ui.centered_and_justified(|ui| {
-                        ui.horizontal(|ui| {
-                            if ui
-                                .button("📂 Open .Loxone Project File (Ctrl+O)…")
-                                .clicked()
-                            {
-                                self.execute_palette_action(PaletteAction::OpenFile);
-                            }
-                            if ui
-                                .button("⬇ Connect to Miniserver & Download (Ctrl+Shift+D)…")
-                                .clicked()
-                            {
-                                self.execute_palette_action(PaletteAction::ConnectMiniserver);
-                            }
-                        });
-                    });
+                } else if let Some(launcher_act) =
+                    render_project_launcher(ui, &mut self.project_launcher)
+                {
+                    match launcher_act {
+                        LauncherAction::LoadProject(path) => {
+                            self.load_file(&path);
+                        }
+                        LauncherAction::BrowseFileDialog => {
+                            self.execute_palette_action(PaletteAction::OpenFile);
+                        }
+                        LauncherAction::ConnectMiniserver => {
+                            self.execute_palette_action(PaletteAction::ConnectMiniserver);
+                        }
+                        LauncherAction::RefreshList => {
+                            self.project_launcher.refresh();
+                        }
+                    }
                 }
 
                 if let Some(canvas_act) = pending_canvas_act {
@@ -1445,6 +1833,232 @@ impl eframe::App for LoxonePortableApp {
         // Ctrl+K / Cmd+K Command Palette Modal Overlay
         if let Some(palette_act) = self.palette.show(ctx, self.project.as_ref()) {
             self.execute_palette_action(palette_act);
+        }
+
+        // Unsaved Changes Confirmation Modal
+        if let Some(pending) = self.pending_dirty_action.clone() {
+            let mut resolved: Option<bool> = None; // Some(true) = proceed, Some(false) = cancel
+            let mut try_save_first = false;
+            egui::Window::new("Unsaved Changes")
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+                .show(ctx, |ui| {
+                    ui.label(
+                        egui::RichText::new(
+                            "The current project has unsaved modifications. Do you want to save your changes before continuing?",
+                        )
+                        .color(crate::theme::TEXT_PRIMARY),
+                    );
+                    ui.add_space(10.0);
+                    ui.horizontal(|ui| {
+                        if ui
+                            .button(
+                                egui::RichText::new("💾 Save & Continue")
+                                    .color(crate::theme::STATUS_CONNECTED)
+                                    .strong(),
+                            )
+                            .clicked()
+                        {
+                            try_save_first = true;
+                            resolved = Some(true);
+                        }
+                        if ui
+                            .button(
+                                egui::RichText::new("Discard Changes")
+                                    .color(egui::Color32::from_rgb(235, 110, 95)),
+                            )
+                            .clicked()
+                        {
+                            resolved = Some(true);
+                        }
+                        if ui.button("Cancel").clicked() {
+                            resolved = Some(false);
+                        }
+                    });
+                });
+
+            if let Some(proceed) = resolved {
+                self.pending_dirty_action = None;
+                if proceed {
+                    if try_save_first {
+                        self.execute_palette_action(PaletteAction::SaveFile);
+                    }
+                    if !try_save_first || !self.is_dirty {
+                        match pending {
+                            PendingDirtyAction::OpenFile => {
+                                self.open_file_dialog_immediate();
+                            }
+                            PendingDirtyAction::ShowProjectLauncher => {
+                                self.show_project_launcher_immediate();
+                            }
+                            PendingDirtyAction::DownloadLatest(creds) => {
+                                self.is_dirty = false;
+                                self.start_download_worker(creds, None);
+                            }
+                            PendingDirtyAction::DownloadSnapshot { creds, filename } => {
+                                self.is_dirty = false;
+                                self.start_download_worker(creds, Some(filename));
+                            }
+                            PendingDirtyAction::CloseWindow => {
+                                self.is_dirty = false;
+                                self.allow_close_after_discard = true;
+                                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Project Diagnostics / Linter Modal (`✓ Verify`)
+        if self.show_diagnostics_modal {
+            let mut open = self.show_diagnostics_modal;
+            let mut jump_to: Option<(Option<usize>, String)> = None;
+            let mut rerun = false;
+            egui::Window::new("✓ Project Verification & Diagnostics")
+                .open(&mut open)
+                .collapsible(false)
+                .resizable(true)
+                .default_width(620.0)
+                .default_height(420.0)
+                .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+                .show(ctx, |ui| {
+                    let err_cnt = self
+                        .cached_diagnostics
+                        .iter()
+                        .filter(|d| {
+                            d.severity == loxone_core::linter::DiagnosticSeverity::Error
+                        })
+                        .count();
+                    let warn_cnt = self
+                        .cached_diagnostics
+                        .iter()
+                        .filter(|d| {
+                            d.severity == loxone_core::linter::DiagnosticSeverity::Warning
+                        })
+                        .count();
+                    let info_cnt = self
+                        .cached_diagnostics
+                        .iter()
+                        .filter(|d| {
+                            d.severity == loxone_core::linter::DiagnosticSeverity::Info
+                        })
+                        .count();
+
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            egui::RichText::new(format!("⛔ {} Errors", err_cnt))
+                                .color(egui::Color32::from_rgb(235, 95, 95))
+                                .strong(),
+                        );
+                        ui.separator();
+                        ui.label(
+                            egui::RichText::new(format!("⚠ {} Warnings", warn_cnt))
+                                .color(egui::Color32::from_rgb(235, 185, 75))
+                                .strong(),
+                        );
+                        ui.separator();
+                        ui.label(
+                            egui::RichText::new(format!("ℹ {} Info", info_cnt))
+                                .color(crate::theme::TEXT_MUTED),
+                        );
+                        ui.with_layout(
+                            egui::Layout::right_to_left(egui::Align::Center),
+                            |ui| {
+                                if ui.small_button("🔄 Re-run Check").clicked() {
+                                    rerun = true;
+                                }
+                            },
+                        );
+                    });
+                    ui.separator();
+
+                    if self.cached_diagnostics.is_empty() {
+                        ui.label(
+                            egui::RichText::new(
+                                "✅ No issues detected! Project references, rooms, categories, and blocks look healthy.",
+                            )
+                            .color(crate::theme::STATUS_CONNECTED),
+                        );
+                    } else {
+                        egui::ScrollArea::vertical()
+                            .max_height(340.0)
+                            .show(ui, |ui| {
+                                for diag in &self.cached_diagnostics {
+                                    let (badge, color) = match diag.severity {
+                                        loxone_core::linter::DiagnosticSeverity::Error => (
+                                            "ERROR",
+                                            egui::Color32::from_rgb(235, 95, 95),
+                                        ),
+                                        loxone_core::linter::DiagnosticSeverity::Warning => (
+                                            "WARN ",
+                                            egui::Color32::from_rgb(235, 185, 75),
+                                        ),
+                                        loxone_core::linter::DiagnosticSeverity::Info => (
+                                            "INFO ",
+                                            egui::Color32::from_rgb(130, 180, 235),
+                                        ),
+                                    };
+                                    ui.horizontal_wrapped(|ui| {
+                                        ui.label(
+                                            egui::RichText::new(format!(
+                                                "[{}] [{}]",
+                                                badge, diag.code
+                                            ))
+                                            .monospace()
+                                            .size(11.0)
+                                            .color(color),
+                                        );
+                                        if !diag.page_title.is_empty() {
+                                            ui.label(
+                                                egui::RichText::new(format!(
+                                                    "({})",
+                                                    diag.page_title
+                                                ))
+                                                .size(11.0)
+                                                .color(crate::theme::TEXT_MUTED),
+                                            );
+                                        }
+                                        if ui
+                                            .link(
+                                                egui::RichText::new(&diag.block_title)
+                                                    .strong()
+                                                    .size(11.5),
+                                            )
+                                            .on_hover_text("Click to jump to this block")
+                                            .clicked()
+                                        {
+                                            jump_to = Some((
+                                                Some(diag.page_index),
+                                                diag.block_uuid.clone(),
+                                            ));
+                                        }
+                                        ui.label(
+                                            egui::RichText::new(&diag.message)
+                                                .size(11.5)
+                                                .color(crate::theme::TEXT_PRIMARY),
+                                        );
+                                    });
+                                    ui.add_space(2.0);
+                                }
+                            });
+                    }
+                });
+            self.show_diagnostics_modal = open;
+            if rerun {
+                self.run_project_verification();
+            }
+            if let Some((page_idx_opt, ctrl_uuid)) = jump_to {
+                if let Some(page_idx) = page_idx_opt {
+                    self.execute_palette_action(PaletteAction::NavigateToBlock {
+                        page_index: page_idx,
+                        block_uuid: ctrl_uuid,
+                    });
+                } else {
+                    self.selected_uuid = Some(ctrl_uuid);
+                }
+            }
         }
     }
 }
@@ -2057,6 +2671,96 @@ mod tests {
             .resolve_ref_bar_signal(temp_blk, agatka, &proj);
         assert!(sig_temp.is_active);
         assert_eq!(sig_temp.formatted, "21.6°");
+    }
+
+    #[test]
+    fn test_app_copy_paste_duplicate_resize_rename_cross_page_and_verify() {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../Klimczaki.Loxone");
+        let mut app = LoxonePortableApp::default();
+        app.load_file(&path);
+
+        // Create two new pages for testing
+        app.handle_tree_action(TreeAction::CreatePage);
+        let page_a_idx = app.active_page_index;
+        let page_a_uuid = app.project.as_ref().unwrap().pages[page_a_idx].uuid.clone();
+
+        app.handle_tree_action(TreeAction::CreatePage);
+        let page_b_idx = app.active_page_index;
+        let page_b_uuid = app.project.as_ref().unwrap().pages[page_b_idx].uuid.clone();
+
+        app.active_page_index = page_a_idx;
+        app.handle_insert_selection(InsertModalSelection::NewFunctionBlock {
+            type_name: "Memo".to_string(),
+            title: "Original Memo".to_string(),
+            px: 128.0,
+            py: 128.0,
+        });
+        let memo_uuid = app.selected_uuid.clone().unwrap();
+
+        // 1. Inline rename
+        app.handle_canvas_action(CanvasAction::RenameBlockTitle {
+            block_uuid: memo_uuid.clone(),
+            new_title: "Renamed Memo".to_string(),
+        });
+        assert_eq!(
+            app.project.as_ref().unwrap().pages[page_a_idx].blocks[0].title,
+            "Renamed Memo"
+        );
+
+        // 2. Resize Memo block
+        app.handle_canvas_action(CanvasAction::ResizeBlock {
+            page_uuid: page_a_uuid.clone(),
+            block_uuid: memo_uuid.clone(),
+            px2: 768.0,
+            py2: 448.0,
+        });
+        {
+            let b = &app.project.as_ref().unwrap().pages[page_a_idx].blocks[0];
+            assert_eq!((b.px2, b.py2), (768.0, 448.0));
+        }
+
+        // 3. Copy & Paste
+        app.handle_canvas_action(CanvasAction::CopySelectedBlocks);
+        assert_eq!(app.clipboard_blocks.len(), 1);
+        app.handle_canvas_action(CanvasAction::PasteClipboardAt {
+            px: 896.0,
+            py: 256.0,
+        });
+        assert_eq!(app.project.as_ref().unwrap().pages[page_a_idx].blocks.len(), 2);
+
+        // 4. Duplicate selected block
+        app.handle_canvas_action(CanvasAction::DuplicateSelectedBlocks);
+        assert_eq!(app.project.as_ref().unwrap().pages[page_a_idx].blocks.len(), 3);
+
+        // 5. Insert a Pushbutton and send its output to Page B
+        app.handle_insert_selection(InsertModalSelection::NewFunctionBlock {
+            type_name: "Pushbutton".to_string(),
+            title: "Main Switch".to_string(),
+            px: 256.0,
+            py: 512.0,
+        });
+        let btn_uuid = app.selected_uuid.clone().unwrap();
+        app.handle_canvas_action(CanvasAction::SendOutputToPage {
+            source_page_uuid: page_a_uuid.clone(),
+            source_block_uuid: btn_uuid,
+            source_pin_key: "Q".to_string(),
+            target_page_uuid: page_b_uuid,
+        });
+        assert_eq!(app.active_page_index, page_b_idx);
+        assert_eq!(app.project.as_ref().unwrap().pages[page_b_idx].blocks.len(), 1);
+
+        // 6. Verify project linter action opens modal and populates diagnostics
+        app.execute_top_bar_action(TopBarAction::VerifyProject);
+        assert!(app.show_diagnostics_modal);
+        assert!(!app.cached_diagnostics.is_empty());
+
+        // 7. Dirty guard intercepts OpenFile when project has unsaved changes
+        assert!(app.is_dirty);
+        app.execute_palette_action(PaletteAction::OpenFile);
+        assert!(matches!(
+            app.pending_dirty_action,
+            Some(PendingDirtyAction::OpenFile)
+        ));
     }
 }
 

@@ -697,6 +697,9 @@ fn render_page_block_inspector(
     );
 
     ui.add_space(6.0);
+    render_specialized_block_editor(ui, block, &mut output.edits);
+
+    ui.add_space(6.0);
     render_child_configs_section(
         ui,
         &block.uuid,
@@ -721,6 +724,146 @@ fn render_page_block_inspector(
         &block.extra_children,
         &mut output.edits,
     );
+}
+
+fn render_specialized_block_editor(
+    ui: &mut Ui,
+    block: &PageBlock,
+    edits: &mut Vec<ProjectEdit>,
+) {
+    match block.block_type.as_str() {
+        "LightControllerV2" | "LightController2" | "LightController" => {
+            egui::CollapsingHeader::new(
+                RichText::new("💡 LIGHTING SCENES & MOOD EDITOR")
+                    .size(11.0)
+                    .color(ACCENT_BLUE)
+                    .strong(),
+            )
+            .default_open(true)
+            .show(ui, |ui| {
+                for (attr_key, label) in [
+                    ("DefMood", "Default Mood ID"),
+                    ("Tfade", "Fade Time (s)"),
+                    ("MoveTime", "Presence Timeout (s)"),
+                ] {
+                    let cur = get_raw_attr(&block.raw_attributes, attr_key).unwrap_or("");
+                    render_singleline_attr_row(ui, &block.uuid, attr_key, label, cur, edits);
+                }
+                ui.add_space(4.0);
+                ui.label(
+                    RichText::new("Mood / Scene Descriptions (<LightsceneDescription>):")
+                        .size(10.5)
+                        .color(TEXT_MUTED),
+                );
+                let lsd = block
+                    .extra_children
+                    .iter()
+                    .find(|c| c.tag == "LightsceneDescription" || c.tag == "Lightscene");
+                let tag_name = lsd.map(|n| n.tag.as_str()).unwrap_or("LightsceneDescription");
+                for idx in 1..=6 {
+                    let attr_name = format!("Scene{idx}");
+                    let label = format!("Mood #{idx} Name");
+                    let cur = lsd.and_then(|n| n.attr(&attr_name)).unwrap_or("");
+                    render_child_tag_attr_row(
+                        ui,
+                        &block.uuid,
+                        tag_name,
+                        &attr_name,
+                        &label,
+                        cur,
+                        edits,
+                    );
+                }
+            });
+        }
+        "IRoomControllerV2" | "HeatIRoomController2" | "IRoomController" => {
+            egui::CollapsingHeader::new(
+                RichText::new("🌡 COMFORT & ECO TEMPERATURE PRESETS")
+                    .size(11.0)
+                    .color(ACCENT_BLUE)
+                    .strong(),
+            )
+            .default_open(true)
+            .show(ui, |ui| {
+                for (pin_key, label, fallback) in [
+                    ("Tc", "Comfort Heating (°C)", 21.0_f64),
+                    ("Tcc", "Comfort Cooling (°C)", 23.5_f64),
+                    ("Teh", "Eco Setback Heating (°C)", 18.0_f64),
+                    ("Tec", "Eco Setback Cooling (°C)", 26.0_f64),
+                    ("Tf", "Frost / Building Protection (°C)", 8.0_f64),
+                ] {
+                    let cur_str = block
+                        .pins
+                        .iter()
+                        .find(|p| p.key == pin_key)
+                        .and_then(|p| p.default_value.as_deref())
+                        .unwrap_or("");
+                    let mut val: f64 = cur_str.parse().unwrap_or(fallback);
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            RichText::new(format!("{label} [{pin_key}]:"))
+                                .size(11.0)
+                                .color(TEXT_MUTED),
+                        );
+                        if ui
+                            .add(
+                                DragValue::new(&mut val)
+                                    .speed(0.1)
+                                    .range(4.0..=35.0)
+                                    .suffix(" °C"),
+                            )
+                            .changed()
+                        {
+                            edits.push(ProjectEdit::SetPinDefault {
+                                control_uuid: block.uuid.clone(),
+                                pin_key: pin_key.to_string(),
+                                default_value: Some(format_clean_f64(val)),
+                            });
+                        }
+                    });
+                }
+            });
+        }
+        "Radio" | "ValueSelector" => {
+            egui::CollapsingHeader::new(
+                RichText::new("🔘 RADIO / SELECTOR OUTPUT TABLE (1..8)")
+                    .size(11.0)
+                    .color(ACCENT_BLUE)
+                    .strong(),
+            )
+            .default_open(true)
+            .show(ui, |ui| {
+                for idx in 1..=8 {
+                    let attr_name = format!("Text{idx}");
+                    let label = format!("Button #{idx} Label");
+                    let cur = get_raw_attr(&block.raw_attributes, &attr_name).unwrap_or("");
+                    render_singleline_attr_row(ui, &block.uuid, &attr_name, &label, cur, edits);
+                }
+            });
+        }
+        "Status" => {
+            egui::CollapsingHeader::new(
+                RichText::new("📊 STATUS CONDITION & TEXT TABLE")
+                    .size(11.0)
+                    .color(ACCENT_BLUE)
+                    .strong(),
+            )
+            .default_open(true)
+            .show(ui, |ui| {
+                for (attr_name, label) in [
+                    ("Text1", "Condition 1 Status Text"),
+                    ("Text2", "Condition 2 Status Text"),
+                    ("Text3", "Condition 3 Status Text"),
+                    ("Text4", "Condition 4 Status Text"),
+                    ("Text", "Default / Fallback Status Text"),
+                ] {
+                    let cur = get_raw_attr(&block.raw_attributes, attr_name).unwrap_or("");
+                    render_singleline_attr_row(ui, &block.uuid, attr_name, label, cur, edits);
+                }
+            });
+        }
+        _ => {}
+    }
 }
 
 fn render_tree_node_inspector(

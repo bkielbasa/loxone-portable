@@ -16,6 +16,10 @@ pub enum MiniserverModalAction {
         creds: MiniserverCredentials,
         filename: String,
     },
+    UploadProject {
+        creds: MiniserverCredentials,
+        restart_sps: bool,
+    },
     Close,
 }
 
@@ -27,6 +31,9 @@ pub struct MiniserverModalState {
     pub password: String,
     pub remember_password: bool,
     pub show_backups_browser: bool,
+    pub show_upload_panel: bool,
+    pub confirm_upload: bool,
+    pub restart_sps_after_upload: bool,
     pub snapshots: Vec<BackupSnapshot>,
     pub status_message: Option<String>,
 }
@@ -40,6 +47,9 @@ impl Default for MiniserverModalState {
             password: String::new(),
             remember_password: false,
             show_backups_browser: false,
+            show_upload_panel: false,
+            confirm_upload: false,
+            restart_sps_after_upload: true,
             snapshots: Vec::new(),
             status_message: None,
         }
@@ -59,6 +69,9 @@ impl MiniserverModalState {
             password: profile.password.clone().unwrap_or_default(),
             remember_password: profile.remember_password,
             show_backups_browser: false,
+            show_upload_panel: false,
+            confirm_upload: false,
+            restart_sps_after_upload: true,
             snapshots: Vec::new(),
             status_message: None,
         }
@@ -306,7 +319,92 @@ pub fn render_miniserver_modal(
                                 ));
                             }
                         }
+
+                        let upload_label = if state.show_upload_panel {
+                            "▾ Hide Upload"
+                        } else {
+                            "⬆ Save to Miniserver…"
+                        };
+                        if ui
+                            .add_enabled(
+                                can_submit,
+                                egui::Button::new(
+                                    RichText::new(upload_label)
+                                        .size(11.5)
+                                        .color(Color32::from_rgb(232, 168, 56))
+                                        .strong(),
+                                ),
+                            )
+                            .on_hover_text(
+                                "Safely back up active Miniserver program locally, then upload current project (.LoxCC + sps_new.zip)",
+                            )
+                            .clicked()
+                        {
+                            state.show_upload_panel = !state.show_upload_panel;
+                            if !state.show_upload_panel {
+                                state.confirm_upload = false;
+                            }
+                        }
                     });
+
+                    // Safe Hardware Deployment (Upload to Miniserver) Section
+                    if state.show_upload_panel {
+                        ui.add_space(10.0);
+                        Frame::new()
+                            .fill(CARD_BG)
+                            .stroke(Stroke::new(1.0_f32, Color32::from_rgb(232, 168, 56)))
+                            .corner_radius(6)
+                            .inner_margin(Margin::symmetric(10, 8))
+                            .show(ui, |ui| {
+                                ui.set_width(512.0);
+                                ui.label(
+                                    RichText::new("🛡 Safe Hardware Deployment (Save to Miniserver)")
+                                        .size(12.0)
+                                        .color(Color32::from_rgb(232, 168, 56))
+                                        .strong(),
+                                );
+                                ui.add_space(4.0);
+                                ui.label(
+                                    RichText::new(
+                                        "1. Automatically downloads & saves a local safety backup of the currently running Miniserver program to ~/.config/loxone-portable/backups/.\n2. Compresses the active project into .LoxCC and uploads sps_new.zip to /prog/.",
+                                    )
+                                    .size(11.0)
+                                    .color(TEXT_MUTED),
+                                );
+                                ui.add_space(6.0);
+                                ui.checkbox(
+                                    &mut state.restart_sps_after_upload,
+                                    RichText::new("Restart Miniserver SPS (/dev/sps/restart) after upload")
+                                        .size(11.5)
+                                        .color(TEXT_PRIMARY),
+                                );
+                                ui.checkbox(
+                                    &mut state.confirm_upload,
+                                    RichText::new("I understand this will update the live Miniserver program")
+                                        .size(11.5)
+                                        .color(TEXT_PRIMARY),
+                                );
+                                ui.add_space(6.0);
+                                if ui
+                                    .add_enabled(
+                                        can_submit && state.confirm_upload,
+                                        egui::Button::new(
+                                            RichText::new("⬆ Backup & Upload Project Now")
+                                                .size(12.0)
+                                                .color(Color32::from_rgb(232, 168, 56))
+                                                .strong(),
+                                        ),
+                                    )
+                                    .clicked()
+                                {
+                                    state.confirm_upload = false;
+                                    action = Some(MiniserverModalAction::UploadProject {
+                                        creds: state.credentials(),
+                                        restart_sps: state.restart_sps_after_upload,
+                                    });
+                                }
+                            });
+                    }
 
                     // Expandable Backups Browser
                     if state.show_backups_browser {

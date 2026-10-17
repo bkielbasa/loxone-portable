@@ -182,6 +182,25 @@ pub fn compress_loxcc_literals(raw: &[u8]) -> Vec<u8> {
     frame
 }
 
+/// Compresses a `.Loxone` XML string into `sps0.LoxCC` and packages it inside a standard
+/// Miniserver `.zip` archive (`sps_new.zip` / `sps0.LoxCC` container).
+pub fn pack_loxcc_zip(xml: &str) -> Result<Vec<u8>, LoxCcError> {
+    use std::io::Write;
+    use zip::write::SimpleFileOptions;
+
+    let loxcc_bytes = compress_loxcc_literals(xml.as_bytes());
+    let mut zip_buf = Cursor::new(Vec::new());
+    {
+        let mut writer = zip::ZipWriter::new(&mut zip_buf);
+        let options = SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated);
+        writer.start_file("sps0.LoxCC", options)?;
+        writer.write_all(&loxcc_bytes)?;
+        writer.finish()?;
+    }
+    Ok(zip_buf.into_inner())
+}
+
 fn is_raw_xml_bytes(data: &[u8]) -> bool {
     let trimmed = data.strip_prefix(&[0xEF, 0xBB, 0xBF]).unwrap_or(data);
     trimmed.starts_with(b"<?xml")
@@ -192,8 +211,6 @@ fn is_raw_xml_bytes(data: &[u8]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::{Cursor, Write};
-    use zip::write::SimpleFileOptions;
 
     #[test]
     fn test_decompress_loxcc_literals_and_backreferences() {
@@ -222,19 +239,8 @@ mod tests {
             <ControlList Version=\"274\">\
                 <C Type=\"Document\" U=\"doc-zip\" Title=\"ZipProject\" ConfigVersion=\"17020828\"/>\
             </ControlList>";
-        let loxcc_bytes = compress_loxcc_literals(xml.as_bytes());
 
-        let mut zip_buf = Cursor::new(Vec::new());
-        {
-            let mut writer = zip::ZipWriter::new(&mut zip_buf);
-            writer
-                .start_file("sps0.LoxCC", SimpleFileOptions::default())
-                .unwrap();
-            writer.write_all(&loxcc_bytes).unwrap();
-            writer.finish().unwrap();
-        }
-
-        let archive_bytes = zip_buf.into_inner();
+        let archive_bytes = pack_loxcc_zip(xml).expect("should pack sps0.LoxCC into zip");
         let extracted_xml =
             extract_loxone_xml(&archive_bytes).expect("should unpack sps0.LoxCC from zip");
         assert_eq!(extracted_xml, xml);

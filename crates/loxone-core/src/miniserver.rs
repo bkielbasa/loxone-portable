@@ -210,6 +210,181 @@ impl ConnectionProfile {
         std::fs::write(path, json)?;
         Ok(())
     }
+
+    pub fn default_backup_dir() -> Option<PathBuf> {
+        let home = std::env::var_os("HOME")?;
+        Some(
+            PathBuf::from(home)
+                .join(".config")
+                .join("loxone-portable")
+                .join("backups"),
+        )
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UploadProjectResult {
+    pub backup_path: Option<PathBuf>,
+    pub uploaded_filename: String,
+    pub restarted_sps: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LoxoneKeyChallenge {
+    pub key_hex: String,
+    pub salt_hex: String,
+    pub hash_alg: String,
+}
+
+pub fn parse_getkey2_response(body: &str) -> Option<LoxoneKeyChallenge> {
+    let val: serde_json::Value = serde_json::from_str(body.trim()).ok()?;
+    let ll = val.get("LL")?;
+    let v = ll.get("value")?;
+    let key_hex = v.get("key")?.as_str()?.trim().to_string();
+    let salt_hex = v.get("salt")?.as_str()?.trim().to_string();
+    let hash_alg = v
+        .get("hashAlg")
+        .and_then(|a| a.as_str())
+        .unwrap_or("SHA1")
+        .trim()
+        .to_ascii_uppercase();
+    if key_hex.is_empty() || salt_hex.is_empty() {
+        return None;
+    }
+    Some(LoxoneKeyChallenge {
+        key_hex,
+        salt_hex,
+        hash_alg,
+    })
+}
+
+fn sha1_digest(data: &[u8]) -> [u8; 20] {
+    let mut h0: u32 = 0x67452301;
+    let mut h1: u32 = 0xEFCDAB89;
+    let mut h2: u32 = 0x98BADCFE;
+    let mut h3: u32 = 0x10325476;
+    let mut h4: u32 = 0xC3D2E1F0;
+
+    let bit_len = (data.len() as u64) * 8;
+    let mut msg = data.to_vec();
+    msg.push(0x80);
+    while (msg.len() % 64) != 56 {
+        msg.push(0);
+    }
+    msg.extend_from_slice(&bit_len.to_be_bytes());
+
+    for chunk in msg.chunks_exact(64) {
+        let mut w = [0u32; 80];
+        for i in 0..16 {
+            w[i] = u32::from_be_bytes([
+                chunk[i * 4],
+                chunk[i * 4 + 1],
+                chunk[i * 4 + 2],
+                chunk[i * 4 + 3],
+            ]);
+        }
+        for i in 16..80 {
+            w[i] = (w[i - 3] ^ w[i - 8] ^ w[i - 14] ^ w[i - 16]).rotate_left(1);
+        }
+        let (mut a, mut b, mut c, mut d, mut e) = (h0, h1, h2, h3, h4);
+        for (i, &wi) in w.iter().enumerate() {
+            let (f, k) = match i {
+                0..=19 => ((b & c) | ((!b) & d), 0x5A827999),
+                20..=39 => (b ^ c ^ d, 0x6ED9EBA1),
+                40..=59 => ((b & c) | (b & d) | (c & d), 0x8F1BBCDC),
+                _ => (b ^ c ^ d, 0xCA62C1D6),
+            };
+            let temp = a
+                .rotate_left(5)
+                .wrapping_add(f)
+                .wrapping_add(e)
+                .wrapping_add(k)
+                .wrapping_add(wi);
+            e = d;
+            d = c;
+            c = b.rotate_left(30);
+            b = a;
+            a = temp;
+        }
+        h0 = h0.wrapping_add(a);
+        h1 = h1.wrapping_add(b);
+        h2 = h2.wrapping_add(c);
+        h3 = h3.wrapping_add(d);
+        h4 = h4.wrapping_add(e);
+    }
+
+    let mut out = [0u8; 20];
+    out[0..4].copy_from_slice(&h0.to_be_bytes());
+    out[4..8].copy_from_slice(&h1.to_be_bytes());
+    out[8..12].copy_from_slice(&h2.to_be_bytes());
+    out[12..16].copy_from_slice(&h3.to_be_bytes());
+    out[16..20].copy_from_slice(&h4.to_be_bytes());
+    out
+}
+
+fn hmac_sha1(key: &[u8], message: &[u8]) -> [u8; 20] {
+    let mut k_block = [0u8; 64];
+    if key.len() > 64 {
+        let hashed = sha1_digest(key);
+        k_block[..20].copy_from_slice(&hashed);
+    } else {
+        k_block[..key.len()].copy_from_slice(key);
+    }
+    let mut ipad = [0x36u8; 64];
+    let mut opad = [0x5cu8; 64];
+    for i in 0..64 {
+        ipad[i] ^= k_block[i];
+        opad[i] ^= k_block[i];
+    }
+    let mut inner = Vec::with_capacity(64 + message.len());
+    inner.extend_from_slice(&ipad);
+    inner.extend_from_slice(message);
+    let inner_hash = sha1_digest(&inner);
+
+    let mut outer = Vec::with_capacity(64 + 20);
+    outer.extend_from_slice(&opad);
+    outer.extend_from_slice(&inner_hash);
+    sha1_digest(&outer)
+}
+
+fn decode_hex_bytes(hex: &str) -> Vec<u8> {
+    let bytes = hex.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len() / 2);
+    let mut i = 0;
+    while i + 1 < bytes.len() {
+        if let Ok(s) = std::str::from_utf8(&bytes[i..i + 2]) {
+            if let Ok(b) = u8::from_str_radix(s, 16) {
+                out.push(b);
+            }
+        }
+        i += 2;
+    }
+    out
+}
+
+fn encode_hex(bytes: &[u8], uppercase: bool) -> String {
+    let mut s = String::with_capacity(bytes.len() * 2);
+    for b in bytes {
+        if uppercase {
+            s.push_str(&format!("{:02X}", b));
+        } else {
+            s.push_str(&format!("{:02x}", b));
+        }
+    }
+    s
+}
+
+/// Computes the Loxone `/jdev/sys/getkey2` challenge response hash (`HMAC(key, "user:UPPER_HASH(pass:salt)")`).
+pub fn compute_loxone_auth_hash(
+    username: &str,
+    password: &str,
+    challenge: &LoxoneKeyChallenge,
+) -> String {
+    let pw_salt = format!("{}:{}", password, challenge.salt_hex);
+    let pw_hash = encode_hex(&sha1_digest(pw_salt.as_bytes()), true);
+    let user_payload = format!("{}:{}", username, pw_hash);
+    let key_bytes = decode_hex_bytes(&challenge.key_hex);
+    encode_hex(&hmac_sha1(&key_bytes, user_payload.as_bytes()), false)
 }
 
 pub struct MiniserverClient;
@@ -456,6 +631,154 @@ impl MiniserverClient {
             snap.control_id = clean_id.to_string();
         }
         Ok(snap)
+    }
+
+    fn http_post_bytes(
+        url: &str,
+        creds: &MiniserverCredentials,
+        payload: &[u8],
+    ) -> Result<Vec<u8>, MiniserverError> {
+        let agent = ureq::AgentBuilder::new()
+            .timeout(std::time::Duration::from_secs(12))
+            .build();
+        match agent
+            .post(url)
+            .set("Authorization", &Self::basic_auth_header(creds))
+            .set("Content-Type", "application/octet-stream")
+            .send_bytes(payload)
+        {
+            Ok(response) => {
+                let mut bytes = Vec::new();
+                std::io::Read::read_to_end(&mut response.into_reader(), &mut bytes)?;
+                Ok(bytes)
+            }
+            Err(ureq::Error::Status(401 | 403, _)) => Err(MiniserverError::AuthenticationFailed),
+            Err(ureq::Error::Status(code, _)) => {
+                Err(MiniserverError::Transport(format!("HTTP status {}", code)))
+            }
+            Err(ureq::Error::Transport(err)) => Err(MiniserverError::Transport(err.to_string())),
+        }
+    }
+
+    fn ftp_upload_file(
+        creds: &MiniserverCredentials,
+        filename: &str,
+        payload: &[u8],
+    ) -> Result<(), MiniserverError> {
+        let addr = Self::ftp_host_and_port(&creds.host);
+        let mut ftp = suppaftp::FtpStream::connect(&addr)
+            .map_err(|e| MiniserverError::Transport(format!("FTP connect {}: {}", addr, e)))?;
+        ftp.login(&creds.username, &creds.password)
+            .map_err(|_| MiniserverError::AuthenticationFailed)?;
+        let _ = ftp.transfer_type(suppaftp::types::FileType::Binary);
+        let remote_path = format!("/prog/{}", filename);
+        let mut cursor = std::io::Cursor::new(payload);
+        ftp.put_file(&remote_path, &mut cursor)
+            .map_err(|e| MiniserverError::Transport(format!("FTP put {}: {}", remote_path, e)))?;
+        let _ = ftp.quit();
+        Ok(())
+    }
+
+    /// Performs the Loxone `/jdev/sys/getkey2/{user}` + `/jdev/sys/getjwt/{hash}/{user}/4/...`
+    /// challenge-response handshake and returns the issued token if supported by the Miniserver.
+    pub fn exchange_loxone_jwt(creds: &MiniserverCredentials) -> Result<String, MiniserverError> {
+        let base_url = Self::normalize_base_url(&creds.host)?;
+        let key_url = format!("{}/jdev/sys/getkey2/{}", base_url, creds.username.trim());
+        let key_bytes = Self::http_get_bytes_fast(&key_url, creds)?;
+        let key_text = String::from_utf8_lossy(&key_bytes);
+        let challenge = parse_getkey2_response(&key_text).ok_or_else(|| {
+            MiniserverError::Transport("Invalid /jdev/sys/getkey2 challenge payload".to_string())
+        })?;
+        let auth_hash = compute_loxone_auth_hash(&creds.username, &creds.password, &challenge);
+        let jwt_url = format!(
+            "{}/jdev/sys/getjwt/{}/{}/4/098802e1-02b4-603c-ffffeee000d80cfd/loxone-portable",
+            base_url,
+            auth_hash,
+            creds.username.trim()
+        );
+        let jwt_bytes = Self::http_get_bytes_fast(&jwt_url, creds)?;
+        let jwt_text = String::from_utf8_lossy(&jwt_bytes);
+        let val: serde_json::Value = serde_json::from_str(jwt_text.trim())?;
+        if let Some(token) = val
+            .get("LL")
+            .and_then(|ll| ll.get("value"))
+            .and_then(|v| v.get("token"))
+            .and_then(|t| t.as_str())
+        {
+            Ok(token.to_string())
+        } else {
+            Err(MiniserverError::AuthenticationFailed)
+        }
+    }
+
+    /// Safely deploys a `.Loxone` XML project to a Miniserver:
+    /// 1. Downloads the currently running configuration first and writes a timestamped safety backup.
+    /// 2. Compresses the new XML into `sps0.LoxCC` and packages `sps_new.zip`.
+    /// 3. Uploads `sps_new.zip` (and `sps0.LoxCC`) to `/prog/` via HTTP `/dev/fsput/` or FTP `/prog/`.
+    /// 4. Optionally triggers `/dev/sps/restart` so the Miniserver loads the new configuration.
+    pub fn upload_project_xml(
+        creds: &MiniserverCredentials,
+        xml: &str,
+        backup_dir: Option<&Path>,
+        restart_sps: bool,
+    ) -> Result<UploadProjectResult, MiniserverError> {
+        let base_url = Self::normalize_base_url(&creds.host)?;
+
+        // Step 1: Pre-upload safety backup of currently active configuration on Miniserver
+        let mut backup_path = None;
+        if let Ok((orig_filename, running_xml)) = Self::download_snapshot_xml(creds, None) {
+            let resolved_dir = backup_dir
+                .map(Path::to_path_buf)
+                .or_else(ConnectionProfile::default_backup_dir);
+            if let Some(dir) = resolved_dir {
+                let _ = std::fs::create_dir_all(&dir);
+                let ts = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0);
+                let stem = orig_filename
+                    .trim_end_matches(".zip")
+                    .trim_end_matches(".LoxCC");
+                let file_path = dir.join(format!("pre_upload_{}_{}.Loxone", ts, stem));
+                if std::fs::write(&file_path, running_xml.as_bytes()).is_ok() {
+                    backup_path = Some(file_path);
+                }
+            }
+        }
+
+        // Step 2: Pack .LoxCC and sps_new.zip
+        let zip_bytes = crate::loxcc::pack_loxcc_zip(xml)?;
+        let loxcc_bytes = crate::loxcc::compress_loxcc_literals(xml.as_bytes());
+
+        // Step 3: Upload to /prog/sps_new.zip and /prog/sps0.LoxCC
+        let put_zip_url = format!("{}/dev/fsput/prog/sps_new.zip", base_url);
+        let put_loxcc_url = format!("{}/dev/fsput/prog/sps0.LoxCC", base_url);
+        match Self::http_post_bytes(&put_zip_url, creds, &zip_bytes) {
+            Ok(_) => {
+                let _ = Self::http_post_bytes(&put_loxcc_url, creds, &loxcc_bytes);
+            }
+            Err(MiniserverError::AuthenticationFailed) => {
+                return Err(MiniserverError::AuthenticationFailed);
+            }
+            Err(http_err) => {
+                Self::ftp_upload_file(creds, "sps_new.zip", &zip_bytes).or(Err(http_err))?;
+                let _ = Self::ftp_upload_file(creds, "sps0.LoxCC", &loxcc_bytes);
+            }
+        }
+
+        // Step 4: Optionally restart SPS program
+        let mut restarted_sps = false;
+        if restart_sps {
+            let restart_url = format!("{}/dev/sps/restart", base_url);
+            let _ = Self::http_get_bytes_fast(&restart_url, creds);
+            restarted_sps = true;
+        }
+
+        Ok(UploadProjectResult {
+            backup_path,
+            uploaded_filename: "sps_new.zip".to_string(),
+            restarted_sps,
+        })
     }
 }
 
@@ -1692,6 +2015,108 @@ mod tests {
         let unchanged_lux = store.resolve_ref_bar_signal(lux_ref, page, &project);
         assert_eq!(unchanged_lux.formatted, "0Lx");
         assert!(!unchanged_lux.is_active);
+    }
+
+    #[test]
+    fn test_loxone_key_exchange_and_upload_project_with_safety_backup() {
+        let json = r#"{"LL":{"control":"jdev/sys/getkey2/admin","value":{"key":"30313233343536373839","salt":"AABBCC","hashAlg":"SHA1"},"Code":"200"}}"#;
+        let challenge = parse_getkey2_response(json).expect("should parse getkey2 JSON");
+        assert_eq!(challenge.key_hex, "30313233343536373839");
+        assert_eq!(challenge.salt_hex, "AABBCC");
+        assert_eq!(challenge.hash_alg, "SHA1");
+
+        let auth_hash = compute_loxone_auth_hash("admin", "secret", &challenge);
+        assert_eq!(auth_hash.len(), 40);
+        assert!(auth_hash.chars().all(|c| c.is_ascii_hexdigit()));
+
+        let old_xml = "\u{FEFF}<?xml version=\"1.0\" encoding=\"utf-8\"?><ControlList Version=\"274\"><C Type=\"Document\" U=\"doc-old\" Title=\"OldRunningConfig\"/></ControlList>";
+        let new_xml = "\u{FEFF}<?xml version=\"1.0\" encoding=\"utf-8\"?><ControlList Version=\"274\"><C Type=\"Document\" U=\"doc-new\" Title=\"NewUploadedConfig\"/></ControlList>";
+        let old_zip = crate::loxcc::pack_loxcc_zip(old_xml).unwrap();
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let uploaded_zip = std::sync::Arc::new(std::sync::Mutex::new(Vec::<u8>::new()));
+        let uploaded_zip_clone = uploaded_zip.clone();
+        let restart_called = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let restart_clone = restart_called.clone();
+
+        let server_handle = std::thread::spawn(move || {
+            // 5 requests: fslist, fsget (backup), fsput sps_new.zip, fsput sps0.LoxCC, sps/restart
+            for _ in 0..5 {
+                if let Ok((mut stream, _)) = listener.accept() {
+                    let mut buf = [0u8; 16384];
+                    let n = stream.read(&mut buf).unwrap_or(0);
+                    let req = String::from_utf8_lossy(&buf[..n]);
+                    if req.starts_with("GET /dev/fslist/prog ") {
+                        let body = "-rw-rw-rw- 1 0 0 1024 Mar 8 18:22 sps0.LoxCC\r\n";
+                        let resp = format!(
+                            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                            body.len(),
+                            body
+                        );
+                        let _ = stream.write_all(resp.as_bytes());
+                    } else if req.starts_with("GET /dev/fsget/prog/sps0.LoxCC ") {
+                        let header = format!(
+                            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                            old_zip.len()
+                        );
+                        let _ = stream.write_all(header.as_bytes());
+                        let _ = stream.write_all(&old_zip);
+                    } else if req.starts_with("POST /dev/fsput/prog/sps_new.zip ") {
+                        if let Some(idx) = buf[..n].windows(4).position(|w| w == b"\r\n\r\n") {
+                            let body_bytes = &buf[idx + 4..n];
+                            *uploaded_zip_clone.lock().unwrap() = body_bytes.to_vec();
+                        }
+                        let resp = "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nOK";
+                        let _ = stream.write_all(resp.as_bytes());
+                    } else if req.starts_with("POST /dev/fsput/prog/sps0.LoxCC ") {
+                        let resp = "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nOK";
+                        let _ = stream.write_all(resp.as_bytes());
+                    } else if req.starts_with("GET /dev/sps/restart ") {
+                        restart_clone.store(true, std::sync::atomic::Ordering::SeqCst);
+                        let resp = "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nOK";
+                        let _ = stream.write_all(resp.as_bytes());
+                    }
+                }
+            }
+        });
+
+        let temp_backup_dir = std::env::temp_dir().join(format!(
+            "loxone_backup_test_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&temp_backup_dir);
+
+        let creds = MiniserverCredentials {
+            host: format!("http://{}", addr),
+            username: "admin".to_string(),
+            password: "secret".to_string(),
+        };
+
+        let result = MiniserverClient::upload_project_xml(
+            &creds,
+            new_xml,
+            Some(&temp_backup_dir),
+            true,
+        )
+        .expect("upload_project_xml should succeed");
+
+        let _ = server_handle.join();
+
+        assert_eq!(result.uploaded_filename, "sps_new.zip");
+        assert!(result.restarted_sps);
+        assert!(restart_called.load(std::sync::atomic::Ordering::SeqCst));
+
+        let backup_file = result.backup_path.expect("pre-upload backup should be written");
+        let saved_backup_xml = std::fs::read_to_string(&backup_file).unwrap();
+        assert_eq!(saved_backup_xml, old_xml);
+
+        let received_zip = uploaded_zip.lock().unwrap().clone();
+        let unpacked_new = crate::loxcc::extract_loxone_xml(&received_zip).unwrap();
+        assert_eq!(unpacked_new, new_xml);
+
+        let _ = std::fs::remove_dir_all(&temp_backup_dir);
     }
 }
 

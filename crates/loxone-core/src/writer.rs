@@ -31,6 +31,12 @@ pub enum ProjectEdit {
         px: f32,
         py: f32,
     },
+    ResizePageBlock {
+        page_uuid: String,
+        block_uuid: String,
+        px2: f32,
+        py2: f32,
+    },
     AddPageBlock {
         page_uuid: String,
         block: PageBlock,
@@ -351,6 +357,47 @@ fn apply_edit_inner(
                 block_uuid: block_uuid.clone(),
                 px: old_px,
                 py: old_py,
+            })
+        }
+        ProjectEdit::ResizePageBlock {
+            page_uuid,
+            block_uuid,
+            px2,
+            py2,
+        } => {
+            let mut old_px2 = *px2;
+            let mut old_py2 = *py2;
+            let loc = project
+                .pages
+                .iter()
+                .position(|p| p.uuid == *page_uuid)
+                .and_then(|pi| {
+                    project.pages[pi]
+                        .blocks
+                        .iter()
+                        .position(|b| b.uuid == *block_uuid)
+                        .map(|bi| (pi, bi))
+                });
+            let block_opt = if let Some((pi, bi)) = loc {
+                Some(&mut project.pages[pi].blocks[bi])
+            } else {
+                find_page_block_mut(project, block_uuid)
+            };
+            if let Some(block) = block_opt {
+                old_px2 = block.px2;
+                old_py2 = block.py2;
+                block.px2 = (*px2).max(block.px + 64.0);
+                block.py2 = (*py2).max(block.py + 32.0);
+                let px2_str = format_coord_attr(block.px2);
+                let py2_str = format_coord_attr(block.py2);
+                set_vec_attr(&mut block.raw_attributes, "Px2", Some(&px2_str));
+                set_vec_attr(&mut block.raw_attributes, "Py2", Some(&py2_str));
+            }
+            Ok(ProjectEdit::ResizePageBlock {
+                page_uuid: page_uuid.clone(),
+                block_uuid: block_uuid.clone(),
+                px2: old_px2,
+                py2: old_py2,
             })
         }
         ProjectEdit::AddPageBlock { page_uuid, block } => {
@@ -718,6 +765,143 @@ pub fn save_loxone_file(path: &Path, project: &mut LoxoneProject) -> Result<(), 
     std::fs::write(path, &xml)?;
     project.raw_xml = Some(xml);
     Ok(())
+}
+
+/// Deep-clones a slice of `PageBlock`s for Copy/Paste or Duplicate (`Cmd+C`/`Cmd+V`/`Cmd+D`),
+/// allocating fresh block and pin UUIDs, offsetting coordinates by `(offset_px, offset_py)`,
+/// and remapping internal `<In Input="..."/>` wire links between the copied blocks while
+/// stripping external incoming wires.
+pub fn clone_blocks_for_paste(
+    blocks: &[PageBlock],
+    offset_px: f32,
+    offset_py: f32,
+) -> Vec<PageBlock> {
+    let mut pin_uuid_map: HashMap<String, String> = HashMap::new();
+    for block in blocks {
+        for pin in &block.pins {
+            if !pin.uuid.is_empty() {
+                pin_uuid_map.insert(pin.uuid.clone(), crate::factory::generate_loxone_uuid());
+            }
+        }
+    }
+
+    blocks
+        .iter()
+        .map(|orig| {
+            let mut cloned = orig.clone();
+            let new_uuid = crate::factory::generate_loxone_uuid();
+            cloned.uuid = new_uuid.clone();
+            cloned.px += offset_px;
+            cloned.py += offset_py;
+            cloned.px2 += offset_px;
+            cloned.py2 += offset_py;
+            cloned.has_position = true;
+
+            let px_str = format_coord_attr(cloned.px);
+            let py_str = format_coord_attr(cloned.py);
+            let px2_str = format_coord_attr(cloned.px2);
+            let py2_str = format_coord_attr(cloned.py2);
+            set_vec_attr(&mut cloned.raw_attributes, "U", Some(&new_uuid));
+            set_vec_attr(&mut cloned.raw_attributes, "Px", Some(&px_str));
+            set_vec_attr(&mut cloned.raw_attributes, "Py", Some(&py_str));
+            set_vec_attr(&mut cloned.raw_attributes, "Px2", Some(&px2_str));
+            set_vec_attr(&mut cloned.raw_attributes, "Py2", Some(&py2_str));
+
+            for pin in &mut cloned.pins {
+                pin.uuid = pin_uuid_map
+                    .get(&pin.uuid)
+                    .cloned()
+                    .unwrap_or_else(crate::factory::generate_loxone_uuid);
+                pin.incoming_links = pin
+                    .incoming_links
+                    .iter()
+                    .filter_map(|link| {
+                        pin_uuid_map.get(&link.source_pin_uuid).map(|new_src| WireLink {
+                            source_pin_uuid: new_src.clone(),
+                            flags: link.flags.clone(),
+                        })
+                    })
+                    .collect();
+            }
+
+            cloned
+        })
+        .collect()
+}
+
+/// Builds a single atomic `ProjectEdit::Batch` that sends an output pin of `source_block_uuid`
+/// on `source_page_uuid` to `target_page_uuid` via a paired Flag (`Memory`) reference block:
+/// 1. Creates a `Memory` tree node under `MemoryCaption` in the system tree.
+/// 2. Places a writer `Memory` reference block next to `source_block_uuid` on `source_page_uuid`
+///    and wires `source_pin_key` into its `"I"` input.
+/// 3. Places a reader `Memory` reference block on `target_page_uuid` at `(target_px, target_py)`.
+pub fn create_cross_page_link_edits(
+    project: &LoxoneProject,
+    source_page_uuid: &str,
+    source_block_uuid: &str,
+    source_pin_key: &str,
+    target_page_uuid: &str,
+    target_px: f32,
+    target_py: f32,
+) -> Option<ProjectEdit> {
+    let source_page = project.pages.iter().find(|p| p.uuid == source_page_uuid)?;
+    let source_block = source_page
+        .blocks
+        .iter()
+        .find(|b| b.uuid == source_block_uuid)?;
+    let source_pin = source_block
+        .pins
+        .iter()
+        .find(|p| p.key == source_pin_key && !p.uuid.is_empty())?;
+
+    let flag_title = if source_block.title.is_empty() {
+        format!("{} ({})", source_block.block_type, source_pin_key)
+    } else {
+        format!("{} ({})", source_block.title, source_pin_key)
+    };
+    let merker_node = crate::factory::new_tree_node("Memory", &flag_title);
+    let mem_caption_uuid = project
+        .system_tree
+        .iter()
+        .find(|n| n.control_type == "MemoryCaption")
+        .map(|n| n.uuid.clone());
+
+    let mut writer_ref = crate::factory::new_reference_block(
+        "Memory",
+        &merker_node,
+        source_block.px2 + 128.0,
+        source_block.py,
+    );
+    for p in &mut writer_ref.pins {
+        p.uuid = crate::factory::generate_loxone_uuid();
+    }
+    let mut reader_ref =
+        crate::factory::new_reference_block("Memory", &merker_node, target_px, target_py);
+    for p in &mut reader_ref.pins {
+        p.uuid = crate::factory::generate_loxone_uuid();
+    }
+
+    let writer_uuid = writer_ref.uuid.clone();
+    Some(ProjectEdit::Batch(vec![
+        ProjectEdit::AddTreeNode {
+            section: TreeSectionKind::System,
+            parent_uuid: mem_caption_uuid,
+            node: merker_node,
+        },
+        ProjectEdit::AddPageBlock {
+            page_uuid: source_page_uuid.to_string(),
+            block: writer_ref,
+        },
+        ProjectEdit::AddWireLink {
+            target_block_uuid: writer_uuid,
+            target_pin_key: "I".to_string(),
+            source_pin_uuid: source_pin.uuid.clone(),
+        },
+        ProjectEdit::AddPageBlock {
+            page_uuid: target_page_uuid.to_string(),
+            block: reader_ref,
+        },
+    ]))
 }
 
 fn find_page_block_mut<'a>(
@@ -2085,4 +2269,106 @@ mod tests {
         assert_eq!(reparsed_after.categories.len(), orig_cats);
         assert!(!reparsed_after.xref.objects_by_uuid.contains_key(&merker_uuid));
     }
+
+    #[test]
+    fn test_resize_paste_clone_and_cross_page_link_edits() {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../Klimczaki.Loxone");
+        let mut project = load_loxone_file(&path).expect("Klimczaki.Loxone should load");
+
+        let page_0_uuid = project.pages[0].uuid.clone();
+        let page_1_uuid = project.pages[1].uuid.clone();
+
+        // 1. Add a Memo block and resize it
+        let memo = crate::factory::new_page_block("Memo", "Design Note", 100.0, 200.0);
+        let memo_uuid = memo.uuid.clone();
+        apply_edit(
+            &mut project,
+            &ProjectEdit::AddPageBlock {
+                page_uuid: page_0_uuid.clone(),
+                block: memo,
+            },
+        )
+        .unwrap();
+
+        let inv_resize = apply_edit_with_inverse(
+            &mut project,
+            &ProjectEdit::ResizePageBlock {
+                page_uuid: page_0_uuid.clone(),
+                block_uuid: memo_uuid.clone(),
+                px2: 1800.0,
+                py2: 1100.0,
+            },
+        )
+        .unwrap();
+        let resized = project.pages[0]
+            .blocks
+            .iter()
+            .find(|b| b.uuid == memo_uuid)
+            .unwrap();
+        assert_eq!((resized.px2, resized.py2), (1800.0, 1100.0));
+        apply_edit_with_inverse(&mut project, &inv_resize).unwrap();
+
+        // 2. Test clone_blocks_for_paste preserving internal wires
+        let blk_a = crate::factory::new_page_block("Switch", "Sw A", 300.0, 300.0);
+        let mut blk_b = crate::factory::new_page_block("StairwellLight", "Delay B", 900.0, 300.0);
+        let a_out_uuid = blk_a.pins.iter().find(|p| p.key == "Q").unwrap().uuid.clone();
+        blk_b
+            .pins
+            .iter_mut()
+            .find(|p| p.key == "Tr")
+            .unwrap()
+            .incoming_links
+            .push(WireLink {
+                source_pin_uuid: a_out_uuid.clone(),
+                flags: None,
+            });
+        let pasted = clone_blocks_for_paste(&[blk_a.clone(), blk_b.clone()], 64.0, 64.0);
+        assert_eq!(pasted.len(), 2);
+        assert_ne!(pasted[0].uuid, blk_a.uuid);
+        assert_ne!(pasted[1].uuid, blk_b.uuid);
+        assert_eq!((pasted[0].px, pasted[0].py), (364.0, 364.0));
+        let pasted_a_out = pasted[0]
+            .pins
+            .iter()
+            .find(|p| p.key == "Q")
+            .unwrap()
+            .uuid
+            .clone();
+        assert_ne!(pasted_a_out, a_out_uuid);
+        let pasted_b_in = &pasted[1]
+            .pins
+            .iter()
+            .find(|p| p.key == "Tr")
+            .unwrap()
+            .incoming_links;
+        assert_eq!(pasted_b_in.len(), 1);
+        assert_eq!(pasted_b_in[0].source_pin_uuid, pasted_a_out);
+
+        // 3. Test create_cross_page_link_edits
+        apply_edit(
+            &mut project,
+            &ProjectEdit::AddPageBlock {
+                page_uuid: page_0_uuid.clone(),
+                block: blk_a.clone(),
+            },
+        )
+        .unwrap();
+        let xpage_edit = create_cross_page_link_edits(
+            &project,
+            &page_0_uuid,
+            &blk_a.uuid,
+            "Q",
+            &page_1_uuid,
+            512.0,
+            512.0,
+        )
+        .expect("should build cross-page link batch");
+        let inv_xpage = apply_edit_with_inverse(&mut project, &xpage_edit).unwrap();
+        assert!(project.pages[1]
+            .blocks
+            .iter()
+            .any(|b| b.block_type == "Memory" && b.title == "Sw A (Q)"));
+        apply_edit_with_inverse(&mut project, &inv_xpage).unwrap();
+    }
 }
+

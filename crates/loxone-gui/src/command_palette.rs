@@ -6,6 +6,7 @@ use crate::theme::{ACCENT_BLUE, BORDER_SUBTLE, CARD_BG, PANEL_BG, TEXT_MUTED, TE
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PaletteAction {
+    ShowProjectLauncher,
     OpenFile,
     SaveFile,
     ConnectMiniserver,
@@ -66,6 +67,13 @@ pub fn build_palette_entries(project: Option<&LoxoneProject>, query: &str) -> Ve
     let mut entries = Vec::new();
 
     let built_in_actions = [
+        PaletteEntry {
+            badge: PaletteBadge::Action,
+            title: "Switch Project / Show Project List…".to_string(),
+            subtitle: "Return to the startup project launcher to pick another .Loxone project".to_string(),
+            shortcut: None,
+            action: PaletteAction::ShowProjectLauncher,
+        },
         PaletteEntry {
             badge: PaletteBadge::Action,
             title: "Connect to Miniserver / Download Project…".to_string(),
