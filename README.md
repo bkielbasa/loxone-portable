@@ -71,6 +71,7 @@ I often use non-windows OSs and it forced me to use a VM in order to edit anythi
 - **Download from Miniserver**: Connect via HTTP to inspect `/dev/fslist/prog/`, download the latest configuration or choose any historical `.LoxCC` backup snapshot on the Miniserver, and automatically decompress it into the editor.
 - **Gen1 & Gen2 Authentication**: Supports both HTTP Basic authentication and Loxone token/key-exchange authentication (`/jdev/sys/getkey2`, HMAC-SHA1/SHA256).
 - **Safe Upload to Miniserver**:
+  - **Newer-Version Safeguard & Server-Priority Pull/Merge**: Before uploading, checks the Miniserver's active project version (`SL` save level, `CDate`, `DateS`, `/prog/` archive timestamp, and structural diff). If a newer version exists on the Miniserver, the upload is blocked and you are prompted to **Pull & Merge into My Project (Server Priority)**—where server values take higher priority on any conflict while preserving non-conflicting local additions and edits.
   - Automatically downloads and saves a timestamped local backup (`~/.config/loxone-portable/backups/`) of the Miniserver's current configuration before uploading.
   - Compresses the edited project into a valid `.LoxCC` archive, uploads it to `/prog/`, and optionally triggers `/dev/sps/restart` to activate the new program.
 

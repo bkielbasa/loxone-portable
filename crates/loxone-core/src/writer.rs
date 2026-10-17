@@ -1115,6 +1115,20 @@ fn sync_raw_node(
         let node_type = node.attr("Type").unwrap_or_default().to_string();
         match node_type.as_str() {
             "Document" => {
+                if !project.metadata.c_date.is_empty() {
+                    node.set_attr("CDate", Some(&project.metadata.c_date));
+                }
+                if let Some(ds) = project.metadata.date_s {
+                    let ds_str = ds.to_string();
+                    node.set_attr("DateS", Some(&ds_str));
+                }
+                if let Some(sl) = project.metadata.save_level {
+                    let sl_str = sl.to_string();
+                    node.set_attr("SL", Some(&sl_str));
+                }
+                if !project.metadata.config_version.is_empty() {
+                    node.set_attr("ConfigVersion", Some(&project.metadata.config_version));
+                }
                 node.children.retain(|c| {
                     if c.tag != "C" {
                         return true;

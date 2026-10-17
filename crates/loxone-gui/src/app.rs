@@ -41,7 +41,12 @@ pub enum MiniserverWorkerEvent {
     },
     ProjectUploaded {
         host: String,
+        uploaded_xml: String,
         result: Result<loxone_core::miniserver::UploadProjectResult, String>,
+    },
+    UploadBlockedByNewerServerVersion {
+        host: String,
+        conflict: Box<loxone_core::merge::ServerVersionConflict>,
     },
     LiveValuesPolled(Vec<(String, LiveControlSnapshot)>),
     LiveCommandSent(Result<(String, LiveControlSnapshot), String>),
@@ -61,6 +66,8 @@ pub enum PendingDirtyAction {
 
 pub struct LoxonePortableApp {
     pub project: Option<LoxoneProject>,
+    pub base_project: Option<LoxoneProject>,
+    pub last_synced_remote_xml: Option<String>,
     pub loaded_path: Option<PathBuf>,
     pub project_launcher: ProjectLauncherState,
     pub is_dirty: bool,
@@ -104,6 +111,8 @@ impl Default for LoxonePortableApp {
 
         Self {
             project: None,
+            base_project: None,
+            last_synced_remote_xml: None,
             loaded_path: None,
             project_launcher: ProjectLauncherState::default(),
             is_dirty: false,
@@ -155,9 +164,12 @@ impl LoxonePortableApp {
                 record_recent_project(path);
                 self.project_launcher.refresh();
                 self.miniserver_modal.apply_project_fallback_host(Some(&proj));
+                self.miniserver_modal.pending_conflict = None;
                 self.live_store = LiveValueStore::default();
                 self.live_store.seed_project_defaults(&proj);
                 self.last_live_poll = None;
+                self.base_project = Some(proj.clone());
+                self.last_synced_remote_xml = None;
                 self.project = Some(proj);
                 self.loaded_path = Some(path.to_path_buf());
                 self.is_dirty = false;
@@ -187,9 +199,12 @@ impl LoxonePortableApp {
     ) -> Result<(), String> {
         let proj = parse_loxone_xml(xml).map_err(|e| format!("Failed to parse XML: {}", e))?;
         self.miniserver_modal.apply_project_fallback_host(Some(&proj));
+        self.miniserver_modal.pending_conflict = None;
         self.live_store = LiveValueStore::default();
         self.live_store.seed_project_defaults(&proj);
         self.last_live_poll = None;
+        self.base_project = Some(proj.clone());
+        self.last_synced_remote_xml = Some(xml.to_string());
         self.project = Some(proj);
         self.loaded_path = None;
         self.is_dirty = false;
@@ -313,6 +328,9 @@ impl LoxonePortableApp {
 
     pub fn show_project_launcher_immediate(&mut self) {
         self.project = None;
+        self.base_project = None;
+        self.last_synced_remote_xml = None;
+        self.miniserver_modal.pending_conflict = None;
         self.loaded_path = None;
         self.is_dirty = false;
         self.undo_stack.clear();
@@ -403,12 +421,63 @@ impl LoxonePortableApp {
                 self.start_download_worker(creds, Some(filename));
             }
             MiniserverModalAction::UploadProject { creds, restart_sps } => {
-                self.start_upload_worker(creds, restart_sps);
+                self.start_upload_worker(creds, restart_sps, false);
+            }
+            MiniserverModalAction::PullAndMergeServerConflict => {
+                if let Err(err) = self.pull_and_merge_server_conflict() {
+                    self.miniserver_modal.status_message = Some(err.clone());
+                    self.error_banner = Some(err);
+                }
             }
         }
     }
 
-    fn start_upload_worker(&mut self, creds: MiniserverCredentials, restart_sps: bool) {
+    pub fn pull_and_merge_server_conflict(
+        &mut self,
+    ) -> Result<loxone_core::merge::MergeSummary, String> {
+        let conflict = self
+            .miniserver_modal
+            .pending_conflict
+            .take()
+            .ok_or_else(|| "No pending server version conflict to pull and merge.".to_string())?;
+        let remote_proj = parse_loxone_xml(&conflict.remote_xml)
+            .map_err(|e| format!("Failed to parse server XML: {}", e))?;
+        let proj = self
+            .project
+            .as_mut()
+            .ok_or_else(|| "No local project loaded to merge into.".to_string())?;
+
+        let summary = loxone_core::merge::merge_remote_project_server_priority(
+            proj,
+            &remote_proj,
+            self.base_project.as_ref(),
+        )
+        .map_err(|e| format!("Failed to merge server project: {}", e))?;
+        self.live_store.seed_project_defaults(proj);
+        self.base_project = Some(remote_proj);
+        self.last_synced_remote_xml = Some(conflict.remote_xml);
+        self.is_dirty = true;
+        self.cached_diagnostics.clear();
+        self.error_banner = None;
+
+        let msg = format!(
+            "Pulled & merged {} with server priority ({} server change(s) applied, {} local addition(s) preserved, {} local edit(s) preserved, {} conflict(s) resolved in server's favor). You can now upload safely.",
+            conflict.remote_filename,
+            summary.server_items_applied,
+            summary.local_additions_preserved,
+            summary.local_edits_preserved,
+            summary.conflicts_resolved_for_server
+        );
+        self.miniserver_modal.status_message = Some(msg);
+        Ok(summary)
+    }
+
+    fn start_upload_worker(
+        &mut self,
+        creds: MiniserverCredentials,
+        restart_sps: bool,
+        force_overwrite: bool,
+    ) {
         self.persist_profile_best_effort();
         let Some(proj) = &mut self.project else {
             self.miniserver_modal.status_message =
@@ -430,6 +499,11 @@ impl LoxonePortableApp {
         } else {
             proj.raw_xml.clone().unwrap_or_default()
         };
+        let base_xml = self
+            .base_project
+            .as_ref()
+            .and_then(|bp| bp.raw_xml.clone());
+        let last_synced_xml = self.last_synced_remote_xml.clone();
         let project_name = if proj.metadata.title.trim().is_empty() {
             "Project".to_string()
         } else {
@@ -438,17 +512,44 @@ impl LoxonePortableApp {
         let host = creds.host.clone();
         self.connection_status = ConnectionStatus::Connecting {
             host: host.clone(),
-            message: "Uploading project to Miniserver…".to_string(),
+            message: "Checking server version & uploading project…".to_string(),
         };
         self.miniserver_modal.status_message = Some(format!(
-            "Saving local safety backup and uploading {} to {}…",
+            "Checking Miniserver version and uploading {} to {}…",
             project_name, host
         ));
         let tx = self.worker_tx.clone();
         std::thread::spawn(move || {
-            let result = MiniserverClient::upload_project_xml(&creds, &xml, None, restart_sps)
-                .map_err(|e| e.to_string());
-            let _ = tx.send(MiniserverWorkerEvent::ProjectUploaded { host, result });
+            match MiniserverClient::upload_project_xml_with_safeguard(
+                &creds,
+                &xml,
+                base_xml.as_deref(),
+                last_synced_xml.as_deref(),
+                force_overwrite,
+                None,
+                restart_sps,
+            ) {
+                Ok(res) => {
+                    let _ = tx.send(MiniserverWorkerEvent::ProjectUploaded {
+                        host,
+                        uploaded_xml: xml,
+                        result: Ok(res),
+                    });
+                }
+                Err(loxone_core::miniserver::MiniserverError::RemoteVersionNewer(conflict)) => {
+                    let _ = tx.send(MiniserverWorkerEvent::UploadBlockedByNewerServerVersion {
+                        host,
+                        conflict,
+                    });
+                }
+                Err(e) => {
+                    let _ = tx.send(MiniserverWorkerEvent::ProjectUploaded {
+                        host,
+                        uploaded_xml: xml,
+                        result: Err(e.to_string()),
+                    });
+                }
+            }
         });
     }
 
@@ -527,11 +628,20 @@ impl LoxonePortableApp {
                         self.miniserver_modal.status_message = Some(err);
                     }
                 },
-                MiniserverWorkerEvent::ProjectUploaded { host, result } => match result {
+                MiniserverWorkerEvent::ProjectUploaded {
+                    host,
+                    uploaded_xml,
+                    result,
+                } => match result {
                     Ok(res) => {
                         self.is_dirty = false;
+                        self.miniserver_modal.pending_conflict = None;
                         self.miniserver_modal.show_upload_panel = false;
                         self.miniserver_modal.confirm_upload = false;
+                        self.last_synced_remote_xml = Some(uploaded_xml.clone());
+                        if let Ok(parsed) = parse_loxone_xml(&uploaded_xml) {
+                            self.base_project = Some(parsed);
+                        }
                         let restart_suffix = if res.restarted_sps {
                             " · SPS restarted"
                         } else {
@@ -560,6 +670,19 @@ impl LoxonePortableApp {
                         self.miniserver_modal.status_message = Some(err);
                     }
                 },
+                MiniserverWorkerEvent::UploadBlockedByNewerServerVersion { host, conflict } => {
+                    let msg = format!(
+                        "Upload blocked: Miniserver has a newer version ({})",
+                        conflict.diff.reason
+                    );
+                    self.connection_status = ConnectionStatus::Error {
+                        host,
+                        error: msg.clone(),
+                    };
+                    self.miniserver_modal.pending_conflict = Some(*conflict);
+                    self.miniserver_modal.is_open = true;
+                    self.miniserver_modal.status_message = Some(msg);
+                }
                 MiniserverWorkerEvent::LiveValuesPolled(updates) => {
                     self.live_poll_in_flight = false;
                     for (id, snap) in updates {
@@ -644,69 +767,12 @@ impl LoxonePortableApp {
             "Off" | "off" => "0",
             other => other,
         };
-        if let Some(pin_key) = &cmd.pin_key {
-            self.live_store
-                .set_pin_override(&cmd.control_uuid, pin_key, optimistic_val);
-        } else {
-            self.live_store
-                .set_control_value(&cmd.control_uuid, optimistic_val);
-            self.live_store
-                .set_pin_override(&cmd.control_uuid, "O", optimistic_val);
-            self.live_store
-                .set_pin_override(&cmd.control_uuid, "Q", optimistic_val);
-            self.live_store
-                .set_pin_override(&cmd.control_uuid, "AQ", optimistic_val);
-        }
-
-        let mut target_io_id = cmd.control_uuid.clone();
-        if let Some(proj) = &self.project {
-            // Find if cmd.control_uuid is a PageBlock with a ref_uuid and badge
-            let mut matched_ref_and_badge: Option<(String, String)> = None;
-            for page in &proj.pages {
-                if let Some(blk) = page.blocks.iter().find(|b| b.uuid == cmd.control_uuid) {
-                    if let Some(ref_u) = &blk.ref_uuid {
-                        let badge = loxone_core::miniserver::ref_bar_capsule_badge(blk, page, proj);
-                        matched_ref_and_badge = Some((ref_u.clone(), badge));
-                        target_io_id = ref_u.clone();
-                    }
-                    break;
-                }
-            }
-
-            if let Some((ref_u, badge)) = matched_ref_and_badge {
-                // Count how many distinct badges share `ref_u` across the project
-                let mut shares_multi_channel_device = false;
-                for page in &proj.pages {
-                    for blk in &page.blocks {
-                        if blk.ref_uuid.as_deref() == Some(ref_u.as_str()) {
-                            let other_badge =
-                                loxone_core::miniserver::ref_bar_capsule_badge(blk, page, proj);
-                            if other_badge != badge {
-                                shares_multi_channel_device = true;
-                            } else if blk.uuid != cmd.control_uuid {
-                                self.live_store.set_control_value(&blk.uuid, optimistic_val);
-                            }
-                        }
-                    }
-                }
-                if !shares_multi_channel_device {
-                    self.live_store.set_control_value(&ref_u, optimistic_val);
-                    self.live_store
-                        .set_pin_override(&ref_u, "O", optimistic_val);
-                    self.live_store
-                        .set_pin_override(&ref_u, "Q", optimistic_val);
-                }
-            } else {
-                // cmd.control_uuid may be a TreeNode UUID directly
-                for page in &proj.pages {
-                    for blk in &page.blocks {
-                        if blk.ref_uuid.as_deref() == Some(cmd.control_uuid.as_str()) {
-                            self.live_store.set_control_value(&blk.uuid, optimistic_val);
-                        }
-                    }
-                }
-            }
-        }
+        let target_io_id = self.live_store.apply_interactive_command(
+            self.project.as_ref(),
+            &cmd.control_uuid,
+            cmd.pin_key.as_deref(),
+            optimistic_val,
+        );
 
         if self.connection_status.is_connected() && !self.miniserver_modal.host.trim().is_empty() {
             let creds = MiniserverCredentials {
@@ -2761,6 +2827,90 @@ mod tests {
             app.pending_dirty_action,
             Some(PendingDirtyAction::OpenFile)
         ));
+    }
+
+    #[test]
+    fn test_app_upload_conflict_safeguard_and_pull_merge_server_priority() {
+        let base_xml = r#"<?xml version="1.0" encoding="utf-8"?>
+<ControlList Version="1">
+	<C Type="Document" Title="Safeguard Home" U="doc-1" ConfigVersion="16011106" SL="5" CDate="2026-10-16 10:00:00" DateS="100">
+		<C Type="Program" Title="Program" U="prog-1">
+			<C Type="Page" Title="Living" U="page-1">
+				<C Type="Switch" Title="Base Lamp" U="blk-1" Px="100" Py="100"/>
+			</C>
+		</C>
+	</C>
+</ControlList>"#;
+        let server_xml = r#"<?xml version="1.0" encoding="utf-8"?>
+<ControlList Version="1">
+	<C Type="Document" Title="Safeguard Home" U="doc-1" ConfigVersion="16011106" SL="6" CDate="2026-10-17 12:00:00" DateS="200">
+		<C Type="Program" Title="Program" U="prog-1">
+			<C Type="Page" Title="Living" U="page-1">
+				<C Type="Switch" Title="Server Priority Lamp" U="blk-1" Px="100" Py="100"/>
+				<C Type="Memo" Title="Server Added Memo" U="blk-server" Px="400" Py="100"/>
+			</C>
+		</C>
+	</C>
+</ControlList>"#;
+
+        let mut app = LoxonePortableApp::default();
+        app.load_downloaded_xml("192.168.1.77", "sps_160_20261016100000.zip", base_xml)
+            .unwrap();
+
+        // User makes a conflicting edit on blk-1 AND adds a new local block on page-1
+        app.handle_canvas_action(CanvasAction::RenameBlockTitle {
+            block_uuid: "blk-1".to_string(),
+            new_title: "Local Conflicting Lamp".to_string(),
+        });
+        app.handle_insert_selection(InsertModalSelection::NewFunctionBlock {
+            type_name: "Pushbutton".to_string(),
+            title: "Local Added Button".to_string(),
+            px: 200.0,
+            py: 300.0,
+        });
+
+        let local_proj = app.project.as_ref().unwrap();
+        let remote_proj = parse_loxone_xml(server_xml).unwrap();
+        let diff = loxone_core::merge::check_server_newer_version(
+            local_proj,
+            &remote_proj,
+            "sps_160_20261017120000.zip",
+            app.base_project.as_ref(),
+            app.last_synced_remote_xml.as_deref(),
+        )
+        .expect("server version must be detected as newer");
+        let conflict = loxone_core::merge::ServerVersionConflict {
+            remote_filename: "sps_160_20261017120000.zip".to_string(),
+            remote_xml: server_xml.to_string(),
+            diff,
+        };
+
+        app.worker_tx
+            .send(MiniserverWorkerEvent::UploadBlockedByNewerServerVersion {
+                host: "192.168.1.77".to_string(),
+                conflict: Box::new(conflict),
+            })
+            .unwrap();
+        app.poll_miniserver_worker();
+
+        assert!(app.miniserver_modal.is_open);
+        assert!(app.miniserver_modal.pending_conflict.is_some());
+
+        // Trigger Pull & Merge into My Project (Server Priority)
+        app.execute_modal_action(MiniserverModalAction::PullAndMergeServerConflict);
+        assert!(app.miniserver_modal.pending_conflict.is_none());
+
+        let merged = app.project.as_ref().unwrap();
+        assert_eq!(merged.metadata.save_level, Some(6));
+        assert_eq!(merged.metadata.date_s, Some(200));
+        let page = &merged.pages[0];
+        let blk1 = page.blocks.iter().find(|b| b.uuid == "blk-1").unwrap();
+        // Server wins on conflict!
+        assert_eq!(blk1.title, "Server Priority Lamp");
+        // Server-added block is pulled in
+        assert!(page.blocks.iter().any(|b| b.uuid == "blk-server"));
+        // Local-added block is preserved
+        assert!(page.blocks.iter().any(|b| b.title == "Local Added Button"));
     }
 }
 

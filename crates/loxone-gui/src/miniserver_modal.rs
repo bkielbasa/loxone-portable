@@ -1,4 +1,5 @@
 use egui::{Align2, Color32, Context, Frame, Id, Key, Margin, Order, RichText, ScrollArea, Stroke, Vec2};
+use loxone_core::merge::ServerVersionConflict;
 use loxone_core::miniserver::{
     BackupSnapshot, ConnectionProfile, ConnectionStatus, MiniserverCredentials,
 };
@@ -20,6 +21,7 @@ pub enum MiniserverModalAction {
         creds: MiniserverCredentials,
         restart_sps: bool,
     },
+    PullAndMergeServerConflict,
     Close,
 }
 
@@ -36,6 +38,7 @@ pub struct MiniserverModalState {
     pub restart_sps_after_upload: bool,
     pub snapshots: Vec<BackupSnapshot>,
     pub status_message: Option<String>,
+    pub pending_conflict: Option<ServerVersionConflict>,
 }
 
 impl Default for MiniserverModalState {
@@ -52,6 +55,7 @@ impl Default for MiniserverModalState {
             restart_sps_after_upload: true,
             snapshots: Vec::new(),
             status_message: None,
+            pending_conflict: None,
         }
     }
 }
@@ -74,6 +78,7 @@ impl MiniserverModalState {
             restart_sps_after_upload: true,
             snapshots: Vec::new(),
             status_message: None,
+            pending_conflict: None,
         }
     }
 
@@ -347,6 +352,121 @@ pub fn render_miniserver_modal(
                         }
                     });
 
+                    // Newer Server Version Safeguard Card
+                    if let Some(conflict) = state.pending_conflict.clone() {
+                        ui.add_space(10.0);
+                        let warn_amber = Color32::from_rgb(240, 128, 60);
+                        Frame::new()
+                            .fill(Color32::from_rgb(44, 28, 22))
+                            .stroke(Stroke::new(1.5_f32, warn_amber))
+                            .corner_radius(6)
+                            .inner_margin(Margin::symmetric(10, 8))
+                            .show(ui, |ui| {
+                                ui.set_width(512.0);
+                                ui.label(
+                                    RichText::new("⚠ Newer Version Detected on Miniserver — Upload Blocked")
+                                        .size(12.5)
+                                        .color(warn_amber)
+                                        .strong(),
+                                );
+                                ui.add_space(3.0);
+                                ui.label(
+                                    RichText::new(&conflict.diff.reason)
+                                        .size(11.5)
+                                        .color(TEXT_PRIMARY)
+                                        .strong(),
+                                );
+                                ui.add_space(3.0);
+                                let remote_sl = conflict
+                                    .diff
+                                    .remote_save_level
+                                    .map(|v| format!("SL={}", v))
+                                    .unwrap_or_else(|| "SL=n/a".to_string());
+                                let local_sl = conflict
+                                    .diff
+                                    .local_save_level
+                                    .map(|v| format!("SL={}", v))
+                                    .unwrap_or_else(|| "SL=n/a".to_string());
+                                ui.label(
+                                    RichText::new(format!(
+                                        "Server: {} • {} ({})   |   Local: {} • {}",
+                                        remote_sl,
+                                        if conflict.diff.remote_c_date.is_empty() {
+                                            "no CDate"
+                                        } else {
+                                            &conflict.diff.remote_c_date
+                                        },
+                                        conflict.remote_filename,
+                                        local_sl,
+                                        if conflict.diff.local_c_date.is_empty() {
+                                            "no CDate"
+                                        } else {
+                                            &conflict.diff.local_c_date
+                                        },
+                                    ))
+                                    .size(11.0)
+                                    .color(TEXT_MUTED),
+                                );
+                                ui.label(
+                                    RichText::new(format!(
+                                        "Diff summary: {} server block(s) added/modified, {} removed, {} tree item(s) changed, {} page(s) changed • {} local edit(s)",
+                                        conflict.diff.remote_modified_or_added_blocks,
+                                        conflict.diff.remote_removed_blocks,
+                                        conflict.diff.remote_modified_or_added_tree_nodes,
+                                        conflict.diff.remote_modified_or_added_pages,
+                                        conflict.diff.local_unmerged_edits,
+                                    ))
+                                    .size(11.0)
+                                    .color(TEXT_MUTED),
+                                );
+                                if !conflict.diff.change_highlights.is_empty() {
+                                    ui.add_space(3.0);
+                                    for item in conflict.diff.change_highlights.iter().take(5) {
+                                        ui.label(
+                                            RichText::new(format!(" • {}", item))
+                                                .size(10.5)
+                                                .color(TEXT_PRIMARY),
+                                        );
+                                    }
+                                }
+                                ui.add_space(5.0);
+                                ui.label(
+                                    RichText::new(
+                                        "Please pull the difference from the Miniserver into your project before uploading. What is on the server takes higher priority on any conflict, while preserving your non-conflicting local additions.",
+                                    )
+                                    .size(11.0)
+                                    .color(TEXT_MUTED),
+                                );
+                                ui.add_space(6.0);
+                                ui.horizontal(|ui| {
+                                    if ui
+                                        .button(
+                                            RichText::new("⬇ Pull & Merge into My Project (Server Priority)")
+                                                .size(12.0)
+                                                .color(ACCENT_BLUE)
+                                                .strong(),
+                                        )
+                                        .on_hover_text(
+                                            "Merge the newer Miniserver version into your current project with Server Priority",
+                                        )
+                                        .clicked()
+                                    {
+                                        action = Some(MiniserverModalAction::PullAndMergeServerConflict);
+                                    }
+                                    if ui
+                                        .button(
+                                            RichText::new("Dismiss")
+                                                .size(11.0)
+                                                .color(TEXT_MUTED),
+                                        )
+                                        .clicked()
+                                    {
+                                        state.pending_conflict = None;
+                                    }
+                                });
+                            });
+                    }
+
                     // Safe Hardware Deployment (Upload to Miniserver) Section
                     if state.show_upload_panel {
                         ui.add_space(10.0);
@@ -366,7 +486,7 @@ pub fn render_miniserver_modal(
                                 ui.add_space(4.0);
                                 ui.label(
                                     RichText::new(
-                                        "1. Automatically downloads & saves a local safety backup of the currently running Miniserver program to ~/.config/loxone-portable/backups/.\n2. Compresses the active project into .LoxCC and uploads sps_new.zip to /prog/.",
+                                        "1. Checks if the Miniserver already has a newer version and safeguards against accidental overwrite.\n2. Automatically saves a local safety backup of the running Miniserver program to ~/.config/loxone-portable/backups/.\n3. Compresses the active project into .LoxCC and uploads sps_new.zip to /prog/.",
                                     )
                                     .size(11.0)
                                     .color(TEXT_MUTED),

@@ -50,6 +50,13 @@ pub fn parse_loxone_xml(xml: &str) -> Result<LoxoneProject, LoxoneError> {
         uuid: doc_node.attr("U").unwrap_or_default().to_string(),
         config_version: doc_node.attr("ConfigVersion").unwrap_or_default().to_string(),
         control_list_version,
+        c_date: doc_node.attr("CDate").unwrap_or_default().to_string(),
+        date_s: doc_node
+            .attr("DateS")
+            .and_then(|s| s.trim().parse::<u64>().ok()),
+        save_level: doc_node
+            .attr("SL")
+            .and_then(|s| s.trim().parse::<u32>().ok()),
         creator: doc_node.attr("Creator").unwrap_or_default().to_string(),
         street: doc_node.attr("Street").unwrap_or_default().to_string(),
         town: doc_node.attr("Town").unwrap_or_default().to_string(),

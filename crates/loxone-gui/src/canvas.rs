@@ -1268,6 +1268,18 @@ pub fn render_page_canvas(
                 });
                 viewport.interaction.context_menu = None;
             } else if let Some(hit_layout) = layouts.iter().rev().find(|l| l.rect.contains(ppos)) {
+                let pressed_on_live_control = live_store.is_some()
+                    && hit_layout.block.is_ref_bar()
+                    && compute_ref_bar_chrome_layout(
+                        hit_layout.block,
+                        hit_layout.rect,
+                        viewport.zoom,
+                        true,
+                        page,
+                        project,
+                    )
+                    .control_rect
+                    .is_some_and(|cr| cr.contains(ppos));
                 let hit_uuid = hit_layout.block.uuid.clone();
                 let handle_sz = (16.0 * viewport.zoom).clamp(12.0, 22.0);
                 let resize_corner = Rect::from_min_max(
@@ -1277,7 +1289,9 @@ pub fn render_page_canvas(
                     ),
                     hit_layout.rect.max,
                 );
-                if hit_layout.block.is_note() && resize_corner.contains(ppos) {
+                if pressed_on_live_control {
+                    viewport.interaction.context_menu = None;
+                } else if hit_layout.block.is_note() && resize_corner.contains(ppos) {
                     let start_px2 = hit_layout.block.px2.max(hit_layout.block.px + 512.0);
                     let start_py2 = hit_layout.block.py2.max(hit_layout.block.py + 192.0);
                     viewport.interaction.resizing_block = Some(BlockResizeState {
@@ -1583,18 +1597,26 @@ pub fn render_page_canvas(
                         let src_sig = store
                             .resolve_pin_by_uuid(&link.source_pin_uuid, page, project, 0)
                             .unwrap_or_else(|| dst_sig.clone());
-                        live_wire_active = src_sig.is_active || dst_sig.is_active;
+                        let (src_label, dst_label) = if block.is_output_ref_bar()
+                            && dst_sig.is_active != src_sig.is_active
+                        {
+                            live_wire_active = dst_sig.is_active;
+                            (dst_sig.formatted.clone(), dst_sig.formatted)
+                        } else {
+                            live_wire_active = src_sig.is_active || dst_sig.is_active;
+                            (src_sig.formatted, dst_sig.formatted)
+                        };
                         live_wire_labels.push((
                             Pos2::new(src_pos.x + 7.5 * viewport.zoom, src_pos.y),
                             Align2::LEFT_CENTER,
-                            src_sig.formatted.clone(),
+                            src_label,
                             live_wire_active,
                         ));
                         if src_pos.distance(dst_pos) > 74.0 * viewport.zoom {
                             live_wire_labels.push((
                                 Pos2::new(dst_pos.x - 7.5 * viewport.zoom, dst_pos.y),
                                 Align2::RIGHT_CENTER,
-                                dst_sig.formatted,
+                                dst_label,
                                 live_wire_active,
                             ));
                         }
@@ -1816,7 +1838,13 @@ pub fn render_page_canvas(
                     ctrl_hovered,
                     viewport.zoom,
                 );
-                if clicked && pointer_pos.is_some_and(|pos| ctrl_rect.contains(pos)) {
+                let ctrl_activated = (clicked && pointer_pos.is_some_and(|pos| ctrl_rect.contains(pos)))
+                    || (response.drag_stopped_by(egui::PointerButton::Primary)
+                        && ui
+                            .input(|i| i.pointer.press_origin())
+                            .is_some_and(|p| ctrl_rect.contains(p))
+                        && pointer_pos.is_some_and(|pos| ctrl_rect.contains(pos)));
+                if ctrl_activated {
                     clicked_any_pin_or_wire = true;
                     clicked_any_block = true;
                     viewport.interaction.selected_blocks = vec![block.uuid.clone()];

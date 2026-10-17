@@ -86,6 +86,8 @@ pub enum MiniserverError {
     Io(#[from] std::io::Error),
     #[error("Profile JSON error: {0}")]
     Json(#[from] serde_json::Error),
+    #[error("Miniserver has a newer project version ({}): pull and merge server changes before uploading", .0.diff.reason)]
+    RemoteVersionNewer(Box<crate::merge::ServerVersionConflict>),
 }
 
 pub fn parse_prog_listing(listing: &str) -> Vec<BackupSnapshot> {
@@ -722,11 +724,64 @@ impl MiniserverClient {
         backup_dir: Option<&Path>,
         restart_sps: bool,
     ) -> Result<UploadProjectResult, MiniserverError> {
+        Self::upload_project_xml_with_safeguard(
+            creds,
+            xml,
+            None,
+            None,
+            false,
+            backup_dir,
+            restart_sps,
+        )
+    }
+
+    /// Uploads a project XML configuration to the Miniserver with a newer-version safeguard:
+    /// 1. Downloads the currently running configuration first and checks if the server holds a
+    ///    newer version or unmerged changes (unless `force_overwrite` is true). If so, blocks the
+    ///    upload with `MiniserverError::RemoteVersionNewer` so the user can pull & merge first.
+    /// 2. Writes a timestamped safety backup of the running configuration.
+    /// 3. Compresses the new XML into `sps0.LoxCC` and packages `sps_new.zip`.
+    /// 4. Uploads `sps_new.zip` (and `sps0.LoxCC`) to `/prog/`.
+    /// 5. Optionally triggers `/dev/sps/restart` so the Miniserver loads the new configuration.
+    pub fn upload_project_xml_with_safeguard(
+        creds: &MiniserverCredentials,
+        xml: &str,
+        base_xml: Option<&str>,
+        last_synced_remote_xml: Option<&str>,
+        force_overwrite: bool,
+        backup_dir: Option<&Path>,
+        restart_sps: bool,
+    ) -> Result<UploadProjectResult, MiniserverError> {
         let base_url = Self::normalize_base_url(&creds.host)?;
 
-        // Step 1: Pre-upload safety backup of currently active configuration on Miniserver
+        // Step 1: Download currently active configuration on Miniserver for safeguard check & safety backup
         let mut backup_path = None;
         if let Ok((orig_filename, running_xml)) = Self::download_snapshot_xml(creds, None) {
+            if !force_overwrite {
+                if let (Ok(local_proj), Ok(remote_proj)) = (
+                    crate::parser::parse_loxone_xml(xml),
+                    crate::parser::parse_loxone_xml(&running_xml),
+                ) {
+                    let base_proj =
+                        base_xml.and_then(|b| crate::parser::parse_loxone_xml(b).ok());
+                    if let Some(diff) = crate::merge::check_server_newer_version(
+                        &local_proj,
+                        &remote_proj,
+                        &orig_filename,
+                        base_proj.as_ref(),
+                        last_synced_remote_xml,
+                    ) {
+                        return Err(MiniserverError::RemoteVersionNewer(Box::new(
+                            crate::merge::ServerVersionConflict {
+                                remote_filename: orig_filename,
+                                remote_xml: running_xml,
+                                diff,
+                            },
+                        )));
+                    }
+                }
+            }
+
             let resolved_dir = backup_dir
                 .map(Path::to_path_buf)
                 .or_else(ConnectionProfile::default_backup_dir);
@@ -1015,12 +1070,17 @@ pub fn format_live_signal(
     }
 
     // 7. Numeric / Analog pins (I1, I2, HC1, HC2, V1, V2, H1, H2, C1, C2, AQ, AI, Zawór)
-    let is_analog_pin = matches!(
-        key_upper.as_str(),
-        "I1" | "I2" | "I3" | "I4" | "HC1" | "HC2" | "V1" | "V2" | "H1" | "H2" | "C1" | "C2" | "AQ" | "AI" | "VQ" | "VAL" | "POS"
-    ) || key_upper.starts_with("AI")
-        || key_upper.starts_with("AQ")
-        || title_lower.contains("zawór");
+    let is_light_controller_aq = matches!(
+        hint_block_type,
+        "LightController2" | "LightControllerV2" | "LightController"
+    ) && key_upper.starts_with("AQ");
+    let is_analog_pin = !is_light_controller_aq
+        && (matches!(
+            key_upper.as_str(),
+            "I1" | "I2" | "I3" | "I4" | "HC1" | "HC2" | "V1" | "V2" | "H1" | "H2" | "C1" | "C2" | "AQ" | "AI" | "VQ" | "VAL" | "POS"
+        ) || key_upper.starts_with("AI")
+            || key_upper.starts_with("AQ")
+            || title_lower.contains("zawór"));
 
     if let Some(num) = parse_numeric_prefix(trimmed) {
         if is_analog_pin || (num != 0.0 && num != 1.0) {
@@ -1108,6 +1168,7 @@ pub fn loxone_short_pin_label<'a>(block_type: &str, pin_key: &'a str) -> &'a str
         (_, "Reset") => "R",
         (_, "VolUp") => "V+",
         (_, "VolDown") => "V-",
+        (_, "InputTrigger") => "Tr",
         ("HeatIRoomController2", "Dem") => "H",
         ("HeatIRoomController2", "Cool") => "C",
         ("HeatIRoomController2", "AQh") | ("HeatIRoomController2", "H1") => "V1",
@@ -1152,7 +1213,7 @@ pub fn ref_bar_capsule_badge(
                 for link in &dst_pin.incoming_links {
                     if block.pins.iter().any(|p| p.uuid == link.source_pin_uuid) {
                         let short = loxone_short_pin_label(&other.block_type, &dst_pin.key);
-                        if !short.is_empty() {
+                        if !short.is_empty() && short.chars().count() <= 4 {
                             return short.to_string();
                         }
                     }
@@ -1223,13 +1284,13 @@ pub fn ref_bar_capsule_badge(
 /// ("small block") when LiveView is active (matching `on.png`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RefBarLiveControlKind {
-    /// Pill toggle switch (`(●)` / `(○)`) for binary/presence/switch states (`P`, `I`, `Q`, `Sps`, etc.).
+    /// Pill toggle switch (`(●)` / `(○)`) for binary/presence/switch states (`P`, `I`, `Q`, `SMA`, `Sps`, etc.).
     ToggleSwitch,
     /// Momentary pushbutton (`(●)` circle) for pulse/trigger/movement inputs (`M`, `Tr`, `R`, `T`, `I+`).
     Pushbutton,
     /// 5-button touch pad icon (`❖`) for Loxone Touch `T5` inputs.
     Touch5Pad,
-    /// Numeric / float value badge (`#`) for analog sensors and outputs (`Br`, `ϑ`, `ϑc`, `H`, `VQ`, `AQ`, `AI`, `SMA`).
+    /// Numeric / float value badge (`#`) for analog sensors and outputs (`Br`, `ϑ`, `ϑc`, `H`, `VQ`, `AQ`, `AI`).
     NumericValue,
     /// No inline interactive control on the pill.
     None,
@@ -1252,7 +1313,7 @@ pub fn classify_ref_bar_live_control(
     let badge_upper = badge_trim.to_uppercase();
     if matches!(
         badge_upper.as_str(),
-        "BR" | "H" | "VQ" | "AQ" | "AI" | "V1" | "V2" | "SMA"
+        "BR" | "H" | "VQ" | "AQ" | "AI" | "V1" | "V2"
     ) || badge_trim.contains('ϑ')
     {
         return RefBarLiveControlKind::NumericValue;
@@ -1421,6 +1482,166 @@ impl LiveValueStore {
         snap.primary_value = Some(raw_value.to_string());
     }
 
+    /// Applies an interactive user command (toggle switch, pushbutton, T5 pad, or numeric input)
+    /// and synchronizes connected upstream/downstream pins on the schematic so wires, function
+    /// block outputs, and reference pills stay consistent. Returns the resolved Miniserver IO target UUID.
+    pub fn apply_interactive_command(
+        &mut self,
+        project: Option<&crate::model::LoxoneProject>,
+        control_uuid: &str,
+        pin_key: Option<&str>,
+        raw_value: &str,
+    ) -> String {
+        if let Some(pk) = pin_key {
+            self.set_pin_override(control_uuid, pk, raw_value);
+            return control_uuid.to_string();
+        }
+
+        self.set_control_value(control_uuid, raw_value);
+        for k in ["O", "Q", "AQ", "AI", "I"] {
+            self.set_pin_override(control_uuid, k, raw_value);
+        }
+
+        let mut target_io_id = control_uuid.to_string();
+        let Some(proj) = project else {
+            return target_io_id;
+        };
+
+        let mut matched_info: Option<(usize, String, Option<String>, String)> = None;
+        for (page_idx, page) in proj.pages.iter().enumerate() {
+            if let Some(blk) = page.blocks.iter().find(|b| b.uuid == control_uuid) {
+                let badge = ref_bar_capsule_badge(blk, page, proj);
+                if let Some(ref_u) = &blk.ref_uuid {
+                    target_io_id = ref_u.clone();
+                }
+                matched_info = Some((
+                    page_idx,
+                    blk.title.clone(),
+                    blk.ref_uuid.clone(),
+                    badge.clone(),
+                ));
+
+                if !blk.is_input_ref_bar() {
+                    // Direct toggle on an OutputRef / Memory: synchronize the connected upstream
+                    // source pin(s) so both ends of the wire and the upstream pin dot match!
+                    let mut upstream_pins: Vec<(String, String)> = Vec::new();
+                    for pin in &blk.pins {
+                        for link in &pin.incoming_links {
+                            if link.is_hidden() {
+                                continue;
+                            }
+                            if let Some(src_blk) = page.blocks.iter().find(|b| {
+                                b.pins.iter().any(|p| p.uuid == link.source_pin_uuid)
+                            }) {
+                                if let Some(src_pin) =
+                                    src_blk.pins.iter().find(|p| p.uuid == link.source_pin_uuid)
+                                {
+                                    upstream_pins
+                                        .push((src_blk.uuid.clone(), src_pin.key.clone()));
+                                }
+                            } else if let Some(meta) =
+                                proj.xref.pins_by_uuid.get(&link.source_pin_uuid)
+                            {
+                                upstream_pins
+                                    .push((meta.owner_uuid.clone(), meta.pin_key.clone()));
+                            }
+                        }
+                    }
+                    let upstream_val = if badge == "SMA" {
+                        match raw_value {
+                            "1" | "On" | "on" => "WW(100%)",
+                            "0" | "Off" | "off" => "WW(0%)",
+                            other => other,
+                        }
+                    } else {
+                        raw_value
+                    };
+                    for (src_blk_u, src_pin_k) in upstream_pins {
+                        self.set_pin_override(&src_blk_u, &src_pin_k, upstream_val);
+                    }
+                } else {
+                    // Toggling an InputRef: clear stale direct overrides on downstream function
+                    // block output pins and OutputRef bars on this page so the new input propagates!
+                    let input_pin_uuids: Vec<String> =
+                        blk.pins.iter().map(|p| p.uuid.clone()).collect();
+                    let mut affected_block_uuids: Vec<String> = Vec::new();
+                    for other in &page.blocks {
+                        if other.pins.iter().any(|dp| {
+                            dp.incoming_links
+                                .iter()
+                                .any(|l| input_pin_uuids.contains(&l.source_pin_uuid))
+                        }) {
+                            affected_block_uuids.push(other.uuid.clone());
+                        }
+                    }
+                    let mut affected_out_pin_uuids: Vec<String> = Vec::new();
+                    for other in &page.blocks {
+                        if affected_block_uuids.contains(&other.uuid) {
+                            for p in &other.pins {
+                                affected_out_pin_uuids.push(p.uuid.clone());
+                                self.pin_overrides
+                                    .remove(&(other.uuid.clone(), p.key.clone()));
+                            }
+                            self.pin_overrides
+                                .remove(&(other.uuid.clone(), String::new()));
+                        }
+                    }
+                    for other in &page.blocks {
+                        if other.is_output_ref_bar()
+                            && other.pins.iter().any(|dp| {
+                                dp.incoming_links.iter().any(|l| {
+                                    input_pin_uuids.contains(&l.source_pin_uuid)
+                                        || affected_out_pin_uuids.contains(&l.source_pin_uuid)
+                                })
+                            })
+                        {
+                            for k in ["", "O", "Q", "AQ", "AI", "I"] {
+                                self.pin_overrides
+                                    .remove(&(other.uuid.clone(), k.to_string()));
+                            }
+                            if let Some(snap) = self.controls.get_mut(&other.uuid) {
+                                snap.primary_value = None;
+                                snap.outputs.clear();
+                            }
+                        }
+                    }
+                }
+                break;
+            }
+        }
+
+        if let Some((_, src_title, Some(ref_u), badge)) = matched_info {
+            let mut shares_multi_channel_device = false;
+            for page in &proj.pages {
+                for blk in &page.blocks {
+                    if blk.ref_uuid.as_deref() == Some(ref_u.as_str()) {
+                        let other_badge = ref_bar_capsule_badge(blk, page, proj);
+                        if other_badge != badge || blk.title != src_title {
+                            shares_multi_channel_device = true;
+                        } else if blk.uuid != control_uuid {
+                            self.set_control_value(&blk.uuid, raw_value);
+                        }
+                    }
+                }
+            }
+            if !shares_multi_channel_device {
+                self.set_control_value(&ref_u, raw_value);
+                self.set_pin_override(&ref_u, "O", raw_value);
+                self.set_pin_override(&ref_u, "Q", raw_value);
+            }
+        } else {
+            for page in &proj.pages {
+                for blk in &page.blocks {
+                    if blk.ref_uuid.as_deref() == Some(control_uuid) {
+                        self.set_control_value(&blk.uuid, raw_value);
+                    }
+                }
+            }
+        }
+
+        target_io_id
+    }
+
     /// Collects the control UUIDs that should be polled on the Miniserver for the given page.
     pub fn collect_poll_ids_for_page(
         page: &crate::model::Page,
@@ -1562,6 +1783,16 @@ impl LiveValueStore {
             }
         }
 
+        // For output pins on lighting, switch, pushbutton, and logic blocks, evaluate
+        // live output state from connected upstream input pins when any input is active or overridden.
+        if depth < 4 && pin.incoming_links.is_empty() {
+            if let Some(eval_sig) =
+                self.evaluate_function_block_output(block, pin, page, project, depth)
+            {
+                return eval_sig;
+            }
+        }
+
         if let Some(snap) = self.controls.get(&block.uuid) {
             if let Some(v) = snap.outputs.get(&pin.key) {
                 return format_live_signal(v, &block.title, &pin.key, &block.block_type);
@@ -1580,6 +1811,166 @@ impl LiveValueStore {
         }
 
         format_live_signal("0", &block.title, &pin.key, &block.block_type)
+    }
+
+    fn evaluate_function_block_output(
+        &self,
+        block: &crate::model::PageBlock,
+        pin: &crate::model::ConnectorPin,
+        page: &crate::model::Page,
+        project: &crate::model::LoxoneProject,
+        depth: usize,
+    ) -> Option<LiveSignal> {
+        let is_lighting_or_switch_block = matches!(
+            block.block_type.as_str(),
+            "LightController2"
+                | "LightControllerV2"
+                | "LightController"
+                | "PushButton"
+                | "Pushbutton"
+                | "Switch"
+                | "StairwellLight"
+                | "OffDelay"
+                | "Monoflop"
+                | "PresenceLight"
+                | "Or"
+                | "And"
+                | "BurglarAlarm"
+                | "TextState"
+                | "Radio"
+        );
+        if !is_lighting_or_switch_block {
+            return None;
+        }
+
+        let is_output_pin = pin.key == "OutputAPI"
+            || pin.key == "Q"
+            || pin.key == "Qon"
+            || pin.key == "Qoff"
+            || pin.key == "O"
+            || pin.key.starts_with("AQ")
+            || pin.key.starts_with("Q")
+            || pin.key.starts_with("Level");
+        if !is_output_pin {
+            return None;
+        }
+
+        let mut any_trigger_active = false;
+        let mut all_logic_inputs_active = true;
+        let mut has_logic_inputs = false;
+        let mut any_reset_active = false;
+        let mut any_input_overridden = false;
+
+        for in_pin in &block.pins {
+            if in_pin.incoming_links.is_empty() {
+                continue;
+            }
+            let key = in_pin.key.as_str();
+            let is_reset_pin = matches!(
+                key,
+                "Reset" | "R" | "Off" | "Dis" | "InputDisable" | "Inactive" | "Confirm"
+            );
+            let is_trigger_pin = matches!(
+                key,
+                "Presence"
+                    | "Move"
+                    | "Gesture"
+                    | "Plus"
+                    | "Minus"
+                    | "On"
+                    | "InputTrigger"
+                    | "InputTriggerUp"
+                    | "InputTriggerDown"
+                    | "Tr"
+                    | "S"
+                    | "I"
+                    | "ActiveDelay"
+                    | "ActiveDelayP"
+                    | "Alarm"
+                    | "Urgent"
+            ) || key.starts_with("Sel")
+                || key.starts_with("I");
+
+            if !is_reset_pin && !is_trigger_pin {
+                continue;
+            }
+
+            for link in &in_pin.incoming_links {
+                if link.is_hidden() {
+                    continue;
+                }
+                if let Some(src_blk) = page
+                    .blocks
+                    .iter()
+                    .find(|b| b.pins.iter().any(|p| p.uuid == link.source_pin_uuid))
+                {
+                    if self
+                        .pin_overrides
+                        .keys()
+                        .any(|(u, _)| u == &src_blk.uuid)
+                    {
+                        any_input_overridden = true;
+                    }
+                }
+                if let Some(sig) =
+                    self.resolve_pin_by_uuid(&link.source_pin_uuid, page, project, depth + 1)
+                {
+                    if is_reset_pin && sig.is_active {
+                        any_reset_active = true;
+                    } else if is_trigger_pin {
+                        has_logic_inputs = true;
+                        if sig.is_active {
+                            any_trigger_active = true;
+                        } else {
+                            all_logic_inputs_active = false;
+                        }
+                    }
+                }
+            }
+        }
+
+        if !any_trigger_active && !any_reset_active && !any_input_overridden {
+            return None;
+        }
+
+        let block_active = if any_reset_active {
+            false
+        } else if block.block_type == "And" {
+            has_logic_inputs && all_logic_inputs_active
+        } else {
+            any_trigger_active
+        };
+
+        let out_active = if pin.key == "Qoff" {
+            !block_active
+        } else {
+            block_active
+        };
+
+        let uses_ww_format = self
+            .controls
+            .get(&block.uuid)
+            .and_then(|s| s.outputs.get(&pin.key))
+            .is_some_and(|v| v.starts_with("WW("));
+
+        let raw = if uses_ww_format || pin.key == "OutputAPI" {
+            if out_active {
+                "WW(100%)"
+            } else {
+                "WW(0%)"
+            }
+        } else if out_active {
+            "1"
+        } else {
+            "0"
+        };
+
+        Some(format_live_signal(
+            raw,
+            &block.title,
+            &pin.key,
+            &block.block_type,
+        ))
     }
 
     pub fn resolve_pin_by_uuid(
@@ -2118,5 +2509,240 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&temp_backup_dir);
     }
-}
 
+    #[test]
+    fn test_live_light_toggle_propagates_and_syncs_wires_cleanly() {
+        let path =
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../Klimczaki.Loxone");
+        let project =
+            crate::parser::load_loxone_file(&path).expect("Klimczaki.Loxone should parse");
+        let page = project
+            .pages
+            .iter()
+            .find(|p| p.title == "Pokój Agatki")
+            .expect("Pokój Agatki page should exist");
+
+        let lc_block = page
+            .blocks
+            .iter()
+            .find(|b| b.block_type == "LightController2")
+            .expect("LightController2 should exist on Pokój Agatki");
+        let aq1_pin = lc_block
+            .pins
+            .iter()
+            .find(|p| p.key == "AQ1")
+            .expect("AQ1 pin should exist");
+        let aq3_pin = lc_block
+            .pins
+            .iter()
+            .find(|p| p.key == "AQ3")
+            .expect("AQ3 pin should exist");
+
+        let light1_out = page
+            .blocks
+            .iter()
+            .find(|b| {
+                b.is_output_ref_bar()
+                    && b.pins.iter().any(|p| {
+                        p.incoming_links
+                            .iter()
+                            .any(|l| l.source_pin_uuid == aq1_pin.uuid)
+                    })
+            })
+            .expect("agatka: oświetlenie sufit OK OutputRef wired to AQ1 should exist");
+        let light3_out = page
+            .blocks
+            .iter()
+            .find(|b| {
+                b.is_output_ref_bar()
+                    && b.pins.iter().any(|p| {
+                        p.incoming_links
+                            .iter()
+                            .any(|l| l.source_pin_uuid == aq3_pin.uuid)
+                    })
+            })
+            .expect("agatka: podcięcie OK OutputRef wired to AQ3 should exist");
+
+        // Ensure both SMA and Q14 lighting OutputRefs have a ToggleSwitch live control
+        let badge1 = ref_bar_capsule_badge(light1_out, page, &project);
+        assert_eq!(badge1, "SMA");
+        assert_eq!(
+            classify_ref_bar_live_control(light1_out, &badge1, &project),
+            RefBarLiveControlKind::ToggleSwitch
+        );
+        let badge3 = ref_bar_capsule_badge(light3_out, page, &project);
+        assert_eq!(badge3, "Q14");
+        assert_eq!(
+            classify_ref_bar_live_control(light3_out, &badge3, &project),
+            RefBarLiveControlKind::ToggleSwitch
+        );
+
+        let mut store = LiveValueStore::new();
+        store.seed_project_defaults(&project);
+
+        // 1. Toggle Light 3 OutputRef ON directly -> both OutputRef and connected AQ3 pin become active ("Wł.")
+        store.apply_interactive_command(Some(&project), &light3_out.uuid, None, "1");
+        let l3_on = store.resolve_ref_bar_signal(light3_out, page, &project);
+        assert!(l3_on.is_active);
+        assert_eq!(l3_on.formatted, "Wł.");
+        let aq3_on = store.resolve_pin_signal(lc_block, aq3_pin, page, &project);
+        assert!(aq3_on.is_active);
+        assert_eq!(aq3_on.formatted, "Wł.");
+        // Light 1 should NOT be affected
+        let l1_still_off = store.resolve_ref_bar_signal(light1_out, page, &project);
+        assert!(!l1_still_off.is_active);
+
+        // 2. Toggle Light 3 OutputRef OFF directly -> both OutputRef and connected AQ3 pin become inactive ("Wył.")
+        store.apply_interactive_command(Some(&project), &light3_out.uuid, None, "0");
+        let l3_off = store.resolve_ref_bar_signal(light3_out, page, &project);
+        assert!(!l3_off.is_active);
+        assert_eq!(l3_off.formatted, "Wył.");
+        let aq3_off = store.resolve_pin_signal(lc_block, aq3_pin, page, &project);
+        assert!(!aq3_off.is_active);
+        assert_eq!(aq3_off.formatted, "Wył.");
+
+        // 3. Toggle Presence InputRef ("Obecność", badge "P") ON -> propagates through LightController2
+        // so AQ1 ("WW(100%)"), AQ3 ("Wł."), and both downstream OutputRefs turn ON!
+        let pres_in = page
+            .blocks
+            .iter()
+            .find(|b| b.is_input_ref_bar() && ref_bar_capsule_badge(b, page, &project) == "P")
+            .expect("Presence InputRef should exist");
+        store.apply_interactive_command(Some(&project), &pres_in.uuid, None, "1");
+        let aq1_on = store.resolve_pin_signal(lc_block, aq1_pin, page, &project);
+        assert!(aq1_on.is_active);
+        assert_eq!(aq1_on.formatted, "WW(100%)");
+        assert!(store.resolve_ref_bar_signal(light1_out, page, &project).is_active);
+        assert!(store.resolve_pin_signal(lc_block, aq3_pin, page, &project).is_active);
+        assert!(store.resolve_ref_bar_signal(light3_out, page, &project).is_active);
+
+        // 4. Toggle Presence InputRef OFF -> all LightController2 outputs and Light OutputRefs turn OFF cleanly!
+        store.apply_interactive_command(Some(&project), &pres_in.uuid, None, "0");
+        let aq1_off = store.resolve_pin_signal(lc_block, aq1_pin, page, &project);
+        assert!(!aq1_off.is_active);
+        assert_eq!(aq1_off.formatted, "WW(0%)");
+        assert!(!store.resolve_ref_bar_signal(light1_out, page, &project).is_active);
+        assert!(!store.resolve_pin_signal(lc_block, aq3_pin, page, &project).is_active);
+        assert!(!store.resolve_ref_bar_signal(light3_out, page, &project).is_active);
+    }
+
+    #[test]
+    fn test_upload_project_xml_safeguard_blocks_newer_server_version_and_succeeds_after_pull_merge() {
+        let base_xml = "\u{FEFF}<?xml version=\"1.0\" encoding=\"utf-8\"?>\r\n\
+<ControlList Version=\"1\">\r\n\
+\t<C Type=\"Document\" Title=\"Home\" U=\"doc-1\" ConfigVersion=\"17020828\" CDate=\"2026-10-15 07:37:30\" DateS=\"559780177\" SL=\"271\">\r\n\
+\t\t<C Type=\"Program\" Title=\"Program\">\r\n\
+\t\t\t<C Type=\"Page\" Title=\"Salon\" U=\"page-1\">\r\n\
+\t\t\t\t<C Type=\"Switch\" Title=\"Main Light\" U=\"blk-1\" Px=\"100\" Py=\"200\"/>\r\n\
+\t\t\t</C>\r\n\
+\t\t</C>\r\n\
+\t</C>\r\n\
+</ControlList>\r\n";
+
+        let server_newer_xml = "\u{FEFF}<?xml version=\"1.0\" encoding=\"utf-8\"?>\r\n\
+<ControlList Version=\"1\">\r\n\
+\t<C Type=\"Document\" Title=\"Home\" U=\"doc-1\" ConfigVersion=\"17020828\" CDate=\"2026-10-17 15:00:00\" DateS=\"559900000\" SL=\"275\">\r\n\
+\t\t<C Type=\"Program\" Title=\"Program\">\r\n\
+\t\t\t<C Type=\"Page\" Title=\"Salon\" U=\"page-1\">\r\n\
+\t\t\t\t<C Type=\"Switch\" Title=\"Server Priority Light\" U=\"blk-1\" Px=\"100\" Py=\"200\"/>\r\n\
+\t\t\t</C>\r\n\
+\t\t</C>\r\n\
+\t</C>\r\n\
+</ControlList>\r\n";
+
+        let server_zip = crate::loxcc::pack_loxcc_zip(server_newer_xml).unwrap();
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let fsput_count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let fsput_clone = fsput_count.clone();
+
+        let server_handle = std::thread::spawn(move || {
+            // Attempt 1 (blocked after 2 requests: fslist, fsget) + Attempt 2 (succeeds: fslist, fsget, fsput zip, fsput loxcc) = 6 requests
+            for _ in 0..6 {
+                if let Ok((mut stream, _)) = listener.accept() {
+                    let mut buf = [0u8; 16384];
+                    let n = stream.read(&mut buf).unwrap_or(0);
+                    let req = String::from_utf8_lossy(&buf[..n]);
+                    if req.starts_with("GET /dev/fslist/prog ") {
+                        let body = "-rw-rw-rw- 1 0 0 1024 Oct 17 15:00 sps_222_20261017150000.zip\r\n";
+                        let resp = format!(
+                            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                            body.len(),
+                            body
+                        );
+                        let _ = stream.write_all(resp.as_bytes());
+                    } else if req.starts_with("GET /dev/fsget/prog/sps_222_20261017150000.zip ") {
+                        let header = format!(
+                            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                            server_zip.len()
+                        );
+                        let _ = stream.write_all(header.as_bytes());
+                        let _ = stream.write_all(&server_zip);
+                    } else if req.starts_with("POST /dev/fsput/prog/") {
+                        fsput_clone.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        let resp = "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nOK";
+                        let _ = stream.write_all(resp.as_bytes());
+                    }
+                }
+            }
+        });
+
+        let creds = MiniserverCredentials {
+            host: format!("http://{}", addr),
+            username: "admin".to_string(),
+            password: "secret".to_string(),
+        };
+
+        // 1. First upload attempt with older local XML (SL=271 vs server SL=275) MUST be blocked!
+        let err = MiniserverClient::upload_project_xml_with_safeguard(
+            &creds,
+            base_xml,
+            Some(base_xml),
+            None,
+            false,
+            None,
+            false,
+        )
+        .expect_err("Upload should be blocked by newer server version");
+
+        let conflict = match err {
+            MiniserverError::RemoteVersionNewer(c) => c,
+            other => panic!("Expected RemoteVersionNewer, got {:?}", other),
+        };
+        assert_eq!(conflict.diff.local_save_level, Some(271));
+        assert_eq!(conflict.diff.remote_save_level, Some(275));
+        assert_eq!(fsput_count.load(std::sync::atomic::Ordering::SeqCst), 0);
+
+        // 2. Pull & merge server changes into local project (server priority)
+        let mut local_proj = crate::parser::parse_loxone_xml(base_xml).unwrap();
+        let base_proj = local_proj.clone();
+        let remote_proj = crate::parser::parse_loxone_xml(&conflict.remote_xml).unwrap();
+        crate::merge::merge_remote_project_server_priority(
+            &mut local_proj,
+            &remote_proj,
+            Some(&base_proj),
+        )
+        .unwrap();
+        assert_eq!(local_proj.pages[0].blocks[0].title, "Server Priority Light");
+        assert_eq!(local_proj.metadata.save_level, Some(275));
+
+        let merged_xml = local_proj.raw_xml.as_deref().unwrap();
+
+        // 3. Second upload attempt with merged project succeeds cleanly!
+        let res = MiniserverClient::upload_project_xml_with_safeguard(
+            &creds,
+            merged_xml,
+            Some(&conflict.remote_xml),
+            Some(&conflict.remote_xml),
+            false,
+            None,
+            false,
+        )
+        .expect("Upload should succeed after pulling and merging server version");
+        assert_eq!(res.uploaded_filename, "sps_new.zip");
+        assert!(fsput_count.load(std::sync::atomic::Ordering::SeqCst) >= 1);
+
+        let _ = server_handle.join();
+    }
+}
