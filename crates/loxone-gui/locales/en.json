@@ -1,0 +1,11 @@
+{
+  "code": "EN",
+  "native_name": "English",
+  "strings": {
+    "⚙ Konfiguracja obiektu… (Double-click)": "⚙ Object Configuration… (Double-click)",
+    "Konfiguracja obiektu": "Object Configuration",
+    "Filtr": "Filter"
+  },
+  "block_names": {},
+  "categories": {}
+}

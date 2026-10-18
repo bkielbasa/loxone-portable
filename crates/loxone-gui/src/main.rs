@@ -3,6 +3,7 @@
 mod app;
 mod canvas;
 mod command_palette;
+pub mod i18n;
 mod icons;
 mod insert_modal;
 mod inspector;

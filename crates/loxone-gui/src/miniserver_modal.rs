@@ -6,7 +6,7 @@ use loxone_core::miniserver::{
 use loxone_core::model::LoxoneProject;
 
 use crate::theme::{ACCENT_BLUE, BORDER_SUBTLE, CARD_BG, PANEL_BG, TEXT_MUTED, TEXT_PRIMARY};
-use crate::top_bar::{paint_status_indicator, status_badge_visuals};
+use crate::top_bar::{paint_status_indicator, status_badge_visuals_localized};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MiniserverModalAction {
@@ -136,7 +136,7 @@ pub fn render_miniserver_modal(
     let mut action = None;
     let is_busy = connection_status.is_connecting();
     let can_submit = !state.host.trim().is_empty() && !is_busy;
-    let badge = status_badge_visuals(connection_status, Some(&state.host));
+    let badge = status_badge_visuals_localized(connection_status, Some(&state.host));
 
     // Subtle backdrop on Order::Middle (strictly behind Order::Foreground modal)
     let screen_rect = ctx.screen_rect();
@@ -173,16 +173,18 @@ pub fn render_miniserver_modal(
                     // Header row: Title + Status Badge + Close button
                     ui.horizontal(|ui| {
                         ui.label(
-                            RichText::new("Miniserver Connection & Project Download")
-                                .size(14.0)
-                                .color(TEXT_PRIMARY)
-                                .strong(),
+                            RichText::new(crate::i18n::tr(
+                                "Miniserver Connection & Project Download",
+                            ))
+                            .size(14.0)
+                            .color(TEXT_PRIMARY)
+                            .strong(),
                         );
 
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             if ui
                                 .button(RichText::new("✕").color(TEXT_MUTED))
-                                .on_hover_text("Close (Esc)")
+                                .on_hover_text(crate::i18n::tr("Close (Esc)"))
                                 .clicked()
                             {
                                 action = Some(MiniserverModalAction::Close);
@@ -221,15 +223,17 @@ pub fn render_miniserver_modal(
                         .num_columns(2)
                         .spacing([12.0, 8.0])
                         .show(ui, |ui| {
-                            ui.label(RichText::new("Host / IP").color(TEXT_MUTED));
+                            ui.label(RichText::new(crate::i18n::tr("Host / IP")).color(TEXT_MUTED));
                             ui.add(
                                 egui::TextEdit::singleline(&mut state.host)
-                                    .hint_text("192.168.1.100 or http://miniserwer:80")
+                                    .hint_text(crate::i18n::tr(
+                                        "192.168.1.100 or http://miniserwer:80",
+                                    ))
                                     .desired_width(400.0),
                             );
                             ui.end_row();
 
-                            ui.label(RichText::new("Username").color(TEXT_MUTED));
+                            ui.label(RichText::new(crate::i18n::tr("Username")).color(TEXT_MUTED));
                             ui.add(
                                 egui::TextEdit::singleline(&mut state.username)
                                     .hint_text("admin")
@@ -237,11 +241,11 @@ pub fn render_miniserver_modal(
                             );
                             ui.end_row();
 
-                            ui.label(RichText::new("Password").color(TEXT_MUTED));
+                            ui.label(RichText::new(crate::i18n::tr("Password")).color(TEXT_MUTED));
                             ui.add(
                                 egui::TextEdit::singleline(&mut state.password)
                                     .password(true)
-                                    .hint_text("Miniserver password")
+                                    .hint_text(crate::i18n::tr("Miniserver password"))
                                     .desired_width(400.0),
                             );
                             ui.end_row();
@@ -250,7 +254,9 @@ pub fn render_miniserver_modal(
                     ui.add_space(6.0);
                     ui.checkbox(
                         &mut state.remember_password,
-                        RichText::new("Remember password on this computer").size(11.5).color(TEXT_MUTED),
+                        RichText::new(crate::i18n::tr("Remember password on this computer"))
+                            .size(11.5)
+                            .color(TEXT_MUTED),
                     );
 
                     if let Some(msg) = &state.status_message {
@@ -271,13 +277,15 @@ pub fn render_miniserver_modal(
                     // Primary Actions Row
                     ui.horizontal(|ui| {
                         let test_btn = egui::Button::new(
-                            RichText::new("🔌 Test Connection")
+                            RichText::new(crate::i18n::tr("🔌 Test Connection"))
                                 .size(12.0)
                                 .color(TEXT_PRIMARY),
                         );
                         if ui
                             .add_enabled(can_submit, test_btn)
-                            .on_hover_text("Verify credentials and check /prog/ backups")
+                            .on_hover_text(crate::i18n::tr(
+                                "Verify credentials and check /prog/ backups",
+                            ))
                             .clicked()
                         {
                             action = Some(MiniserverModalAction::TestConnection(
@@ -286,16 +294,16 @@ pub fn render_miniserver_modal(
                         }
 
                         let dl_latest_btn = egui::Button::new(
-                            RichText::new("⬇ Download Latest Project")
+                            RichText::new(crate::i18n::tr("⬇ Download Latest Project"))
                                 .size(12.0)
                                 .color(ACCENT_BLUE)
                                 .strong(),
                         );
                         if ui
                             .add_enabled(can_submit, dl_latest_btn)
-                            .on_hover_text(
+                            .on_hover_text(crate::i18n::tr(
                                 "Download newest sps_<ver>_<timestamp>.zip from /prog/ and open in viewer",
-                            )
+                            ))
                             .clicked()
                         {
                             action = Some(MiniserverModalAction::DownloadLatest(
@@ -304,9 +312,9 @@ pub fn render_miniserver_modal(
                         }
 
                         let browse_label = if state.show_backups_browser {
-                            "▾ Hide Backups"
+                            crate::i18n::tr("▾ Hide Backups")
                         } else {
-                            "▸ Browse Backups…"
+                            crate::i18n::tr("▸ Browse Backups…")
                         };
                         if ui
                             .add_enabled(
@@ -326,9 +334,9 @@ pub fn render_miniserver_modal(
                         }
 
                         let upload_label = if state.show_upload_panel {
-                            "▾ Hide Upload"
+                            crate::i18n::tr("▾ Hide Upload")
                         } else {
-                            "⬆ Save to Miniserver…"
+                            crate::i18n::tr("⬆ Save to Miniserver…")
                         };
                         if ui
                             .add_enabled(
@@ -340,9 +348,9 @@ pub fn render_miniserver_modal(
                                         .strong(),
                                 ),
                             )
-                            .on_hover_text(
+                            .on_hover_text(crate::i18n::tr(
                                 "Safely back up active Miniserver program locally, then upload current project (.LoxCC + sps_new.zip)",
-                            )
+                            ))
                             .clicked()
                         {
                             state.show_upload_panel = !state.show_upload_panel;
@@ -364,10 +372,12 @@ pub fn render_miniserver_modal(
                             .show(ui, |ui| {
                                 ui.set_width(512.0);
                                 ui.label(
-                                    RichText::new("⚠ Newer Version Detected on Miniserver — Upload Blocked")
-                                        .size(12.5)
-                                        .color(warn_amber)
-                                        .strong(),
+                                    RichText::new(crate::i18n::tr(
+                                        "⚠ Newer Version Detected on Miniserver — Upload Blocked",
+                                    ))
+                                    .size(12.5)
+                                    .color(warn_amber)
+                                    .strong(),
                                 );
                                 ui.add_space(3.0);
                                 ui.label(
@@ -431,9 +441,9 @@ pub fn render_miniserver_modal(
                                 }
                                 ui.add_space(5.0);
                                 ui.label(
-                                    RichText::new(
+                                    RichText::new(crate::i18n::tr(
                                         "Please pull the difference from the Miniserver into your project before uploading. What is on the server takes higher priority on any conflict, while preserving your non-conflicting local additions.",
-                                    )
+                                    ))
                                     .size(11.0)
                                     .color(TEXT_MUTED),
                                 );
@@ -441,21 +451,23 @@ pub fn render_miniserver_modal(
                                 ui.horizontal(|ui| {
                                     if ui
                                         .button(
-                                            RichText::new("⬇ Pull & Merge into My Project (Server Priority)")
-                                                .size(12.0)
-                                                .color(ACCENT_BLUE)
-                                                .strong(),
+                                            RichText::new(crate::i18n::tr(
+                                                "⬇ Pull & Merge into My Project (Server Priority)",
+                                            ))
+                                            .size(12.0)
+                                            .color(ACCENT_BLUE)
+                                            .strong(),
                                         )
-                                        .on_hover_text(
+                                        .on_hover_text(crate::i18n::tr(
                                             "Merge the newer Miniserver version into your current project with Server Priority",
-                                        )
+                                        ))
                                         .clicked()
                                     {
                                         action = Some(MiniserverModalAction::PullAndMergeServerConflict);
                                     }
                                     if ui
                                         .button(
-                                            RichText::new("Dismiss")
+                                            RichText::new(crate::i18n::tr("Dismiss"))
                                                 .size(11.0)
                                                 .color(TEXT_MUTED),
                                         )
@@ -478,10 +490,12 @@ pub fn render_miniserver_modal(
                             .show(ui, |ui| {
                                 ui.set_width(512.0);
                                 ui.label(
-                                    RichText::new("🛡 Safe Hardware Deployment (Save to Miniserver)")
-                                        .size(12.0)
-                                        .color(Color32::from_rgb(232, 168, 56))
-                                        .strong(),
+                                    RichText::new(crate::i18n::tr(
+                                        "🛡 Safe Hardware Deployment (Save to Miniserver)",
+                                    ))
+                                    .size(12.0)
+                                    .color(Color32::from_rgb(232, 168, 56))
+                                    .strong(),
                                 );
                                 ui.add_space(4.0);
                                 ui.label(
@@ -494,25 +508,31 @@ pub fn render_miniserver_modal(
                                 ui.add_space(6.0);
                                 ui.checkbox(
                                     &mut state.restart_sps_after_upload,
-                                    RichText::new("Restart Miniserver SPS (/dev/sps/restart) after upload")
-                                        .size(11.5)
-                                        .color(TEXT_PRIMARY),
+                                    RichText::new(crate::i18n::tr(
+                                        "Restart Miniserver SPS (/dev/sps/restart) after upload",
+                                    ))
+                                    .size(11.5)
+                                    .color(TEXT_PRIMARY),
                                 );
                                 ui.checkbox(
                                     &mut state.confirm_upload,
-                                    RichText::new("I understand this will update the live Miniserver program")
-                                        .size(11.5)
-                                        .color(TEXT_PRIMARY),
+                                    RichText::new(crate::i18n::tr(
+                                        "I understand this will update the live Miniserver program",
+                                    ))
+                                    .size(11.5)
+                                    .color(TEXT_PRIMARY),
                                 );
                                 ui.add_space(6.0);
                                 if ui
                                     .add_enabled(
                                         can_submit && state.confirm_upload,
                                         egui::Button::new(
-                                            RichText::new("⬆ Backup & Upload Project Now")
-                                                .size(12.0)
-                                                .color(Color32::from_rgb(232, 168, 56))
-                                                .strong(),
+                                            RichText::new(crate::i18n::tr(
+                                                "⬆ Backup & Upload Project Now",
+                                            ))
+                                            .size(12.0)
+                                            .color(Color32::from_rgb(232, 168, 56))
+                                            .strong(),
                                         ),
                                     )
                                     .clicked()
@@ -535,7 +555,8 @@ pub fn render_miniserver_modal(
                         ui.horizontal(|ui| {
                             ui.label(
                                 RichText::new(format!(
-                                    "Backups in /prog/ ({})",
+                                    "{} ({})",
+                                    crate::i18n::tr("Backups in /prog/"),
                                     state.snapshots.len()
                                 ))
                                 .size(11.5)
@@ -549,7 +570,7 @@ pub fn render_miniserver_modal(
                                         .add_enabled(
                                             can_submit,
                                             egui::Button::new(
-                                                RichText::new("↻ Refresh")
+                                                RichText::new(crate::i18n::tr("↻ Refresh"))
                                                     .size(11.0)
                                                     .color(TEXT_PRIMARY),
                                             ),
@@ -568,9 +589,9 @@ pub fn render_miniserver_modal(
                         ScrollArea::vertical().max_height(220.0).show(ui, |ui| {
                             if state.snapshots.is_empty() {
                                 ui.label(
-                                    RichText::new(
+                                    RichText::new(crate::i18n::tr(
                                         "No backups loaded yet. Click 'Refresh' or 'Test Connection' to list /prog/.",
-                                    )
+                                    ))
                                     .size(11.5)
                                     .color(TEXT_MUTED),
                                 );
@@ -615,9 +636,11 @@ pub fn render_miniserver_modal(
                                                         .add_enabled(
                                                             can_submit,
                                                             egui::Button::new(
-                                                                RichText::new("⬇ Download")
-                                                                    .size(11.5)
-                                                                    .color(ACCENT_BLUE),
+                                                                RichText::new(crate::i18n::tr(
+                                                                    "⬇ Download",
+                                                                ))
+                                                                .size(11.5)
+                                                                .color(ACCENT_BLUE),
                                                             ),
                                                         )
                                                         .clicked()

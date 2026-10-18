@@ -50,7 +50,7 @@ pub fn render_left_explorer(
             if ui
                 .selectable_label(
                     selected,
-                    RichText::new(label)
+                    RichText::new(crate::i18n::tr(label))
                         .size(12.0)
                         .color(if selected { ACCENT_BLUE } else { TEXT_MUTED }),
                 )
@@ -64,15 +64,15 @@ pub fn render_left_explorer(
     ui.add_space(4.0);
     ui.add(
         egui::TextEdit::singleline(filter)
-            .hint_text("Filter list…")
+            .hint_text(crate::i18n::tr("Filter list…"))
             .desired_width(f32::INFINITY),
     );
     ui.add_space(4.0);
     ui.horizontal(|ui| match *active_tab {
         LeftTab::Pages => {
             if ui
-                .small_button(RichText::new("+ Page").color(ACCENT_BLUE))
-                .on_hover_text("Create a new schematic page")
+                .small_button(RichText::new(crate::i18n::tr("+ Page")).color(ACCENT_BLUE))
+                .on_hover_text(crate::i18n::tr("Create a new schematic page"))
                 .clicked()
             {
                 action = Some(TreeAction::CreatePage);
@@ -80,15 +80,15 @@ pub fn render_left_explorer(
         }
         LeftTab::Periphery => {
             if ui
-                .small_button(RichText::new("+ VIn").color(ACCENT_BLUE))
-                .on_hover_text("Create a new Virtual Input")
+                .small_button(RichText::new(crate::i18n::tr("+ VIn")).color(ACCENT_BLUE))
+                .on_hover_text(crate::i18n::tr("Create a new Virtual Input"))
                 .clicked()
             {
                 action = Some(TreeAction::CreateVirtualIn);
             }
             if ui
-                .small_button(RichText::new("+ VOut").color(ACCENT_BLUE))
-                .on_hover_text("Create a new Virtual Output")
+                .small_button(RichText::new(crate::i18n::tr("+ VOut")).color(ACCENT_BLUE))
+                .on_hover_text(crate::i18n::tr("Create a new Virtual Output"))
                 .clicked()
             {
                 action = Some(TreeAction::CreateVirtualOut);
@@ -96,15 +96,15 @@ pub fn render_left_explorer(
         }
         LeftTab::Rooms => {
             if ui
-                .small_button(RichText::new("+ Room").color(ACCENT_BLUE))
-                .on_hover_text("Create a new Room")
+                .small_button(RichText::new(crate::i18n::tr("+ Room")).color(ACCENT_BLUE))
+                .on_hover_text(crate::i18n::tr("Create a new Room"))
                 .clicked()
             {
                 action = Some(TreeAction::CreateRoom);
             }
             if ui
-                .small_button(RichText::new("+ Category").color(ACCENT_BLUE))
-                .on_hover_text("Create a new Category")
+                .small_button(RichText::new(crate::i18n::tr("+ Category")).color(ACCENT_BLUE))
+                .on_hover_text(crate::i18n::tr("Create a new Category"))
                 .clicked()
             {
                 action = Some(TreeAction::CreateCategory);
@@ -112,8 +112,8 @@ pub fn render_left_explorer(
         }
         LeftTab::System => {
             if ui
-                .small_button(RichText::new("+ Flag").color(ACCENT_BLUE))
-                .on_hover_text("Create a new Memory Flag (Merker)")
+                .small_button(RichText::new(crate::i18n::tr("+ Flag")).color(ACCENT_BLUE))
+                .on_hover_text(crate::i18n::tr("Create a new Memory Flag (Merker)"))
                 .clicked()
             {
                 action = Some(TreeAction::CreateMemoryFlag);
@@ -169,7 +169,7 @@ pub fn render_left_explorer(
                         action = Some(TreeAction::SelectPage(idx));
                     }
                     resp.context_menu(|ui| {
-                        if ui.button("🔍 Inspect Page").clicked() {
+                        if ui.button(crate::i18n::tr("🔍 Inspect Page")).clicked() {
                             action = Some(TreeAction::SelectObject(page.uuid.clone()));
                             ui.close_menu();
                         }
@@ -237,7 +237,13 @@ pub fn render_left_explorer(
                                         if ui
                                             .selectable_label(
                                                 is_sel,
-                                                format!("{} ({})", block.title, block.block_type),
+                                                format!(
+                                                    "{} ({})",
+                                                    block.title,
+                                                    crate::i18n::block_display_name(
+                                                        &block.block_type
+                                                    )
+                                                ),
                                             )
                                             .clicked()
                                         {
@@ -257,7 +263,7 @@ pub fn render_left_explorer(
                     ui.add_space(6.0);
                     ui.separator();
                     ui.label(
-                        RichText::new("CATEGORIES")
+                        RichText::new(crate::i18n::tr("CATEGORIES"))
                             .size(10.5)
                             .color(TEXT_MUTED)
                             .strong(),
@@ -307,8 +313,10 @@ fn node_matches_query(node: &TreeNode, q: &str) -> bool {
     if q.is_empty() {
         return true;
     }
+    let localized_type = crate::i18n::block_display_name(&node.control_type).to_lowercase();
     if node.title.to_lowercase().contains(q)
         || node.control_type.to_lowercase().contains(q)
+        || localized_type.contains(q)
         || node.uuid.to_lowercase().contains(q)
     {
         return true;
@@ -389,7 +397,7 @@ fn render_tree_node(
     }
     let mut action = None;
     let label_title = if node.title.is_empty() {
-        &node.control_type
+        crate::i18n::block_display_name(&node.control_type)
     } else {
         &node.title
     };
@@ -436,7 +444,10 @@ fn render_tree_node(
             }
             if placeable {
                 resp.context_menu(|ui| {
-                    if ui.button("📥 Place on Current Page").clicked() {
+                    if ui
+                        .button(crate::i18n::tr("📥 Place on Current Page"))
+                        .clicked()
+                    {
                         action = Some(TreeAction::PlaceOnPage(node.uuid.clone()));
                         ui.close_menu();
                     }
@@ -476,7 +487,10 @@ fn render_tree_node(
             }
             if placeable {
                 resp.context_menu(|ui| {
-                    if ui.button("📥 Place on Current Page").clicked() {
+                    if ui
+                        .button(crate::i18n::tr("📥 Place on Current Page"))
+                        .clicked()
+                    {
                         action = Some(TreeAction::PlaceOnPage(node.uuid.clone()));
                         ui.close_menu();
                     }

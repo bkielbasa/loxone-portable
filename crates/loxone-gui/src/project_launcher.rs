@@ -17,11 +17,12 @@ pub enum ProjectSourceKind {
 
 impl ProjectSourceKind {
     pub fn label(self) -> &'static str {
-        match self {
+        let raw = match self {
             Self::Recent => "RECENT",
             Self::Workspace => "WORKSPACE",
             Self::Backup => "BACKUP",
-        }
+        };
+        crate::i18n::tr(raw)
     }
 
     pub fn color(self) -> Color32 {
@@ -282,29 +283,35 @@ pub fn render_project_launcher(
                     ui.add_space(6.0);
                     ui.vertical(|ui| {
                         ui.label(
-                            RichText::new("Select a Loxone Project to Load")
+                            RichText::new(crate::i18n::tr("Select a Loxone Project to Load"))
                                 .size(17.0)
                                 .strong()
                                 .color(TEXT_PRIMARY),
                         );
                         ui.label(
-                            RichText::new(
+                            RichText::new(crate::i18n::tr(
                                 "Choose a .Loxone project from your workspace, recent files, or local backups.",
-                            )
+                            ))
                             .size(12.0)
                             .color(TEXT_MUTED),
                         );
                     });
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         if ui
-                            .button(RichText::new("🔄 Refresh").size(11.5))
-                            .on_hover_text("Rescan workspace, recent files, and local backups")
+                            .button(RichText::new(crate::i18n::tr("🔄 Refresh")).size(11.5))
+                            .on_hover_text(crate::i18n::tr(
+                                "Rescan workspace, recent files, and local backups",
+                            ))
                             .clicked()
                         {
                             action = Some(LauncherAction::RefreshList);
                         }
+                        let proj_cnt = crate::i18n::tr_fmt(
+                            "{count} project(s)",
+                            &[("count", &state.projects.len().to_string())],
+                        );
                         ui.label(
-                            RichText::new(format!("{} project(s)", state.projects.len()))
+                            RichText::new(proj_cnt)
                                 .size(11.5)
                                 .color(TEXT_MUTED),
                         );
@@ -318,7 +325,7 @@ pub fn render_project_launcher(
                     ui.label(RichText::new("🔍").size(13.0).color(TEXT_MUTED));
                     ui.add(
                         egui::TextEdit::singleline(&mut state.filter_query)
-                            .hint_text("Filter projects by name or path…")
+                            .hint_text(crate::i18n::tr("Filter projects by name or path…"))
                             .desired_width(ui.available_width()),
                     );
                 });
@@ -338,15 +345,15 @@ pub fn render_project_launcher(
                             ui.set_min_width(ui.available_width());
                             ui.vertical_centered(|ui| {
                                 ui.label(
-                                    RichText::new("No .Loxone projects matched.")
+                                    RichText::new(crate::i18n::tr("No .Loxone projects matched."))
                                         .size(13.0)
                                         .color(TEXT_MUTED),
                                 );
                                 ui.add_space(4.0);
                                 ui.label(
-                                    RichText::new(
+                                    RichText::new(crate::i18n::tr(
                                         "Use 'Browse .Loxone File…' below or download a project from your Miniserver.",
-                                    )
+                                    ))
                                     .size(11.5)
                                     .color(TEXT_MUTED),
                                 );
@@ -415,10 +422,12 @@ pub fn render_project_launcher(
                                                 if ui
                                                     .add(
                                                         egui::Button::new(
-                                                            RichText::new("Load Project →")
-                                                                .size(12.0)
-                                                                .strong()
-                                                                .color(TEXT_PRIMARY),
+                                                            RichText::new(crate::i18n::tr(
+                                                                "Load Project →",
+                                                            ))
+                                                            .size(12.0)
+                                                            .strong()
+                                                            .color(TEXT_PRIMARY),
                                                         )
                                                         .fill(ACCENT_BLUE.gamma_multiply(0.32))
                                                         .stroke(Stroke::new(1.0_f32, ACCENT_BLUE))
@@ -460,7 +469,7 @@ pub fn render_project_launcher(
                     if ui
                         .add(
                             egui::Button::new(
-                                RichText::new("📂 Browse .Loxone File… (Ctrl+O)")
+                                RichText::new(crate::i18n::tr("📂 Browse .Loxone File… (Ctrl+O)"))
                                     .size(12.5)
                                     .color(TEXT_PRIMARY),
                             )
@@ -474,9 +483,9 @@ pub fn render_project_launcher(
                     if ui
                         .add(
                             egui::Button::new(
-                                RichText::new(
+                                RichText::new(crate::i18n::tr(
                                     "⬇ Connect & Download from Miniserver… (Ctrl+Shift+D)",
-                                )
+                                ))
                                 .size(12.5)
                                 .color(TEXT_PRIMARY),
                             )

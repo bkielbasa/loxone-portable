@@ -33,7 +33,7 @@ pub enum PaletteBadge {
 
 impl PaletteBadge {
     pub fn label(self) -> &'static str {
-        match self {
+        let raw = match self {
             Self::Action => "ACTION",
             Self::Page => "PAGE",
             Self::Block => "BLOCK",
@@ -41,7 +41,8 @@ impl PaletteBadge {
             Self::Room => "ROOM",
             Self::Category => "CATEGORY",
             Self::System => "SYSTEM",
-        }
+        };
+        crate::i18n::tr(raw)
     }
 }
 
@@ -66,78 +67,79 @@ pub fn build_palette_entries(project: Option<&LoxoneProject>, query: &str) -> Ve
     let q = query.trim().to_lowercase();
     let mut entries = Vec::new();
 
-    let built_in_actions = [
-        PaletteEntry {
-            badge: PaletteBadge::Action,
-            title: "Switch Project / Show Project List…".to_string(),
-            subtitle: "Return to the startup project launcher to pick another .Loxone project".to_string(),
-            shortcut: None,
-            action: PaletteAction::ShowProjectLauncher,
-        },
-        PaletteEntry {
-            badge: PaletteBadge::Action,
-            title: "Connect to Miniserver / Download Project…".to_string(),
-            subtitle: "Test Miniserver connection or download project backup from /prog/".to_string(),
-            shortcut: Some("Ctrl+Shift+D"),
-            action: PaletteAction::ConnectMiniserver,
-        },
-        PaletteEntry {
-            badge: PaletteBadge::Action,
-            title: "Save Project as .Loxone File…".to_string(),
-            subtitle: "Export current project XML to disk".to_string(),
-            shortcut: Some("Ctrl+S"),
-            action: PaletteAction::SaveFile,
-        },
-        PaletteEntry {
-            badge: PaletteBadge::Action,
-            title: "Open .Loxone Project File…".to_string(),
-            subtitle: "Load another Loxone Config XML file from disk".to_string(),
-            shortcut: Some("Ctrl+O"),
-            action: PaletteAction::OpenFile,
-        },
-        PaletteEntry {
-            badge: PaletteBadge::Action,
-            title: "Fit Active Page to View".to_string(),
-            subtitle: "Center and scale all blocks on the current page".to_string(),
-            shortcut: Some("F"),
-            action: PaletteAction::FitPage,
-        },
-        PaletteEntry {
-            badge: PaletteBadge::Action,
-            title: "Toggle Compact Pins (Connected vs All Pins)".to_string(),
-            subtitle: "Declutter function blocks by collapsing unconnected pins".to_string(),
-            shortcut: Some("P"),
-            action: PaletteAction::ToggleCompactPins,
-        },
-        PaletteEntry {
-            badge: PaletteBadge::Action,
-            title: "Reset Canvas Zoom (100%)".to_string(),
-            subtitle: "Reset viewport scale to default".to_string(),
-            shortcut: Some("0"),
-            action: PaletteAction::ResetZoom,
-        },
-        PaletteEntry {
-            badge: PaletteBadge::Action,
-            title: "Toggle Left Explorer Sidebar".to_string(),
-            subtitle: "Show or hide the Project & Periphery tree".to_string(),
-            shortcut: Some("Ctrl+B"),
-            action: PaletteAction::ToggleLeftPanel,
-        },
-        PaletteEntry {
-            badge: PaletteBadge::Action,
-            title: "Toggle Right Inspector Sidebar".to_string(),
-            subtitle: "Show or hide Properties & Cross-References".to_string(),
-            shortcut: Some("Ctrl+I"),
-            action: PaletteAction::ToggleRightPanel,
-        },
+    let built_in_specs = [
+        (
+            "Switch Project / Show Project List…",
+            "Return to the startup project launcher to pick another .Loxone project",
+            None,
+            PaletteAction::ShowProjectLauncher,
+        ),
+        (
+            "Connect to Miniserver / Download Project…",
+            "Test Miniserver connection or download project backup from /prog/",
+            Some("Ctrl+Shift+D"),
+            PaletteAction::ConnectMiniserver,
+        ),
+        (
+            "Save Project as .Loxone File…",
+            "Export current project XML to disk",
+            Some("Ctrl+S"),
+            PaletteAction::SaveFile,
+        ),
+        (
+            "Open .Loxone Project File…",
+            "Load another Loxone Config XML file from disk",
+            Some("Ctrl+O"),
+            PaletteAction::OpenFile,
+        ),
+        (
+            "Fit Active Page to View",
+            "Center and scale all blocks on the current page",
+            Some("F"),
+            PaletteAction::FitPage,
+        ),
+        (
+            "Toggle Compact Pins (Connected vs All Pins)",
+            "Declutter function blocks by collapsing unconnected pins",
+            Some("P"),
+            PaletteAction::ToggleCompactPins,
+        ),
+        (
+            "Reset Canvas Zoom (100%)",
+            "Reset viewport scale to default",
+            Some("0"),
+            PaletteAction::ResetZoom,
+        ),
+        (
+            "Toggle Left Explorer Sidebar",
+            "Show or hide the Project & Periphery tree",
+            Some("Ctrl+B"),
+            PaletteAction::ToggleLeftPanel,
+        ),
+        (
+            "Toggle Right Inspector Sidebar",
+            "Show or hide Properties & Cross-References",
+            Some("Ctrl+I"),
+            PaletteAction::ToggleRightPanel,
+        ),
     ];
 
-    for act in built_in_actions {
+    for (en_title, en_sub, shortcut, action) in built_in_specs {
+        let title = crate::i18n::tr(en_title).to_string();
+        let subtitle = crate::i18n::tr(en_sub).to_string();
         if q.is_empty()
-            || act.title.to_lowercase().contains(&q)
-            || act.subtitle.to_lowercase().contains(&q)
+            || title.to_lowercase().contains(&q)
+            || subtitle.to_lowercase().contains(&q)
+            || en_title.to_lowercase().contains(&q)
+            || en_sub.to_lowercase().contains(&q)
         {
-            entries.push(act);
+            entries.push(PaletteEntry {
+                badge: PaletteBadge::Action,
+                title,
+                subtitle,
+                shortcut,
+                action,
+            });
         }
     }
 
@@ -343,7 +345,9 @@ impl CommandPaletteState {
                             ui.label(RichText::new("⌘K").color(ACCENT_BLUE).strong());
                             let resp = ui.add(
                                 egui::TextEdit::singleline(&mut self.query)
-                                    .hint_text("Type a command, page, block, device, room, or UUID…")
+                                    .hint_text(crate::i18n::tr(
+                                        "Type a command, page, block, device, room, or UUID…",
+                                    ))
                                     .desired_width(450.0)
                                     .frame(false),
                             );
@@ -362,7 +366,12 @@ impl CommandPaletteState {
 
                         ScrollArea::vertical().max_height(340.0).show(ui, |ui| {
                             if entries.is_empty() {
-                                ui.label(RichText::new("No matching commands or objects").color(TEXT_MUTED));
+                                ui.label(
+                                    RichText::new(crate::i18n::tr(
+                                        "No matching commands or objects",
+                                    ))
+                                    .color(TEXT_MUTED),
+                                );
                             }
                             for (idx, entry) in entries.iter().enumerate() {
                                 let is_selected = idx == self.selected_index;

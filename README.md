@@ -21,13 +21,19 @@ I often use non-windows OSs and it forced me to use a VM in order to edit anythi
 
 ## Supported Features
 
-### 1. Project Files & Startup Launcher
+<details>
+<summary><strong>1. Project Files & Startup Launcher</strong></summary>
+
 - **Startup Project Selector**: Opens with a searchable project launcher listing recently opened `.Loxone` files, workspace projects, and local pre-upload backups (or pass a `.Loxone` path via CLI). Switch projects anytime by clicking the project title in the top bar or via the command palette (`Cmd+K` / `Ctrl+K`).
 - **Native `.Loxone` & `.LoxCC` Support**: Reads and writes UTF-8 BOM `.Loxone` XML (`Document Type="LoxLIVE"`) as well as compressed `.LoxCC` binary/ZIP containers used by the Miniserver.
 - **Lossless XML Serialization**: Edits are applied in-place to the underlying XML DOM so untouched blocks, attributes, and custom child nodes round-trip cleanly without data loss.
 - **Unsaved Changes Guard**: Tracks dirty project state (`*`) and prompts to **Save & Continue**, **Discard Changes**, or **Cancel** before switching projects or loading a different file.
 
-### 2. Interactive Schematic Canvas & Authoring
+</details>
+
+<details>
+<summary><strong>2. Interactive Schematic Canvas & Authoring</strong></summary>
+
 - **Loxone Knowledge Base Block Catalog (83+ Schemas)**: Built-in catalog of function blocks and periphery items across Lighting, Shading, Climate, Audio, Security, Energy, Analog/Digital Logic, Counter/Timing, and System categories.
 - **Full Schematic Editing**:
   - Add, move, resize (`Memo` boxes), and delete function blocks, I/O reference bars (`InputRef`, `OutputRef`, `OutputRefLM`), and memory flags (`Memory`).
@@ -39,7 +45,11 @@ I often use non-windows OSs and it forced me to use a VM in order to edit anythi
 - **Always-Visible Unit & Pin Badges**: Compact reference bars display their Loxone unit/pin type (`T5`, `Br`, `P`, `ϑc`, `H`, `M`, `VQ`, `Q14`, `->`) directly on the canvas.
 - **Inline Rename**: Double-click any block on the canvas or any page, room, category, or periphery item in the left tree to rename it in place.
 
-### 3. Project Tree & Navigation
+</details>
+
+<details>
+<summary><strong>3. Project Tree & Navigation</strong></summary>
+
 - **5-Section Project Tree**:
   - **Periphery**: Miniserver, Extensions, Tree/Air/Link buses, Modbus/1-Wire/DALI devices, and physical I/O channels with custom vector icons and technical subtitles.
   - **Virtual I/O & Memory**: Virtual Inputs (`VirtualIn`), Virtual Outputs (`VirtualOut` / `VirtualOutCmd`), and Memory Flags (`Merker`) with quick `+` creation buttons.
@@ -47,7 +57,11 @@ I often use non-windows OSs and it forced me to use a VM in order to edit anythi
   - **Rooms (`Places`) & Categories**: Filter or inspect blocks by room and category, or create/edit rooms and categories.
 - **Command Palette (`Cmd+K` / `Ctrl+K`)**: Instant fuzzy search across all pages, function blocks, periphery devices, rooms, categories, and application commands.
 
-### 4. Property Inspector & Specialized Block Editors
+</details>
+
+<details>
+<summary><strong>4. Property Inspector & Specialized Block Editors</strong></summary>
+
 - **Knowledge Base Integration**: Displays localized block type names, pin documentation, and direct links (`📖 Loxone Docs`) to official Loxone documentation.
 - **Typed Parameter & Attribute Editors**: Edit block titles, room/category assignments (`<IoData>`), visualization settings (`Visu`, `VisuPwd`), operating modes, and default pin parameters (`<Co Def="...">`).
 - **Specialized Configuration Editors**:
@@ -58,7 +72,11 @@ I often use non-windows OSs and it forced me to use a VM in order to edit anythi
   - **Child Config Sections**: Dedicated editors for `<LoggerMailer>`, `<HCL>` (Human Centric Lighting), `<PSD>` (Presence/Daylight), and `<Display>`.
 - **Inline Linked Target Editing**: Selecting an `InputRef`, `OutputRef`, or `Memory` bar lets you edit the underlying periphery or virtual I/O target directly from the inspector.
 
-### 5. Live View (`⚡ Live`) & On-Canvas Simulation
+</details>
+
+<details>
+<summary><strong>5. Live View (<code>⚡ Live</code>) & On-Canvas Simulation</strong></summary>
+
 - **Real-Time Miniserver Polling & Offline Simulation**: Toggle **⚡ Live** in the top bar to poll live I/O states from a connected Miniserver (`/dev/sps/io/<uuid>/all`) or test logic interactively offline with automatic signal propagation across wires and references.
 - **Energized Wire Visualization**: Active digital (`> 0`) and analog wires glow in Loxone green (`#59B828`) with inline live value badges (`On`, `Off`, `21.5`, etc.).
 - **Interactive On-Canvas Controls**:
@@ -67,7 +85,11 @@ I often use non-windows OSs and it forced me to use a VM in order to edit anythi
   - **T5 Touch 5-Zone Pad**: Interactive 5-button Loxone Touch layout (`Center`, `TL`, `TR`, `BL`, `BR`) encoding bitmask values (`1`, `2`, `4`, `8`, `16`).
   - **Analog Value Popover**: Clickable numeric badge to enter or adjust analog values (temperatures, brightness, setpoints) directly on the canvas.
 
-### 6. Miniserver Download & Safe Hardware Deployment
+</details>
+
+<details>
+<summary><strong>6. Miniserver Download & Safe Hardware Deployment</strong></summary>
+
 - **Download from Miniserver**: Connect via HTTP to inspect `/dev/fslist/prog/`, download the latest configuration or choose any historical `.LoxCC` backup snapshot on the Miniserver, and automatically decompress it into the editor.
 - **Gen1 & Gen2 Authentication**: Supports both HTTP Basic authentication and Loxone token/key-exchange authentication (`/jdev/sys/getkey2`, HMAC-SHA1/SHA256).
 - **Safe Upload to Miniserver**:
@@ -75,16 +97,33 @@ I often use non-windows OSs and it forced me to use a VM in order to edit anythi
   - Automatically downloads and saves a timestamped local backup (`~/.config/loxone-portable/backups/`) of the Miniserver's current configuration before uploading.
   - Compresses the edited project into a valid `.LoxCC` archive, uploads it to `/prog/`, and optionally triggers `/dev/sps/restart` to activate the new program.
 
-### 7. Project Diagnostics & Linter (`✓ Verify`)
+</details>
+
+<details>
+<summary><strong>7. Project Diagnostics & Linter (<code>✓ Verify</code>)</strong></summary>
+
 - **One-Click Project Verification**: Click **✓ Verify** in the top toolbar to scan the entire project for:
   - Dangling or broken `Ref` / `RefCaller` UUID links.
   - Blocks missing Room (`Pr`) or Category (`Cr`) assignments where required by the block schema.
   - Isolated function blocks with zero connected inputs or outputs.
 - **Click-to-Jump Navigation**: Click any diagnostic warning or error to jump directly to the affected page and select the block.
 
+</details>
+
+<details>
+<summary><strong>8. Multi-Language Support (i18n) & Loxone-Style Ribbon Toolbar</strong></summary>
+
+- **Data-Driven Localization (`crates/loxone-gui/locales/*.json`)**: Built-in support for **Polish (`PL`)**, **English (`EN`)**, and **German (`DE`)**, plus automatic runtime loading of any custom `.json` locale packs dropped into `./locales/` or `~/.config/loxone-portable/locales/`.
+- **Loxone Config Ribbon Layout**: Categorized top ribbon tabs (`Add Device`, `Function Blocks`, `Tools`, `Testing`, `Diagnostics`, plus contextual `Object` and `Live View` tabs) with language selection and quick preferences tucked inside the `⚙` Settings menu.
+
+</details>
+
 ---
 
 ## Keyboard Shortcuts
+
+<details>
+<summary><strong>Show Keyboard Shortcuts Table</strong></summary>
 
 | Shortcut (macOS / Windows & Linux) | Action |
 | :--- | :--- |
@@ -101,6 +140,8 @@ I often use non-windows OSs and it forced me to use a VM in order to edit anythi
 | `Delete` / `Backspace` | Delete selected blocks or wire |
 | `Double-Click` (block or tree item) | Inline rename |
 | `Scroll` / `Pinch` | Pan / Zoom canvas |
+
+</details>
 
 ---
 

@@ -40,18 +40,21 @@ pub fn render_right_inspector(
     selected_uuid: Option<&str>,
     live_store: Option<&loxone_core::miniserver::LiveValueStore>,
 ) -> InspectorOutput {
+    use crate::i18n::tr;
     let mut output = InspectorOutput::default();
 
     ui.add_space(6.0);
-    ui.label(RichText::new("INSPECTOR").size(11.0).color(TEXT_MUTED).strong());
+    ui.label(RichText::new(tr("INSPECTOR")).size(11.0).color(TEXT_MUTED).strong());
     ui.add_space(4.0);
     ui.separator();
 
     let Some(uuid) = selected_uuid else {
         ui.add_space(24.0);
         ui.label(
-            RichText::new("Select any function block, peripheral, or page item to inspect and edit properties.")
-                .color(TEXT_MUTED),
+            RichText::new(tr(
+                "Select any function block, peripheral, or page item to inspect and edit properties.",
+            ))
+            .color(TEXT_MUTED),
         );
         return output;
     };
@@ -130,6 +133,7 @@ fn render_live_monitor_card(
     store: &loxone_core::miniserver::LiveValueStore,
     output: &mut InspectorOutput,
 ) {
+    use crate::i18n::tr;
     let green = egui::Color32::from_rgb(0x59, 0xB8, 0x28);
     let mut target_uuid = summary.uuid.clone();
     let mut primary_sig = None;
@@ -180,7 +184,7 @@ fn render_live_monitor_card(
             ui.set_width(ui.available_width());
             ui.horizontal(|ui| {
                 ui.label(
-                    RichText::new("● LIVE VIEW MONITOR & CONTROL")
+                    RichText::new(tr("● LIVE VIEW MONITOR & CONTROL"))
                         .size(11.0)
                         .color(green)
                         .strong(),
@@ -230,7 +234,7 @@ fn render_live_monitor_card(
 
             ui.add_space(6.0);
             ui.horizontal_wrapped(|ui| {
-                ui.label(RichText::new("Force / Send:").size(11.0).color(TEXT_MUTED));
+                ui.label(RichText::new(tr("Force / Send:")).size(11.0).color(TEXT_MUTED));
                 for (btn_label, cmd) in [
                     ("Wł. (On)", "On"),
                     ("Wył. (Off)", "Off"),
@@ -289,6 +293,7 @@ fn render_kb_header_card(
     schema: Option<&'static BlockSchema>,
     output: &mut InspectorOutput,
 ) {
+    use crate::i18n::{block_display_name, category_group_label, tr};
     egui::Frame::new()
         .fill(CARD_BG)
         .stroke(Stroke::new(1.0_f32, BORDER_SUBTLE))
@@ -317,9 +322,13 @@ fn render_kb_header_card(
                 );
                 if let Some(s) = schema {
                     ui.label(
-                        RichText::new(format!("• {} ({})", s.display_name_en, s.category_group))
-                            .size(11.0)
-                            .color(TEXT_MUTED),
+                        RichText::new(format!(
+                            "• {} ({})",
+                            block_display_name(&summary.object_type),
+                            category_group_label(s.category_group)
+                        ))
+                        .size(11.0)
+                        .color(TEXT_MUTED),
                     );
                 }
             });
@@ -329,7 +338,7 @@ fn render_kb_header_card(
                 ui.label(RichText::new(s.summary).size(11.0).color(TEXT_MUTED));
                 ui.add_space(4.0);
                 if ui
-                    .small_button(RichText::new("📖 Loxone Docs").color(ACCENT_BLUE))
+                    .small_button(RichText::new(tr("📖 Loxone Docs")).color(ACCENT_BLUE))
                     .on_hover_text(s.kb_url)
                     .clicked()
                 {
@@ -347,7 +356,7 @@ fn render_kb_header_card(
             if let Some(r_uuid) = &summary.room_uuid {
                 if let Some(place) = project.places.get(r_uuid) {
                     ui.label(
-                        RichText::new(format!("Room: {}", place.title))
+                        RichText::new(format!("{}: {}", tr("Room"), place.title))
                             .size(11.0)
                             .color(TEXT_MUTED),
                     );
@@ -357,7 +366,7 @@ fn render_kb_header_card(
                 if let Some(cat) = project.categories.get(c_uuid) {
                     let cat_type = cat.cat_group.as_deref().unwrap_or("-");
                     ui.label(
-                        RichText::new(format!("Category: {} ({})", cat.title, cat_type))
+                        RichText::new(format!("{} {} ({})", tr("Category:"), cat.title, cat_type))
                             .size(11.0)
                             .color(TEXT_MUTED),
                     );
@@ -369,9 +378,9 @@ fn render_kb_header_card(
                 ObjectLocation::PageBlock { .. } => {
                     if ui
                         .small_button(
-                            RichText::new("🗑 Delete Block").color(crate::theme::STATUS_ERROR),
+                            RichText::new(tr("🗑 Delete Block")).color(crate::theme::STATUS_ERROR),
                         )
-                        .on_hover_text("Delete this block and its connected wires (Delete)")
+                        .on_hover_text(tr("Delete this block and its connected wires (Delete)"))
                         .clicked()
                     {
                         output.delete_uuid = Some(summary.uuid.clone());
@@ -382,9 +391,11 @@ fn render_kb_header_card(
                         .is_some()
                         && ui
                             .small_button(
-                                RichText::new("📥 Place on Current Page").color(ACCENT_BLUE),
+                                RichText::new(tr("📥 Place on Current Page")).color(ACCENT_BLUE),
                             )
-                            .on_hover_text("Add an Input/Output reference to this item on the active page")
+                            .on_hover_text(tr(
+                                "Add an Input/Output reference to this item on the active page",
+                            ))
                             .clicked()
                     {
                         output.place_on_page_uuid = Some(summary.uuid.clone());
@@ -393,8 +404,10 @@ fn render_kb_header_card(
                         summary.object_type.as_str(),
                         "Merker" | "Memory" | "VirtualIn" | "VirtualOut" | "VirtualOutCmd"
                     ) && ui
-                        .small_button(RichText::new("🗑 Delete").color(crate::theme::STATUS_ERROR))
-                        .on_hover_text("Delete this item and its schematic references")
+                        .small_button(
+                            RichText::new(tr("🗑 Delete")).color(crate::theme::STATUS_ERROR),
+                        )
+                        .on_hover_text(tr("Delete this item and its schematic references"))
                         .clicked()
                     {
                         output.delete_uuid = Some(summary.uuid.clone());
@@ -402,8 +415,10 @@ fn render_kb_header_card(
                 }
                 ObjectLocation::Category | ObjectLocation::Place | ObjectLocation::Page { .. } => {
                     if ui
-                        .small_button(RichText::new("🗑 Delete").color(crate::theme::STATUS_ERROR))
-                        .on_hover_text("Delete this item")
+                        .small_button(
+                            RichText::new(tr("🗑 Delete")).color(crate::theme::STATUS_ERROR),
+                        )
+                        .on_hover_text(tr("Delete this item"))
                         .clicked()
                     {
                         output.delete_uuid = Some(summary.uuid.clone());
@@ -420,12 +435,13 @@ fn render_used_on_pages_section(
     uuid: &str,
     output: &mut InspectorOutput,
 ) {
+    use crate::i18n::tr;
     let usages = project.xref.usages_for(uuid);
     if usages.is_empty() {
         return;
     }
     egui::CollapsingHeader::new(
-        RichText::new(format!("USED ON PAGES ({})", usages.len()))
+        RichText::new(format!("{} ({})", tr("USED ON PAGES"), usages.len()))
             .size(11.0)
             .color(TEXT_MUTED)
             .strong(),
@@ -483,8 +499,9 @@ fn render_general_and_visu_section(
     is_note_or_text: bool,
     edits: &mut Vec<ProjectEdit>,
 ) {
+    use crate::i18n::tr;
     egui::CollapsingHeader::new(
-        RichText::new("GENERAL & VISUALIZATION")
+        RichText::new(tr("GENERAL & VISUALIZATION"))
             .size(11.0)
             .color(TEXT_MUTED)
             .strong(),
@@ -497,7 +514,11 @@ fn render_general_and_visu_section(
 
         if is_note_or_text {
             let txt = get_raw_attr(raw_attributes, "Text").unwrap_or("");
-            ui.label(RichText::new("Note / Text Content").size(11.0).color(TEXT_MUTED));
+            ui.label(
+                RichText::new(tr("Note / Text Content"))
+                    .size(11.0)
+                    .color(TEXT_MUTED),
+            );
             let mut val = txt.to_string();
             if ui
                 .add(TextEdit::multiline(&mut val).desired_rows(3).desired_width(f32::INFINITY))
@@ -515,14 +536,14 @@ fn render_general_and_visu_section(
         let current_room_label = room_uuid
             .and_then(|u| project.places.get(u))
             .map(|p| p.title.as_str())
-            .unwrap_or("— Unassigned —");
+            .unwrap_or(tr("— Unassigned —"));
         ui.horizontal(|ui| {
-            ui.label(RichText::new("Room:").size(11.0).color(TEXT_MUTED));
+            ui.label(RichText::new(tr("Room:")).size(11.0).color(TEXT_MUTED));
             ComboBox::from_id_salt((control_uuid, "room_combo"))
                 .selected_text(current_room_label)
                 .show_ui(ui, |ui| {
                     if ui
-                        .selectable_label(room_uuid.is_none(), "— Unassigned —")
+                        .selectable_label(room_uuid.is_none(), tr("— Unassigned —"))
                         .clicked()
                     {
                         edits.push(ProjectEdit::SetChildTagAttr {
@@ -552,14 +573,14 @@ fn render_general_and_visu_section(
         let current_cat_label = category_uuid
             .and_then(|u| project.categories.get(u))
             .map(|c| c.title.as_str())
-            .unwrap_or("— Unassigned —");
+            .unwrap_or(tr("— Unassigned —"));
         ui.horizontal(|ui| {
-            ui.label(RichText::new("Category:").size(11.0).color(TEXT_MUTED));
+            ui.label(RichText::new(tr("Category:")).size(11.0).color(TEXT_MUTED));
             ComboBox::from_id_salt((control_uuid, "cat_combo"))
                 .selected_text(current_cat_label)
                 .show_ui(ui, |ui| {
                     if ui
-                        .selectable_label(category_uuid.is_none(), "— Unassigned —")
+                        .selectable_label(category_uuid.is_none(), tr("— Unassigned —"))
                         .clicked()
                     {
                         edits.push(ProjectEdit::SetChildTagAttr {
@@ -591,7 +612,7 @@ fn render_general_and_visu_section(
                 get_raw_attr(raw_attributes, "Visu"),
                 Some("true" | "1")
             );
-            if ui.checkbox(&mut visu, "Use in UI (Visu)").changed() {
+            if ui.checkbox(&mut visu, tr("Use in UI (Visu)")).changed() {
                 edits.push(ProjectEdit::SetControlAttr {
                     control_uuid: control_uuid.to_string(),
                     attr_name: "Visu".to_string(),
@@ -603,7 +624,7 @@ fn render_general_and_visu_section(
                 get_raw_attr(raw_attributes, "UseInFav"),
                 Some("true" | "1")
             );
-            if ui.checkbox(&mut fav, "Favorite").changed() {
+            if ui.checkbox(&mut fav, tr("Favorite")).changed() {
                 edits.push(ProjectEdit::SetControlAttr {
                     control_uuid: control_uuid.to_string(),
                     attr_name: "UseInFav".to_string(),
@@ -613,7 +634,7 @@ fn render_general_and_visu_section(
         });
 
         ui.horizontal(|ui| {
-            ui.label(RichText::new("Color (Cl):").size(11.0).color(TEXT_MUTED));
+            ui.label(RichText::new(tr("Color (Cl):")).size(11.0).color(TEXT_MUTED));
             let mut rgb = get_raw_attr(raw_attributes, "Cl")
                 .and_then(parse_rgb_color)
                 .unwrap_or([0x5E, 0x81, 0xFF]);
@@ -625,7 +646,7 @@ fn render_general_and_visu_section(
                 });
             }
 
-            ui.label(RichText::new("Rating:").size(11.0).color(TEXT_MUTED));
+            ui.label(RichText::new(tr("Rating:")).size(11.0).color(TEXT_MUTED));
             let mut rating: i32 = get_raw_attr(raw_attributes, "Rating")
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(0);
@@ -680,13 +701,16 @@ fn render_page_block_inspector(
             .map(|s| s.split(',').filter(|part| !part.trim().is_empty()).count())
             .unwrap_or(0);
         let btn_label = if obj_count > 0 {
-            format!(
-                "⚙ Konfiguracja obiektu ({} powiązanych wejść/wyjść)…",
-                obj_count
+            crate::i18n::tr_fmt(
+                "⚙ Object Configuration ({count} linked I/Os)…",
+                &[("count", &obj_count.to_string())],
             )
         } else {
-            "⚙ Konfiguracja obiektu (Konfiguracja wejść i wyjść)…".to_string()
+            crate::i18n::tr("⚙ Object Configuration (Inputs and outputs)…").to_string()
         };
+        let hover_text = crate::i18n::tr(
+            "Open the 'Object Configuration' dialog (assign presence sensors, contacts, lighting, shading, and sirens)",
+        );
         if ui
             .add_sized(
                 [ui.available_width(), 28.0],
@@ -697,9 +721,7 @@ fn render_page_block_inspector(
                         .strong(),
                 ),
             )
-            .on_hover_text(
-                "Otwórz okno 'Konfiguracja obiektu' (przypisywanie czujników obecności, kontaktów, oświetlenia, rolet i sygnalizatorów)",
-            )
+            .on_hover_text(hover_text)
             .clicked()
         {
             output.nav_action = Some(InspectorAction::OpenObjectConfig(block.uuid.clone()));
@@ -1020,7 +1042,7 @@ fn render_schema_parameters_section(
     }
 
     egui::CollapsingHeader::new(
-        RichText::new("PARAMETERS & OPERATING MODES")
+        RichText::new(crate::i18n::tr("PARAMETERS & OPERATING MODES"))
             .size(11.0)
             .color(TEXT_MUTED)
             .strong(),
@@ -1245,8 +1267,9 @@ fn render_singleline_attr_row(
     current: &str,
     edits: &mut Vec<ProjectEdit>,
 ) {
+    let translated = crate::i18n::tr(label);
     ui.horizontal(|ui| {
-        ui.label(RichText::new(format!("{label}:")).size(11.0).color(TEXT_MUTED));
+        ui.label(RichText::new(format!("{translated}:")).size(11.0).color(TEXT_MUTED));
         let mut val = current.to_string();
         if ui
             .add(TextEdit::singleline(&mut val).desired_width(f32::INFINITY))
@@ -1270,8 +1293,9 @@ fn render_child_tag_attr_row(
     current: &str,
     edits: &mut Vec<ProjectEdit>,
 ) {
+    let translated = crate::i18n::tr(label);
     ui.horizontal(|ui| {
-        ui.label(RichText::new(format!("{label}:")).size(11.0).color(TEXT_MUTED));
+        ui.label(RichText::new(format!("{translated}:")).size(11.0).color(TEXT_MUTED));
         let mut val = current.to_string();
         if ui
             .add(TextEdit::singleline(&mut val).desired_width(f32::INFINITY))
@@ -1390,13 +1414,14 @@ fn render_linked_target_section(
     ref_uuid: &str,
     output: &mut InspectorOutput,
 ) {
+    use crate::i18n::tr;
     let Some(target) = project.xref.objects_by_uuid.get(ref_uuid) else {
         return;
     };
     let target_schema = lookup_block_schema(&target.object_type);
 
     egui::CollapsingHeader::new(
-        RichText::new(format!("LINKED TARGET ({})", target.object_type))
+        RichText::new(format!("{} ({})", tr("LINKED TARGET"), target.object_type))
             .size(11.0)
             .color(ACCENT_BLUE)
             .strong(),
@@ -1406,7 +1431,8 @@ fn render_linked_target_section(
         if ui
             .button(
                 RichText::new(format!(
-                    "🎯 Select Target in Tree: {} ({})",
+                    "{}: {} ({})",
+                    tr("🎯 Select Target in Tree"),
                     if target.title.is_empty() {
                         &target.object_type
                     } else {
@@ -1485,12 +1511,13 @@ fn render_documented_pins_section(
     schema: Option<&'static BlockSchema>,
     output: &mut InspectorOutput,
 ) {
+    use crate::i18n::tr;
     if pins.is_empty() {
         return;
     }
 
     egui::CollapsingHeader::new(
-        RichText::new(format!("INPUTS & OUTPUTS ({})", pins.len()))
+        RichText::new(format!("{} ({})", tr("INPUTS & OUTPUTS"), pins.len()))
             .size(11.0)
             .color(TEXT_MUTED)
             .strong(),
@@ -1561,7 +1588,7 @@ fn render_documented_pins_section(
                     }
                     if ui
                         .small_button(RichText::new("✕").color(crate::theme::STATUS_ERROR))
-                        .on_hover_text("Disconnect wire")
+                        .on_hover_text(tr("Disconnect wire"))
                         .clicked()
                     {
                         output.edits.push(ProjectEdit::RemoveWireLink {
@@ -1605,9 +1632,11 @@ fn render_advanced_xml_section(
     extra_children: &[RawNode],
     edits: &mut Vec<ProjectEdit>,
 ) {
+    use crate::i18n::tr;
     egui::CollapsingHeader::new(
         RichText::new(format!(
-            "ADVANCED / RAW XML ATTRIBUTES ({})",
+            "{} ({})",
+            tr("ADVANCED / RAW XML ATTRIBUTES"),
             raw_attributes.len()
         ))
         .size(11.0)
@@ -1634,10 +1663,14 @@ fn render_advanced_xml_section(
         if !extra_children.is_empty() {
             ui.add_space(4.0);
             ui.label(
-                RichText::new(format!("Child XML Elements ({})", extra_children.len()))
-                    .size(10.5)
-                    .color(TEXT_MUTED)
-                    .strong(),
+                RichText::new(format!(
+                    "{} ({})",
+                    tr("Child XML Elements"),
+                    extra_children.len()
+                ))
+                .size(10.5)
+                .color(TEXT_MUTED)
+                .strong(),
             );
             render_raw_nodes(ui, extra_children);
         }

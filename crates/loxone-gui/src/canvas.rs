@@ -2320,9 +2320,9 @@ pub fn render_page_canvas(
     // Draw floating multi-selection badge when 2+ blocks are marked
     if viewport.interaction.selected_blocks.len() > 1 {
         let count = viewport.interaction.selected_blocks.len();
-        let badge_text = format!(
-            "✓ {} items selected  ·  Drag any selected item to move together  ·  ⌫ Delete",
-            count
+        let badge_text = crate::i18n::tr_fmt(
+            "✓ {count} items selected  ·  Drag any selected item to move together  ·  ⌫ Delete",
+            &[("count", &count.to_string())],
         );
         let badge_w = 420.0_f32.min(canvas_rect.width() - 32.0);
         let badge_h = 28.0_f32;
@@ -2393,7 +2393,7 @@ pub fn render_page_canvas(
                         match &menu {
                             CanvasContextMenu::EmptyCanvas { lx, ly, .. } => {
                                 if ui
-                                    .button("➕ Add Function Block / Reference here...")
+                                    .button(crate::i18n::tr("➕ Add Function Block / Reference here..."))
                                     .clicked()
                                 {
                                     action = Some(CanvasAction::OpenInsertModalAt {
@@ -2402,7 +2402,10 @@ pub fn render_page_canvas(
                                     });
                                     close_menu = true;
                                 }
-                                if ui.button("📋 Paste Clipboard Here (Cmd+V)").clicked() {
+                                if ui
+                                    .button(crate::i18n::tr("📋 Paste Clipboard Here (Cmd+V)"))
+                                    .clicked()
+                                {
                                     action = Some(CanvasAction::PasteClipboardAt {
                                         px: *lx,
                                         py: *ly,
@@ -2428,18 +2431,18 @@ pub fn render_page_canvas(
                                     .find(|b| &b.uuid == block_uuid)
                                     .is_some_and(loxone_core::supports_object_config)
                                     && ui
-                                        .button("⚙ Konfiguracja obiektu… (Double-click)")
+                                        .button(crate::i18n::tr("⚙ Object Configuration… (Double-click)"))
                                         .clicked()
                                 {
                                     action =
                                         Some(CanvasAction::OpenObjectConfig(block_uuid.clone()));
                                     close_menu = true;
                                 }
-                                if ui.button("🔍 Inspect Block").clicked() {
+                                if ui.button(crate::i18n::tr("🔍 Inspect Block")).clicked() {
                                     action = Some(CanvasAction::SelectObject(block_uuid.clone()));
                                     close_menu = true;
                                 }
-                                if ui.button("✏ Rename Title…").clicked() {
+                                if ui.button(crate::i18n::tr("✏ Rename Title…")).clicked() {
                                     viewport.interaction.inline_rename = Some(InlineRenameState {
                                         screen_pos: *screen_pos,
                                         block_uuid: block_uuid.clone(),
@@ -2447,7 +2450,7 @@ pub fn render_page_canvas(
                                     });
                                     close_menu = true;
                                 }
-                                if ui.button("📋 Copy (Cmd+C)").clicked() {
+                                if ui.button(crate::i18n::tr("📋 Copy (Cmd+C)")).clicked() {
                                     if !viewport.interaction.selected_blocks.contains(block_uuid) {
                                         viewport.interaction.selected_blocks =
                                             vec![block_uuid.clone()];
@@ -2455,7 +2458,7 @@ pub fn render_page_canvas(
                                     action = Some(CanvasAction::CopySelectedBlocks);
                                     close_menu = true;
                                 }
-                                if ui.button("⧉ Duplicate (Cmd+D)").clicked() {
+                                if ui.button(crate::i18n::tr("⧉ Duplicate (Cmd+D)")).clicked() {
                                     if !viewport.interaction.selected_blocks.contains(block_uuid) {
                                         viewport.interaction.selected_blocks =
                                             vec![block_uuid.clone()];
@@ -2474,8 +2477,12 @@ pub fn render_page_canvas(
                                         );
                                         if let Some(first_out) = out_pins.first() {
                                             let out_key = first_out.key.clone();
+                                            let send_lbl = crate::i18n::tr_fmt(
+                                                "📤 Send Output ({pin}) to Page…",
+                                                &[("pin", &out_key)],
+                                            );
                                             ui.menu_button(
-                                                format!("📤 Send Output ({}) to Page…", out_key),
+                                                send_lbl,
                                                 |ui| {
                                                     for target_p in &project.pages {
                                                         if target_p.uuid == *page_uuid {
@@ -2508,13 +2515,11 @@ pub fn render_page_canvas(
                                 if multi_count > 1
                                     && viewport.interaction.selected_blocks.contains(block_uuid)
                                 {
-                                    if ui
-                                        .button(format!(
-                                            "🗑 Delete {} Selected Blocks",
-                                            multi_count
-                                        ))
-                                        .clicked()
-                                    {
+                                    let del_multi_lbl = crate::i18n::tr_fmt(
+                                        "🗑 Delete {count} Selected Blocks",
+                                        &[("count", &multi_count.to_string())],
+                                    );
+                                    if ui.button(del_multi_lbl).clicked() {
                                         let uuids =
                                             std::mem::take(&mut viewport.interaction.selected_blocks);
                                         action = Some(CanvasAction::DeleteBlocks {
@@ -2523,7 +2528,7 @@ pub fn render_page_canvas(
                                         });
                                         close_menu = true;
                                     }
-                                } else if ui.button("🗑 Delete Block").clicked() {
+                                } else if ui.button(crate::i18n::tr("🗑 Delete Block")).clicked() {
                                     action = Some(CanvasAction::DeleteBlock {
                                         page_uuid: page_uuid.clone(),
                                         block_uuid: block_uuid.clone(),
@@ -2557,7 +2562,7 @@ pub fn render_page_canvas(
                     .show(ui, |ui| {
                         ui.horizontal(|ui| {
                             ui.label(
-                                egui::RichText::new("✏ Rename:")
+                                egui::RichText::new(crate::i18n::tr("✏ Rename:"))
                                     .size(11.5)
                                     .strong()
                                     .color(TEXT_MUTED),
@@ -2568,7 +2573,7 @@ pub fn render_page_canvas(
                             );
                             let enter_pressed =
                                 resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-                            if enter_pressed || ui.small_button("✓ Save").clicked() {
+                            if enter_pressed || ui.small_button(crate::i18n::tr("✓ Save")).clicked() {
                                 let trimmed = rename.title_input.trim().to_string();
                                 if !trimmed.is_empty() {
                                     action = Some(CanvasAction::RenameBlockTitle {
@@ -2641,18 +2646,18 @@ pub fn render_page_canvas(
                             == loxone_core::miniserver::RefBarLiveControlKind::Touch5Pad
                         {
                             ui.label(
-                                egui::RichText::new("T5 Touch Pad Simulation:")
+                                egui::RichText::new(crate::i18n::tr("T5 Touch Pad Simulation:"))
                                     .size(11.0)
                                     .color(TEXT_MUTED),
                             );
                             ui.horizontal_wrapped(|ui| {
                                 for (lbl, val) in [
-                                    ("● Center", "1/0/0/0"),
-                                    ("↖ Top-L", "1/1/0/0"),
-                                    ("↗ Top-R", "1/0/1/0"),
-                                    ("↙ Bot-L", "1/0/0/1"),
-                                    ("↘ Bot-R", "1/0/0/2"),
-                                    ("○ Release (0)", "0/0/0/0"),
+                                    (crate::i18n::tr("● Center"), "1/0/0/0"),
+                                    (crate::i18n::tr("↖ Top-L"), "1/1/0/0"),
+                                    (crate::i18n::tr("↗ Top-R"), "1/0/1/0"),
+                                    (crate::i18n::tr("↙ Bot-L"), "1/0/0/1"),
+                                    (crate::i18n::tr("↘ Bot-R"), "1/0/0/2"),
+                                    (crate::i18n::tr("○ Release (0)"), "0/0/0/0"),
                                 ] {
                                     if ui.small_button(lbl).clicked() {
                                         action = Some(CanvasAction::TriggerLiveCommand {
@@ -2667,7 +2672,7 @@ pub fn render_page_canvas(
                             ui.add_space(4.0);
                         } else {
                             ui.label(
-                                egui::RichText::new("Quick adjust / set value:")
+                                egui::RichText::new(crate::i18n::tr("Quick adjust / set value:"))
                                     .size(11.0)
                                     .color(TEXT_MUTED),
                             );
@@ -2708,14 +2713,14 @@ pub fn render_page_canvas(
                             let resp = ui.add(
                                 egui::TextEdit::singleline(&mut popup.value_input)
                                     .desired_width(135.0)
-                                    .hint_text("Value (e.g. 21.5)"),
+                                    .hint_text(crate::i18n::tr("Value (e.g. 21.5)")),
                             );
                             let enter_pressed =
                                 resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
                             let apply_clicked = ui
                                 .add(
                                     egui::Button::new(
-                                        egui::RichText::new("✓ Set")
+                                        egui::RichText::new(crate::i18n::tr("✓ Set"))
                                             .strong()
                                             .color(Color32::WHITE),
                                     )

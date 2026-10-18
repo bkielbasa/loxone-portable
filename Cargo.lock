@@ -1867,6 +1867,8 @@ dependencies = [
  "egui",
  "loxone-core",
  "rfd",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

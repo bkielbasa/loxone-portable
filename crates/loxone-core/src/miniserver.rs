@@ -2408,6 +2408,47 @@ mod tests {
         assert!(!unchanged_lux.is_active);
     }
 
+    fn read_full_http_request(stream: &mut std::net::TcpStream) -> Vec<u8> {
+        let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(2)));
+        let mut data = Vec::new();
+        let mut chunk = [0u8; 8192];
+        let mut expected_total_len: Option<usize> = None;
+
+        loop {
+            match stream.read(&mut chunk) {
+                Ok(0) => break,
+                Ok(n) => {
+                    data.extend_from_slice(&chunk[..n]);
+                    if expected_total_len.is_none() {
+                        if let Some(hdr_end) = data.windows(4).position(|w| w == b"\r\n\r\n") {
+                            let body_start = hdr_end + 4;
+                            let hdr_str = String::from_utf8_lossy(&data[..hdr_end]);
+                            let content_len = hdr_str
+                                .lines()
+                                .find_map(|line| {
+                                    let (k, v) = line.split_once(':')?;
+                                    if k.trim().eq_ignore_ascii_case("content-length") {
+                                        v.trim().parse::<usize>().ok()
+                                    } else {
+                                        None
+                                    }
+                                })
+                                .unwrap_or(0);
+                            expected_total_len = Some(body_start + content_len);
+                        }
+                    }
+                    if let Some(total) = expected_total_len {
+                        if data.len() >= total {
+                            break;
+                        }
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+        data
+    }
+
     #[test]
     fn test_loxone_key_exchange_and_upload_project_with_safety_backup() {
         let json = r#"{"LL":{"control":"jdev/sys/getkey2/admin","value":{"key":"30313233343536373839","salt":"AABBCC","hashAlg":"SHA1"},"Code":"200"}}"#;
@@ -2436,9 +2477,8 @@ mod tests {
             // 5 requests: fslist, fsget (backup), fsput sps_new.zip, fsput sps0.LoxCC, sps/restart
             for _ in 0..5 {
                 if let Ok((mut stream, _)) = listener.accept() {
-                    let mut buf = [0u8; 16384];
-                    let n = stream.read(&mut buf).unwrap_or(0);
-                    let req = String::from_utf8_lossy(&buf[..n]);
+                    let buf = read_full_http_request(&mut stream);
+                    let req = String::from_utf8_lossy(&buf);
                     if req.starts_with("GET /dev/fslist/prog ") {
                         let body = "-rw-rw-rw- 1 0 0 1024 Mar 8 18:22 sps0.LoxCC\r\n";
                         let resp = format!(
@@ -2455,8 +2495,8 @@ mod tests {
                         let _ = stream.write_all(header.as_bytes());
                         let _ = stream.write_all(&old_zip);
                     } else if req.starts_with("POST /dev/fsput/prog/sps_new.zip ") {
-                        if let Some(idx) = buf[..n].windows(4).position(|w| w == b"\r\n\r\n") {
-                            let body_bytes = &buf[idx + 4..n];
+                        if let Some(idx) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+                            let body_bytes = &buf[idx + 4..];
                             *uploaded_zip_clone.lock().unwrap() = body_bytes.to_vec();
                         }
                         let resp = "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nOK";
@@ -2661,9 +2701,8 @@ mod tests {
             // Attempt 1 (blocked after 2 requests: fslist, fsget) + Attempt 2 (succeeds: fslist, fsget, fsput zip, fsput loxcc) = 6 requests
             for _ in 0..6 {
                 if let Ok((mut stream, _)) = listener.accept() {
-                    let mut buf = [0u8; 16384];
-                    let n = stream.read(&mut buf).unwrap_or(0);
-                    let req = String::from_utf8_lossy(&buf[..n]);
+                    let buf = read_full_http_request(&mut stream);
+                    let req = String::from_utf8_lossy(&buf);
                     if req.starts_with("GET /dev/fslist/prog ") {
                         let body = "-rw-rw-rw- 1 0 0 1024 Oct 17 15:00 sps_222_20261017150000.zip\r\n";
                         let resp = format!(

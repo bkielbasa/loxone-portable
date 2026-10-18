@@ -299,354 +299,359 @@ pub fn render_object_config_modal(
     let modal_w = (screen.width() - 80.0).clamp(760.0, 1180.0);
     let modal_h = (screen.height() - 90.0).clamp(460.0, 740.0);
 
-    egui::Window::new(format!("Konfiguracja obiektu — {}", state.block_title))
-        .id(Id::new("loxone_object_config_modal_window"))
-        .open(&mut open_flag)
-        .collapsible(false)
-        .resizable(true)
-        .default_size(Vec2::new(modal_w, modal_h))
-        .min_size(Vec2::new(720.0, 400.0))
-        .anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO)
-        .order(egui::Order::Foreground)
-        .frame(
-            egui::Frame::window(&ctx.style())
-                .fill(PANEL_BG)
-                .stroke(Stroke::new(1.0_f32, BORDER_SUBTLE))
-                .corner_radius(CornerRadius::same(6))
-                .inner_margin(egui::Margin::same(12)),
-        )
-        .show(ctx, |ui| {
-            // Top bar: "Filtruj według wyboru" checkbox on the left + "Szukaj..." search bar on the right
-            ui.horizontal(|ui| {
-                draw_loxone_green_checkbox(ui, &mut state.filter_by_selection, true);
-                let lbl = ui.add(
-                    egui::Label::new(
-                        RichText::new("Filtruj według wyboru")
-                            .size(12.5)
-                            .color(TEXT_PRIMARY),
-                    )
-                    .sense(Sense::click()),
-                );
-                if lbl.clicked() {
-                    state.filter_by_selection = !state.filter_by_selection;
+    use crate::i18n::{tr, tr_fmt};
+
+    egui::Window::new(format!(
+        "{} — {}",
+        tr("Object Configuration"),
+        state.block_title
+    ))
+    .id(Id::new("loxone_object_config_modal_window"))
+    .open(&mut open_flag)
+    .collapsible(false)
+    .resizable(true)
+    .default_size(Vec2::new(modal_w, modal_h))
+    .min_size(Vec2::new(720.0, 400.0))
+    .anchor(egui::Align2::CENTER_CENTER, Vec2::ZERO)
+    .order(egui::Order::Foreground)
+    .frame(
+        egui::Frame::window(&ctx.style())
+            .fill(PANEL_BG)
+            .stroke(Stroke::new(1.0_f32, BORDER_SUBTLE))
+            .corner_radius(CornerRadius::same(6))
+            .inner_margin(egui::Margin::same(12)),
+    )
+    .show(ctx, |ui| {
+        // Top bar: "Filter by selection" checkbox on the left + search bar on the right
+        ui.horizontal(|ui| {
+            draw_loxone_green_checkbox(ui, &mut state.filter_by_selection, true);
+            let lbl = ui.add(
+                egui::Label::new(
+                    RichText::new(tr("Filter by selection"))
+                        .size(12.5)
+                        .color(TEXT_PRIMARY),
+                )
+                .sense(Sense::click()),
+            );
+            if lbl.clicked() {
+                state.filter_by_selection = !state.filter_by_selection;
+            }
+
+            let selected_in = state.rows.iter().filter(|r| r.is_input).count();
+            let selected_out = state.rows.iter().filter(|r| r.is_output).count();
+            ui.add_space(10.0);
+            let counts_str = tr_fmt(
+                "(Inputs: {in}  •  Outputs: {out}  •  Total: {total})",
+                &[
+                    ("in", &selected_in.to_string()),
+                    ("out", &selected_out.to_string()),
+                    ("total", &state.rows.len().to_string()),
+                ],
+            );
+            ui.label(RichText::new(counts_str).size(11.5).color(TEXT_MUTED));
+
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if !state.search_query.is_empty() && ui.small_button("✕").clicked() {
+                    state.search_query.clear();
                 }
-
-                let selected_in = state.rows.iter().filter(|r| r.is_input).count();
-                let selected_out = state.rows.iter().filter(|r| r.is_output).count();
-                ui.add_space(10.0);
-                ui.label(
-                    RichText::new(format!(
-                        "(Wejścia: {}  •  Wyjścia: {}  •  Wszystkich: {})",
-                        selected_in,
-                        selected_out,
-                        state.rows.len()
-                    ))
-                    .size(11.5)
-                    .color(TEXT_MUTED),
+                ui.add(
+                    TextEdit::singleline(&mut state.search_query)
+                        .hint_text(tr("🔍 Search..."))
+                        .desired_width(240.0),
                 );
+            });
+        });
 
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if !state.search_query.is_empty() && ui.small_button("✕").clicked() {
-                        state.search_query.clear();
-                    }
-                    ui.add(
-                        TextEdit::singleline(&mut state.search_query)
-                            .hint_text("🔍 Szukaj...")
-                            .desired_width(240.0),
+        ui.add_space(8.0);
+
+        // Column widths
+        let avail_w = ui.available_width();
+        let col_in = 58.0;
+        let col_out = 58.0;
+        let flex = (avail_w - col_in - col_out - 64.0).max(520.0);
+        let col_name = flex * 0.19;
+        let col_disp = flex * 0.17;
+        let col_dev = flex * 0.16;
+        let col_room = flex * 0.12;
+        let col_room_type = flex * 0.12;
+        let col_cat = flex * 0.11;
+        let col_obj_type = flex * 0.13;
+
+        // Table Header
+        egui::Frame::new()
+            .fill(HEADER_BG)
+            .stroke(Stroke::new(1.0_f32, BORDER_SUBTLE))
+            .inner_margin(egui::Margin::symmetric(6, 3))
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 6.0;
+                    render_header_cell(
+                        ui,
+                        col_in,
+                        tr("Input"),
+                        ObjectConfigSortColumn::Input,
+                        &mut state.sort_column,
+                        &mut state.sort_ascending,
+                        true,
+                    );
+                    render_header_cell(
+                        ui,
+                        col_out,
+                        tr("Output"),
+                        ObjectConfigSortColumn::Output,
+                        &mut state.sort_column,
+                        &mut state.sort_ascending,
+                        true,
+                    );
+                    render_header_cell(
+                        ui,
+                        col_name,
+                        tr("Name"),
+                        ObjectConfigSortColumn::Name,
+                        &mut state.sort_column,
+                        &mut state.sort_ascending,
+                        false,
+                    );
+                    render_header_cell(
+                        ui,
+                        col_disp,
+                        tr("Display Name"),
+                        ObjectConfigSortColumn::DisplayName,
+                        &mut state.sort_column,
+                        &mut state.sort_ascending,
+                        false,
+                    );
+                    render_header_cell(
+                        ui,
+                        col_dev,
+                        tr("Device"),
+                        ObjectConfigSortColumn::Device,
+                        &mut state.sort_column,
+                        &mut state.sort_ascending,
+                        false,
+                    );
+                    render_header_cell(
+                        ui,
+                        col_room,
+                        tr("Room"),
+                        ObjectConfigSortColumn::Room,
+                        &mut state.sort_column,
+                        &mut state.sort_ascending,
+                        false,
+                    );
+                    render_header_cell(
+                        ui,
+                        col_room_type,
+                        tr("Room Type"),
+                        ObjectConfigSortColumn::RoomType,
+                        &mut state.sort_column,
+                        &mut state.sort_ascending,
+                        false,
+                    );
+                    render_header_cell(
+                        ui,
+                        col_cat,
+                        tr("Category"),
+                        ObjectConfigSortColumn::Category,
+                        &mut state.sort_column,
+                        &mut state.sort_ascending,
+                        false,
+                    );
+                    render_header_cell(
+                        ui,
+                        col_obj_type,
+                        tr("Object Type"),
+                        ObjectConfigSortColumn::ObjectType,
+                        &mut state.sort_column,
+                        &mut state.sort_ascending,
+                        false,
                     );
                 });
             });
 
-            ui.add_space(8.0);
+        let visible_indices = state.visible_row_indices();
+        let table_h = (ui.available_height() - 46.0).max(200.0);
 
-            // Column widths
-            let avail_w = ui.available_width();
-            let col_in = 58.0;
-            let col_out = 58.0;
-            let flex = (avail_w - col_in - col_out - 64.0).max(520.0);
-            let col_name = flex * 0.19;
-            let col_disp = flex * 0.17;
-            let col_dev = flex * 0.16;
-            let col_room = flex * 0.12;
-            let col_room_type = flex * 0.12;
-            let col_cat = flex * 0.11;
-            let col_obj_type = flex * 0.13;
-
-            // Table Header
-            egui::Frame::new()
-                .fill(HEADER_BG)
-                .stroke(Stroke::new(1.0_f32, BORDER_SUBTLE))
-                .inner_margin(egui::Margin::symmetric(6, 3))
-                .show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.spacing_mut().item_spacing.x = 6.0;
-                        render_header_cell(
-                            ui,
-                            col_in,
-                            "Wejście",
-                            ObjectConfigSortColumn::Input,
-                            &mut state.sort_column,
-                            &mut state.sort_ascending,
-                            true,
-                        );
-                        render_header_cell(
-                            ui,
-                            col_out,
-                            "Wyjście",
-                            ObjectConfigSortColumn::Output,
-                            &mut state.sort_column,
-                            &mut state.sort_ascending,
-                            true,
-                        );
-                        render_header_cell(
-                            ui,
-                            col_name,
-                            "Nazwa",
-                            ObjectConfigSortColumn::Name,
-                            &mut state.sort_column,
-                            &mut state.sort_ascending,
-                            false,
-                        );
-                        render_header_cell(
-                            ui,
-                            col_disp,
-                            "Wyświetlana nazwa",
-                            ObjectConfigSortColumn::DisplayName,
-                            &mut state.sort_column,
-                            &mut state.sort_ascending,
-                            false,
-                        );
-                        render_header_cell(
-                            ui,
-                            col_dev,
-                            "Urządzenie",
-                            ObjectConfigSortColumn::Device,
-                            &mut state.sort_column,
-                            &mut state.sort_ascending,
-                            false,
-                        );
-                        render_header_cell(
-                            ui,
-                            col_room,
-                            "Pomieszczenie",
-                            ObjectConfigSortColumn::Room,
-                            &mut state.sort_column,
-                            &mut state.sort_ascending,
-                            false,
-                        );
-                        render_header_cell(
-                            ui,
-                            col_room_type,
-                            "Typ pomieszczenia",
-                            ObjectConfigSortColumn::RoomType,
-                            &mut state.sort_column,
-                            &mut state.sort_ascending,
-                            false,
-                        );
-                        render_header_cell(
-                            ui,
-                            col_cat,
-                            "Kategoria",
-                            ObjectConfigSortColumn::Category,
-                            &mut state.sort_column,
-                            &mut state.sort_ascending,
-                            false,
-                        );
-                        render_header_cell(
-                            ui,
-                            col_obj_type,
-                            "Typ obiektu",
-                            ObjectConfigSortColumn::ObjectType,
-                            &mut state.sort_column,
-                            &mut state.sort_ascending,
-                            false,
-                        );
-                    });
-                });
-
-            let visible_indices = state.visible_row_indices();
-            let table_h = (ui.available_height() - 46.0).max(200.0);
-
-            egui::Frame::new()
-                .fill(CARD_BG)
-                .stroke(Stroke::new(1.0_f32, BORDER_SUBTLE))
-                .show(ui, |ui| {
-                    ui.set_min_height(table_h);
-                    ScrollArea::vertical()
-                        .id_salt("object_config_rows_scroll")
-                        .max_height(table_h)
-                        .auto_shrink([false, false])
-                        .show(ui, |ui| {
-                            ui.spacing_mut().item_spacing.y = 0.0;
-                            if visible_indices.is_empty() {
-                                ui.add_space(28.0);
-                                ui.vertical_centered(|ui| {
-                                    ui.label(
-                                        RichText::new(
-                                            "Brak pasujących obiektów. Odznacz „Filtruj według wyboru”, aby zobaczyć wszystkie dostępne obiekty w projekcie.",
-                                        )
-                                        .size(12.5)
-                                        .color(TEXT_MUTED),
-                                    );
-                                });
-                            }
-                            for (vis_pos, row_idx) in visible_indices.into_iter().enumerate() {
-                                let row = &mut state.rows[row_idx];
-                                let base_bg = if vis_pos % 2 == 0 {
-                                    ROW_BG_EVEN
-                                } else {
-                                    ROW_BG_ODD
-                                };
-                                let row_resp = egui::Frame::new()
-                                    .fill(base_bg)
-                                    .inner_margin(egui::Margin::symmetric(6, 2))
-                                    .show(ui, |ui| {
-                                        ui.horizontal(|ui| {
-                                            ui.spacing_mut().item_spacing.x = 6.0;
-                                            ui.allocate_ui_with_layout(
-                                                Vec2::new(col_in, 22.0),
-                                                Layout::centered_and_justified(
-                                                    egui::Direction::LeftToRight,
-                                                ),
-                                                |ui| {
-                                                    draw_loxone_green_checkbox(
-                                                        ui,
-                                                        &mut row.is_input,
-                                                        row.can_be_input,
-                                                    );
-                                                },
-                                            );
-                                            ui.allocate_ui_with_layout(
-                                                Vec2::new(col_out, 22.0),
-                                                Layout::centered_and_justified(
-                                                    egui::Direction::LeftToRight,
-                                                ),
-                                                |ui| {
-                                                    draw_loxone_green_checkbox(
-                                                        ui,
-                                                        &mut row.is_output,
-                                                        row.can_be_output,
-                                                    );
-                                                },
-                                            );
-                                            let r_name = render_cell_label(
-                                                ui,
-                                                col_name,
-                                                &row.name,
-                                                TEXT_PRIMARY,
-                                                true,
-                                            );
-                                            if r_name.clicked() {
-                                                action = Some(
-                                                    ObjectConfigModalAction::InspectObject(
-                                                        row.target_uuid.clone(),
-                                                    ),
+        egui::Frame::new()
+            .fill(CARD_BG)
+            .stroke(Stroke::new(1.0_f32, BORDER_SUBTLE))
+            .show(ui, |ui| {
+                ui.set_min_height(table_h);
+                ScrollArea::vertical()
+                    .id_salt("object_config_rows_scroll")
+                    .max_height(table_h)
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        ui.spacing_mut().item_spacing.y = 0.0;
+                        if visible_indices.is_empty() {
+                            ui.add_space(28.0);
+                            ui.vertical_centered(|ui| {
+                                ui.label(
+                                    RichText::new(tr(
+                                        "No matching objects. Uncheck \"Filter by selection\" to see all available objects in the project.",
+                                    ))
+                                    .size(12.5)
+                                    .color(TEXT_MUTED),
+                                );
+                            });
+                        }
+                        for (vis_pos, row_idx) in visible_indices.into_iter().enumerate() {
+                            let row = &mut state.rows[row_idx];
+                            let base_bg = if vis_pos % 2 == 0 {
+                                ROW_BG_EVEN
+                            } else {
+                                ROW_BG_ODD
+                            };
+                            let row_resp = egui::Frame::new()
+                                .fill(base_bg)
+                                .inner_margin(egui::Margin::symmetric(6, 2))
+                                .show(ui, |ui| {
+                                    ui.horizontal(|ui| {
+                                        ui.spacing_mut().item_spacing.x = 6.0;
+                                        ui.allocate_ui_with_layout(
+                                            Vec2::new(col_in, 22.0),
+                                            Layout::centered_and_justified(
+                                                egui::Direction::LeftToRight,
+                                            ),
+                                            |ui| {
+                                                draw_loxone_green_checkbox(
+                                                    ui,
+                                                    &mut row.is_input,
+                                                    row.can_be_input,
                                                 );
-                                            }
-                                            render_cell_label(
-                                                ui,
-                                                col_disp,
-                                                &row.display_name,
-                                                TEXT_PRIMARY,
-                                                false,
+                                            },
+                                        );
+                                        ui.allocate_ui_with_layout(
+                                            Vec2::new(col_out, 22.0),
+                                            Layout::centered_and_justified(
+                                                egui::Direction::LeftToRight,
+                                            ),
+                                            |ui| {
+                                                draw_loxone_green_checkbox(
+                                                    ui,
+                                                    &mut row.is_output,
+                                                    row.can_be_output,
+                                                );
+                                            },
+                                        );
+                                        let r_name = render_cell_label(
+                                            ui,
+                                            col_name,
+                                            &row.name,
+                                            TEXT_PRIMARY,
+                                            true,
+                                        );
+                                        if r_name.clicked() {
+                                            action = Some(
+                                                ObjectConfigModalAction::InspectObject(
+                                                    row.target_uuid.clone(),
+                                                ),
                                             );
-                                            render_cell_label(
-                                                ui,
-                                                col_dev,
-                                                &row.device_name,
-                                                Color32::from_rgb(0xC6, 0xCE, 0xDA),
-                                                false,
-                                            );
-                                            render_cell_label(
-                                                ui,
-                                                col_room,
-                                                &row.room_name,
-                                                Color32::from_rgb(0xC6, 0xCE, 0xDA),
-                                                false,
-                                            );
-                                            render_cell_label(
-                                                ui,
-                                                col_room_type,
-                                                &row.room_type,
-                                                TEXT_MUTED,
-                                                false,
-                                            );
-                                            render_cell_label(
-                                                ui,
-                                                col_cat,
-                                                &row.category_name,
-                                                Color32::from_rgb(0xC6, 0xCE, 0xDA),
-                                                false,
-                                            );
-                                            render_cell_label(
-                                                ui,
-                                                col_obj_type,
-                                                &row.object_type,
-                                                TEXT_MUTED,
-                                                false,
-                                            );
-                                        });
-                                    })
-                                    .response;
+                                        }
+                                        render_cell_label(
+                                            ui,
+                                            col_disp,
+                                            &row.display_name,
+                                            TEXT_PRIMARY,
+                                            false,
+                                        );
+                                        render_cell_label(
+                                            ui,
+                                            col_dev,
+                                            &row.device_name,
+                                            Color32::from_rgb(0xC6, 0xCE, 0xDA),
+                                            false,
+                                        );
+                                        render_cell_label(
+                                            ui,
+                                            col_room,
+                                            &row.room_name,
+                                            Color32::from_rgb(0xC6, 0xCE, 0xDA),
+                                            false,
+                                        );
+                                        render_cell_label(
+                                            ui,
+                                            col_room_type,
+                                            &row.room_type,
+                                            TEXT_MUTED,
+                                            false,
+                                        );
+                                        render_cell_label(
+                                            ui,
+                                            col_cat,
+                                            &row.category_name,
+                                            Color32::from_rgb(0xC6, 0xCE, 0xDA),
+                                            false,
+                                        );
+                                        render_cell_label(
+                                            ui,
+                                            col_obj_type,
+                                            &row.object_type,
+                                            TEXT_MUTED,
+                                            false,
+                                        );
+                                    });
+                                })
+                                .response;
 
-                                if row_resp.hovered() {
-                                    ui.painter().rect_stroke(
-                                        row_resp.rect,
-                                        CornerRadius::ZERO,
-                                        Stroke::new(1.0_f32, ROW_BG_HOVER),
-                                        egui::StrokeKind::Inside,
-                                    );
-                                }
-                                // Subtle bottom divider line matching Loxone Config table grid
-                                ui.painter().line_segment(
-                                    [
-                                        Pos2::new(row_resp.rect.min.x, row_resp.rect.max.y),
-                                        Pos2::new(row_resp.rect.max.x, row_resp.rect.max.y),
-                                    ],
-                                    Stroke::new(0.5_f32, Color32::from_rgb(0x36, 0x3C, 0x46)),
+                            if row_resp.hovered() {
+                                ui.painter().rect_stroke(
+                                    row_resp.rect,
+                                    CornerRadius::ZERO,
+                                    Stroke::new(1.0_f32, ROW_BG_HOVER),
+                                    egui::StrokeKind::Inside,
                                 );
                             }
-                        });
-                });
-
-            ui.add_space(10.0);
-
-            // Bottom action buttons: Anuluj + Potwierdź
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                let confirm_btn = egui::Button::new(
-                    RichText::new("  Potwierdź  ")
-                        .size(13.0)
-                        .strong()
-                        .color(Color32::from_rgb(0x11, 0x16, 0x0D)),
-                )
-                .fill(LOXONE_GREEN)
-                .min_size(Vec2::new(112.0, 28.0));
-
-                if ui.add(confirm_btn).clicked() {
-                    action = Some(ObjectConfigModalAction::Apply {
-                        page_uuid: state.page_uuid.clone(),
-                        block_uuid: state.block_uuid.clone(),
-                        rows: state.rows.clone(),
+                            // Subtle bottom divider line matching Loxone Config table grid
+                            ui.painter().line_segment(
+                                [
+                                    Pos2::new(row_resp.rect.min.x, row_resp.rect.max.y),
+                                    Pos2::new(row_resp.rect.max.x, row_resp.rect.max.y),
+                                ],
+                                Stroke::new(0.5_f32, Color32::from_rgb(0x36, 0x3C, 0x46)),
+                            );
+                        }
                     });
-                    should_close = true;
-                }
-
-                ui.add_space(8.0);
-
-                let cancel_btn = egui::Button::new(
-                    RichText::new("  Anuluj  ")
-                        .size(13.0)
-                        .color(TEXT_PRIMARY),
-                )
-                .fill(Color32::from_rgb(0x38, 0x3E, 0x48))
-                .stroke(Stroke::new(1.0_f32, BORDER_SUBTLE))
-                .min_size(Vec2::new(100.0, 28.0));
-
-                if ui.add(cancel_btn).clicked() {
-                    should_close = true;
-                }
             });
+
+        ui.add_space(10.0);
+
+        // Bottom action buttons: Cancel/Anuluj + Confirm/Potwierdź
+        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            let confirm_btn = egui::Button::new(
+                RichText::new(tr("  Confirm  "))
+                    .size(13.0)
+                    .strong()
+                    .color(Color32::from_rgb(0x11, 0x16, 0x0D)),
+            )
+            .fill(LOXONE_GREEN)
+            .min_size(Vec2::new(112.0, 28.0));
+
+            if ui.add(confirm_btn).clicked() {
+                action = Some(ObjectConfigModalAction::Apply {
+                    page_uuid: state.page_uuid.clone(),
+                    block_uuid: state.block_uuid.clone(),
+                    rows: state.rows.clone(),
+                });
+                should_close = true;
+            }
+
+            ui.add_space(8.0);
+
+            let cancel_btn = egui::Button::new(
+                RichText::new(tr("  Cancel  "))
+                    .size(13.0)
+                    .color(TEXT_PRIMARY),
+            )
+            .fill(Color32::from_rgb(0x38, 0x3E, 0x48))
+            .stroke(Stroke::new(1.0_f32, BORDER_SUBTLE))
+            .min_size(Vec2::new(100.0, 28.0));
+
+            if ui.add(cancel_btn).clicked() {
+                should_close = true;
+            }
         });
+    });
 
     if !open_flag || should_close {
         state.is_open = false;
