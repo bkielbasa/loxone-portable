@@ -58,6 +58,26 @@ impl InsertModalState {
         self.focus_requested = true;
     }
 
+    pub fn open_with_category(&mut self, category: Option<&str>) {
+        self.is_open = true;
+        self.tab = InsertTab::FunctionBlocks;
+        self.selected_category = category.map(|s| s.to_string());
+        self.query.clear();
+        self.selected_index = 0;
+        self.target_pos = None;
+        self.focus_requested = true;
+    }
+
+    pub fn open_references_with_query(&mut self, query: &str) {
+        self.is_open = true;
+        self.tab = InsertTab::References;
+        self.selected_category = None;
+        self.query = query.to_string();
+        self.selected_index = 0;
+        self.target_pos = None;
+        self.focus_requested = true;
+    }
+
     pub fn close(&mut self) {
         self.is_open = false;
         self.focus_requested = false;
@@ -77,6 +97,14 @@ pub fn available_categories() -> Vec<&'static str> {
 fn category_matches(schema_category: &str, filter: &str) -> bool {
     schema_category == filter
         || (filter.eq_ignore_ascii_case("Climate & Control") && schema_category == "Climate")
+        || (filter == "Control" && matches!(schema_category, "Pushbuttons" | "Logic" | "Times"))
+        || (filter == "Access"
+            && matches!(schema_category, "Access" | "Security & Safety" | "Security"))
+        || (filter == "Central"
+            && matches!(
+                schema_category,
+                "Central" | "Presence" | "Status" | "Documentation"
+            ))
 }
 
 pub fn matching_block_schemas(
@@ -95,8 +123,10 @@ pub fn matching_block_schemas(
                 return true;
             }
             schema.display_name_en.to_lowercase().contains(&q)
+                || crate::i18n::block_matches_query(schema.type_name, &q)
                 || schema.type_name.to_lowercase().contains(&q)
                 || schema.category_group.to_lowercase().contains(&q)
+                || crate::i18n::category_matches_query(schema.category_group, &q)
                 || schema.summary.to_lowercase().contains(&q)
         })
         .collect()
@@ -266,7 +296,7 @@ pub fn show_insert_modal(
     let (px, py) = state.target_pos.unwrap_or((256.0, 256.0));
     let total_blocks = page_block_schemas().count();
 
-    egui::Window::new("Quick Insert")
+    egui::Window::new(crate::i18n::tr("Quick Insert"))
         .id(egui::Id::new("quick_insert_modal_window"))
         .order(Order::Tooltip)
         .collapsible(false)
@@ -288,7 +318,11 @@ pub fn show_insert_modal(
                 if ui
                     .selectable_label(
                         fb_selected,
-                        RichText::new(format!("🧩 Function Blocks ({total_blocks})")).strong(),
+                        RichText::new(format!(
+                            "🧩 {} ({total_blocks})",
+                            crate::i18n::tr("Function Blocks")
+                        ))
+                        .strong(),
                     )
                     .clicked()
                 {
@@ -299,7 +333,8 @@ pub fn show_insert_modal(
                 if ui
                     .selectable_label(
                         ref_selected,
-                        RichText::new("📥 Periphery / Flags / Virtual I/O").strong(),
+                        RichText::new(crate::i18n::tr("📥 Periphery / Flags / Virtual I/O"))
+                            .strong(),
                     )
                     .clicked()
                 {
@@ -308,7 +343,7 @@ pub fn show_insert_modal(
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.label(
-                        RichText::new("Esc to close")
+                        RichText::new(crate::i18n::tr("Esc to close"))
                             .size(11.0)
                             .color(theme::TEXT_MUTED),
                     );
@@ -320,9 +355,9 @@ pub fn show_insert_modal(
             // Search Input
             let search_resp = ui.add_sized(
                 [ui.available_width(), 32.0],
-                egui::TextEdit::singleline(&mut state.query).hint_text(
+                egui::TextEdit::singleline(&mut state.query).hint_text(crate::i18n::tr(
                     "Search function blocks, periphery I/Os, virtual inputs, or memory flags...",
-                ),
+                )),
             );
             if state.focus_requested {
                 search_resp.request_focus();
@@ -340,13 +375,19 @@ pub fn show_insert_modal(
                     let categories = available_categories();
                     ui.horizontal_wrapped(|ui| {
                         let all_active = state.selected_category.is_none();
-                        if ui.selectable_label(all_active, "All").clicked() {
+                        if ui
+                            .selectable_label(all_active, crate::i18n::tr("All"))
+                            .clicked()
+                        {
                             state.selected_category = None;
                             state.selected_index = 0;
                         }
                         for cat in categories {
                             let active = state.selected_category.as_deref() == Some(cat);
-                            if ui.selectable_label(active, cat).clicked() {
+                            if ui
+                                .selectable_label(active, crate::i18n::category_group_label(cat))
+                                .clicked()
+                            {
                                 state.selected_category = Some(cat.to_string());
                                 state.selected_index = 0;
                             }
@@ -374,7 +415,8 @@ pub fn show_insert_modal(
                         if let Some(schema) = schemas.get(state.selected_index) {
                             selection = Some(InsertModalSelection::NewFunctionBlock {
                                 type_name: schema.type_name.to_string(),
-                                title: schema.display_name_en.to_string(),
+                                title: crate::i18n::block_display_name(schema.type_name)
+                                    .to_string(),
                                 px,
                                 py,
                             });
@@ -424,9 +466,13 @@ pub fn show_insert_modal(
                                             ui.vertical(|ui| {
                                                 ui.horizontal(|ui| {
                                                     ui.label(
-                                                        RichText::new(schema.display_name_en)
-                                                            .strong()
-                                                            .color(theme::TEXT_PRIMARY),
+                                                        RichText::new(
+                                                            crate::i18n::block_display_name(
+                                                                schema.type_name,
+                                                            ),
+                                                        )
+                                                        .strong()
+                                                        .color(theme::TEXT_PRIMARY),
                                                     );
                                                     ui.label(
                                                         RichText::new(format!(
@@ -437,9 +483,13 @@ pub fn show_insert_modal(
                                                         .color(theme::TEXT_MUTED),
                                                     );
                                                     ui.label(
-                                                        RichText::new(schema.category_group)
-                                                            .size(10.5)
-                                                            .color(theme::ACCENT_BLUE),
+                                                        RichText::new(
+                                                            crate::i18n::category_group_label(
+                                                                schema.category_group,
+                                                            ),
+                                                        )
+                                                        .size(10.5)
+                                                        .color(theme::ACCENT_BLUE),
                                                     );
                                                 });
                                                 ui.label(
@@ -473,7 +523,10 @@ pub fn show_insert_modal(
                                     selection =
                                         Some(InsertModalSelection::NewFunctionBlock {
                                             type_name: schema.type_name.to_string(),
-                                            title: schema.display_name_en.to_string(),
+                                            title: crate::i18n::block_display_name(
+                                                schema.type_name,
+                                            )
+                                            .to_string(),
                                             px,
                                             py,
                                         });
@@ -698,6 +751,13 @@ mod tests {
         assert_eq!(state.target_pos, Some((12.0, 8.0)));
         assert!(state.focus_requested);
 
+        // Verify Polish search query matches StairwellLight ("Automat schodowy")
+        let pl_matches = matching_block_schemas("schodowy", None);
+        assert!(
+            pl_matches.iter().any(|s| s.type_name == "StairwellLight"),
+            "Expected StairwellLight in Polish search results for 'schodowy'"
+        );
+
         // Render in headless egui context and verify Enter selects top match
         let ctx = egui::Context::default();
         state.query = "StairwellLight".to_string();
@@ -717,7 +777,7 @@ mod tests {
             action,
             Some(InsertModalSelection::NewFunctionBlock {
                 type_name: "StairwellLight".to_string(),
-                title: "Stairwell Light Switch".to_string(),
+                title: crate::i18n::block_display_name("StairwellLight").to_string(),
                 px: 12.0,
                 py: 8.0,
             })

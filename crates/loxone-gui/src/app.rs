@@ -25,7 +25,7 @@ use crate::project_launcher::{
     record_recent_project, render_project_launcher, LauncherAction, ProjectLauncherState,
 };
 use crate::theme::{apply_minimalist_theme, BORDER_SUBTLE, PANEL_BG};
-use crate::top_bar::{render_top_bar, TopBarAction};
+use crate::top_bar::{render_top_bar_with_selection, TopBarAction};
 use crate::tree_panel::{render_left_explorer, LeftTab, TreeAction};
 
 #[derive(Debug)]
@@ -101,6 +101,7 @@ pub struct LoxonePortableApp {
     pub live_store: LiveValueStore,
     pub last_live_poll: Option<std::time::Instant>,
     pub live_poll_in_flight: bool,
+    pub language: crate::i18n::Language,
     pub worker_tx: Sender<MiniserverWorkerEvent>,
     pub worker_rx: Receiver<MiniserverWorkerEvent>,
 }
@@ -112,6 +113,8 @@ impl Default for LoxonePortableApp {
             .and_then(|p| ConnectionProfile::load_from_path(&p).ok())
             .map(|prof| MiniserverModalState::from_profile(&prof))
             .unwrap_or_default();
+        let language = crate::i18n::load_saved_language();
+        crate::i18n::set_language(language);
 
         Self {
             project: None,
@@ -147,6 +150,7 @@ impl Default for LoxonePortableApp {
             live_store: LiveValueStore::default(),
             last_live_poll: None,
             live_poll_in_flight: false,
+            language,
             worker_tx,
             worker_rx,
         }
@@ -821,6 +825,17 @@ impl LoxonePortableApp {
                     self.insert_modal.open_at(None);
                 }
             }
+            TopBarAction::AddBlockCategory(cat) => {
+                if self.project.is_some() {
+                    self.insert_modal
+                        .open_with_category(if cat.is_empty() { None } else { Some(cat) });
+                }
+            }
+            TopBarAction::AddDeviceFilter(q) => {
+                if self.project.is_some() {
+                    self.insert_modal.open_references_with_query(q);
+                }
+            }
             TopBarAction::Undo => {
                 self.undo();
             }
@@ -861,6 +876,54 @@ impl LoxonePortableApp {
             }
             TopBarAction::ResetZoom => {
                 self.execute_palette_action(PaletteAction::ResetZoom);
+            }
+            TopBarAction::SetLanguage(lang) => {
+                self.language = lang;
+                crate::i18n::set_language(self.language);
+                crate::i18n::save_language(self.language);
+            }
+            TopBarAction::SelectRibbonTab(_) => {}
+            TopBarAction::ConfigureSelectedObject => {
+                if let Some(uuid) = self.selected_uuid.clone() {
+                    self.show_right_panel = true;
+                    self.open_object_config_modal(&uuid);
+                }
+            }
+            TopBarAction::CenterSelectedOnCanvas => {
+                if let Some(uuid) = self.selected_uuid.clone() {
+                    let loc = self
+                        .project
+                        .as_ref()
+                        .and_then(|p| p.xref.objects_by_uuid.get(&uuid))
+                        .map(|s| s.location.clone());
+                    match loc {
+                        Some(ObjectLocation::PageBlock { page_index, .. }) => {
+                            self.execute_palette_action(PaletteAction::NavigateToBlock {
+                                page_index,
+                                block_uuid: uuid,
+                            });
+                        }
+                        Some(ObjectLocation::TreeNode { .. }) => {
+                            self.place_tree_node_on_active_page(&uuid, None);
+                        }
+                        Some(ObjectLocation::Page { page_index }) => {
+                            self.active_page_index = page_index;
+                            self.needs_initial_fit = true;
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            TopBarAction::DuplicateSelected => {
+                self.duplicate_selected_blocks();
+            }
+            TopBarAction::DeleteSelected => {
+                if let Some(uuid) = self.selected_uuid.clone() {
+                    self.delete_object_by_uuid(&uuid);
+                }
+            }
+            TopBarAction::OpenSelectedDocs => {
+                self.show_right_panel = true;
             }
         }
     }
@@ -1710,6 +1773,7 @@ fn find_tree_node_by_type_recursive<'a>(
 
 impl eframe::App for LoxonePortableApp {
     fn update(&mut self, ctx: &Context, _frame: &mut eframe::Frame) {
+        crate::i18n::set_language(self.language);
         if ctx.input(|i| i.viewport().close_requested())
             && self.is_dirty
             && !self.allow_close_after_discard
@@ -1726,8 +1790,8 @@ impl eframe::App for LoxonePortableApp {
 
         self.handle_shortcuts(ctx);
 
-        // Extensible Top Header Bar with Connection Status Indicator
-        if let Some(top_act) = render_top_bar(
+        // Extensible 2-Row Ribbon Top Bar with Contextual Tabs & Connection Status
+        if let Some(top_act) = render_top_bar_with_selection(
             ctx,
             self.project.as_ref(),
             self.loaded_path.as_deref(),
@@ -1740,6 +1804,7 @@ impl eframe::App for LoxonePortableApp {
             self.can_undo(),
             self.can_redo(),
             self.live_view_enabled,
+            self.selected_uuid.as_deref(),
         ) {
             self.execute_top_bar_action(top_act);
         }
@@ -1952,22 +2017,23 @@ impl eframe::App for LoxonePortableApp {
         if let Some(pending) = self.pending_dirty_action.clone() {
             let mut resolved: Option<bool> = None; // Some(true) = proceed, Some(false) = cancel
             let mut try_save_first = false;
-            egui::Window::new("Unsaved Changes")
+            egui::Window::new(crate::i18n::tr("Unsaved Changes"))
+                .id(egui::Id::new("unsaved_changes_modal"))
                 .collapsible(false)
                 .resizable(false)
                 .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
                 .show(ctx, |ui| {
                     ui.label(
-                        egui::RichText::new(
+                        egui::RichText::new(crate::i18n::tr(
                             "The current project has unsaved modifications. Do you want to save your changes before continuing?",
-                        )
+                        ))
                         .color(crate::theme::TEXT_PRIMARY),
                     );
                     ui.add_space(10.0);
                     ui.horizontal(|ui| {
                         if ui
                             .button(
-                                egui::RichText::new("💾 Save & Continue")
+                                egui::RichText::new(crate::i18n::tr("💾 Save & Continue"))
                                     .color(crate::theme::STATUS_CONNECTED)
                                     .strong(),
                             )
@@ -1978,14 +2044,14 @@ impl eframe::App for LoxonePortableApp {
                         }
                         if ui
                             .button(
-                                egui::RichText::new("Discard Changes")
+                                egui::RichText::new(crate::i18n::tr("Discard Changes"))
                                     .color(egui::Color32::from_rgb(235, 110, 95)),
                             )
                             .clicked()
                         {
                             resolved = Some(true);
                         }
-                        if ui.button("Cancel").clicked() {
+                        if ui.button(crate::i18n::tr("Cancel")).clicked() {
                             resolved = Some(false);
                         }
                     });
@@ -2029,7 +2095,8 @@ impl eframe::App for LoxonePortableApp {
             let mut open = self.show_diagnostics_modal;
             let mut jump_to: Option<(Option<usize>, String)> = None;
             let mut rerun = false;
-            egui::Window::new("✓ Project Verification & Diagnostics")
+            egui::Window::new(crate::i18n::tr("✓ Project Verification & Diagnostics"))
+                .id(egui::Id::new("project_diagnostics_modal"))
                 .open(&mut open)
                 .collapsible(false)
                 .resizable(true)
@@ -2061,15 +2128,23 @@ impl eframe::App for LoxonePortableApp {
 
                     ui.horizontal(|ui| {
                         ui.label(
-                            egui::RichText::new(format!("⛔ {} Errors", err_cnt))
-                                .color(egui::Color32::from_rgb(235, 95, 95))
-                                .strong(),
+                            egui::RichText::new(format!(
+                                "⛔ {} {}",
+                                err_cnt,
+                                crate::i18n::tr("Errors")
+                            ))
+                            .color(egui::Color32::from_rgb(235, 95, 95))
+                            .strong(),
                         );
                         ui.separator();
                         ui.label(
-                            egui::RichText::new(format!("⚠ {} Warnings", warn_cnt))
-                                .color(egui::Color32::from_rgb(235, 185, 75))
-                                .strong(),
+                            egui::RichText::new(format!(
+                                "⚠ {} {}",
+                                warn_cnt,
+                                crate::i18n::tr("Warnings")
+                            ))
+                            .color(egui::Color32::from_rgb(235, 185, 75))
+                            .strong(),
                         );
                         ui.separator();
                         ui.label(
@@ -2079,7 +2154,7 @@ impl eframe::App for LoxonePortableApp {
                         ui.with_layout(
                             egui::Layout::right_to_left(egui::Align::Center),
                             |ui| {
-                                if ui.small_button("🔄 Re-run Check").clicked() {
+                                if ui.small_button(crate::i18n::tr("🔄 Re-run Check")).clicked() {
                                     rerun = true;
                                 }
                             },
@@ -2089,9 +2164,9 @@ impl eframe::App for LoxonePortableApp {
 
                     if self.cached_diagnostics.is_empty() {
                         ui.label(
-                            egui::RichText::new(
+                            egui::RichText::new(crate::i18n::tr(
                                 "✅ No issues detected! Project references, rooms, categories, and blocks look healthy.",
-                            )
+                            ))
                             .color(crate::theme::STATUS_CONNECTED),
                         );
                     } else {

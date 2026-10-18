@@ -13,6 +13,114 @@ use crate::theme::{
     STATUS_DISCONNECTED, STATUS_ERROR, TEXT_MUTED, TEXT_PRIMARY,
 };
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum RibbonTab {
+    AddDevice,
+    #[default]
+    Schematic,
+    Project,
+    Miniserver,
+    View,
+    /// Contextual optional tab: visible when a block or tree item is selected.
+    SelectedObject,
+    /// Contextual optional tab: visible when Live View is active.
+    LiveView,
+}
+
+impl RibbonTab {
+    pub fn is_contextual(self) -> bool {
+        matches!(self, RibbonTab::SelectedObject | RibbonTab::LiveView)
+    }
+
+    pub fn base_label(self) -> &'static str {
+        match self {
+            RibbonTab::AddDevice => "Add Device",
+            RibbonTab::Schematic => "Function Blocks",
+            RibbonTab::Project => "Tools",
+            RibbonTab::Miniserver => "Testing",
+            RibbonTab::View => "Diagnostics",
+            RibbonTab::SelectedObject => "Object",
+            RibbonTab::LiveView => "Live View",
+        }
+    }
+}
+
+pub fn visible_ribbon_tabs(has_selected_object: bool, live_view_active: bool) -> Vec<RibbonTab> {
+    let mut tabs = vec![
+        RibbonTab::AddDevice,
+        RibbonTab::Schematic,
+        RibbonTab::Project,
+        RibbonTab::Miniserver,
+        RibbonTab::View,
+    ];
+    if has_selected_object {
+        tabs.push(RibbonTab::SelectedObject);
+    }
+    if live_view_active {
+        tabs.push(RibbonTab::LiveView);
+    }
+    tabs
+}
+
+pub fn resolve_active_ribbon_tab(
+    current: RibbonTab,
+    has_selected_object: bool,
+    live_view_active: bool,
+) -> RibbonTab {
+    match current {
+        RibbonTab::SelectedObject if !has_selected_object => RibbonTab::Schematic,
+        RibbonTab::LiveView if !live_view_active => RibbonTab::Schematic,
+        other => other,
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SelectedObjectContext {
+    pub uuid: String,
+    pub title: String,
+    pub object_type: String,
+    pub is_page_block: bool,
+    pub can_place_on_page: bool,
+    pub kb_url: Option<&'static str>,
+}
+
+pub fn build_selected_object_context(
+    project: Option<&LoxoneProject>,
+    selected_uuid: Option<&str>,
+) -> Option<SelectedObjectContext> {
+    let proj = project?;
+    let sel = selected_uuid?.trim();
+    if sel.is_empty() {
+        return None;
+    }
+    let summary = proj.xref.objects_by_uuid.get(sel)?;
+    let title = if summary.title.trim().is_empty() {
+        crate::i18n::block_display_name(&summary.object_type).to_string()
+    } else {
+        summary.title.clone()
+    };
+    let is_page_block = matches!(
+        summary.location,
+        loxone_core::xref::ObjectLocation::PageBlock { .. }
+    );
+    let can_place_on_page = matches!(
+        summary.location,
+        loxone_core::xref::ObjectLocation::TreeNode { .. }
+    ) && crate::insert_modal::reference_kind_for_tree_node(&summary.object_type)
+        .is_some();
+    let kb_url = loxone_core::block_schema::lookup_block_schema(&summary.object_type)
+        .map(|s| s.kb_url);
+
+    Some(SelectedObjectContext {
+        uuid: summary.uuid.clone(),
+        title,
+        object_type: summary.object_type.clone(),
+        is_page_block,
+        can_place_on_page,
+        kb_url,
+    })
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TopBarAction {
     ToggleLeftPanel,
@@ -21,6 +129,8 @@ pub enum TopBarAction {
     OpenFile,
     SaveFile,
     AddBlock,
+    AddBlockCategory(&'static str),
+    AddDeviceFilter(&'static str),
     Undo,
     Redo,
     VerifyProject,
@@ -32,6 +142,13 @@ pub enum TopBarAction {
     ZoomIn,
     ZoomOut,
     ResetZoom,
+    SetLanguage(crate::i18n::Language),
+    SelectRibbonTab(RibbonTab),
+    ConfigureSelectedObject,
+    CenterSelectedOnCanvas,
+    DuplicateSelected,
+    DeleteSelected,
+    OpenSelectedDocs,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -40,6 +157,7 @@ pub enum ToolbarGroup {
     Authoring,
     Miniserver,
     View,
+    Contextual,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -48,6 +166,7 @@ pub enum ToolbarIcon {
     SidebarRight,
     OpenFolder,
     SaveDisk { dirty: bool },
+    ProjectGrid,
     AddBlock,
     Undo,
     Redo,
@@ -59,6 +178,11 @@ pub enum ToolbarIcon {
     PinsMode { all_pins: bool },
     ZoomOut,
     ZoomIn,
+    ConfigureSliders,
+    CenterTarget,
+    DuplicateCopy,
+    DeleteTrash,
+    BookDocs,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -139,6 +263,20 @@ pub fn status_badge_visuals(
             }
         }
     }
+}
+
+pub fn status_badge_visuals_localized(
+    status: &ConnectionStatus,
+    configured_host: Option<&str>,
+) -> StatusBadgeVisuals {
+    let mut vis = status_badge_visuals(status, configured_host);
+    if let Some((prefix, rest)) = vis.label.split_once(" · ") {
+        vis.label = format!("{} · {}", crate::i18n::tr(prefix), rest);
+    } else {
+        vis.label = crate::i18n::tr(&vis.label).to_string();
+    }
+    vis.tooltip = crate::i18n::tr(&vis.tooltip).to_string();
+    vis
 }
 
 pub fn paint_status_indicator(ui: &mut Ui, visuals: &StatusBadgeVisuals) {
@@ -371,6 +509,60 @@ pub fn paint_toolbar_icon(painter: &Painter, rect: Rect, icon: ToolbarIcon, fg: 
             painter.line_segment([p(0.22, 0.50), p(0.78, 0.50)], s);
             painter.line_segment([p(0.50, 0.22), p(0.50, 0.78)], s);
         }
+        ToolbarIcon::ProjectGrid => {
+            for (x0, x1) in [(0.12_f32, 0.45_f32), (0.55_f32, 0.88_f32)] {
+                for (y0, y1) in [(0.12_f32, 0.45_f32), (0.55_f32, 0.88_f32)] {
+                    let cell = Rect::from_min_max(p(x0, y0), p(x1, y1));
+                    painter.rect_filled(cell, 1.5, fg.gamma_multiply(0.18));
+                    painter.rect_stroke(cell, 1.5, stroke, StrokeKind::Inside);
+                }
+            }
+        }
+        ToolbarIcon::ConfigureSliders => {
+            for (ny, knob_x) in [(0.24_f32, 0.36_f32), (0.50_f32, 0.68_f32), (0.76_f32, 0.44_f32)]
+            {
+                painter.line_segment([p(0.10, ny), p(0.90, ny)], stroke);
+                let center = p(knob_x, ny);
+                painter.circle_filled(center, w * 0.13, CAPSULE_BG);
+                painter.circle_stroke(center, w * 0.13, stroke);
+            }
+        }
+        ToolbarIcon::CenterTarget => {
+            let center = p(0.50, 0.50);
+            painter.circle_stroke(center, w * 0.30, stroke);
+            painter.circle_filled(center, w * 0.08, fg);
+            painter.line_segment([p(0.50, 0.08), p(0.50, 0.24)], stroke);
+            painter.line_segment([p(0.50, 0.76), p(0.50, 0.92)], stroke);
+            painter.line_segment([p(0.08, 0.50), p(0.24, 0.50)], stroke);
+            painter.line_segment([p(0.76, 0.50), p(0.92, 0.50)], stroke);
+        }
+        ToolbarIcon::DuplicateCopy => {
+            let back = Rect::from_min_max(p(0.12, 0.12), p(0.66, 0.66));
+            let front = Rect::from_min_max(p(0.34, 0.34), p(0.88, 0.88));
+            painter.rect_stroke(back, 2.0, stroke, StrokeKind::Inside);
+            painter.rect_filled(front, 2.0, CAPSULE_BG);
+            painter.rect_filled(front, 2.0, fg.gamma_multiply(0.20));
+            painter.rect_stroke(front, 2.0, stroke, StrokeKind::Inside);
+        }
+        ToolbarIcon::DeleteTrash => {
+            painter.line_segment([p(0.16, 0.24), p(0.84, 0.24)], stroke);
+            painter.add(Shape::line(
+                vec![p(0.36, 0.24), p(0.36, 0.13), p(0.64, 0.13), p(0.64, 0.24)],
+                stroke,
+            ));
+            let body = Rect::from_min_max(p(0.24, 0.24), p(0.76, 0.88));
+            painter.rect_stroke(body, 2.0, stroke, StrokeKind::Inside);
+            painter.line_segment([p(0.41, 0.38), p(0.41, 0.74)], stroke);
+            painter.line_segment([p(0.59, 0.38), p(0.59, 0.74)], stroke);
+        }
+        ToolbarIcon::BookDocs => {
+            let left_page = Rect::from_min_max(p(0.10, 0.18), p(0.50, 0.84));
+            let right_page = Rect::from_min_max(p(0.50, 0.18), p(0.90, 0.84));
+            painter.rect_filled(left_page, 1.5, fg.gamma_multiply(0.16));
+            painter.rect_filled(right_page, 1.5, fg.gamma_multiply(0.16));
+            painter.rect_stroke(left_page, 1.5, stroke, StrokeKind::Inside);
+            painter.rect_stroke(right_page, 1.5, stroke, StrokeKind::Inside);
+        }
     }
 }
 pub fn build_file_toolbar_items(can_save: bool, is_dirty: bool) -> Vec<ToolbarItem> {
@@ -540,10 +732,114 @@ pub fn build_view_toolbar_items(compact_pins: bool) -> Vec<ToolbarItem> {
     ]
 }
 
+pub fn build_selected_object_toolbar_items(ctx_info: &SelectedObjectContext) -> Vec<ToolbarItem> {
+    let mut items = Vec::new();
+    if ctx_info.is_page_block {
+        items.push(ToolbarItem {
+            group: ToolbarGroup::Contextual,
+            icon: "⚙",
+            vector_icon: ToolbarIcon::ConfigureSliders,
+            label: "Configure Object…".to_string(),
+            shortcut_hint: None,
+            tooltip: "Open Loxone Object Configuration modal for this block".to_string(),
+            action: TopBarAction::ConfigureSelectedObject,
+            enabled: true,
+            accent: true,
+        });
+        items.push(ToolbarItem {
+            group: ToolbarGroup::Contextual,
+            icon: "🎯",
+            vector_icon: ToolbarIcon::CenterTarget,
+            label: "Center on Canvas".to_string(),
+            shortcut_hint: None,
+            tooltip: "Center schematic viewport on the selected block".to_string(),
+            action: TopBarAction::CenterSelectedOnCanvas,
+            enabled: true,
+            accent: false,
+        });
+        items.push(ToolbarItem {
+            group: ToolbarGroup::Contextual,
+            icon: "⧉",
+            vector_icon: ToolbarIcon::DuplicateCopy,
+            label: "Duplicate".to_string(),
+            shortcut_hint: Some("⌘D"),
+            tooltip: "Duplicate selected block on the active page (⌘D / Ctrl+D)".to_string(),
+            action: TopBarAction::DuplicateSelected,
+            enabled: true,
+            accent: false,
+        });
+    } else if ctx_info.can_place_on_page {
+        items.push(ToolbarItem {
+            group: ToolbarGroup::Contextual,
+            icon: "➕",
+            vector_icon: ToolbarIcon::AddBlock,
+            label: "Place on Page".to_string(),
+            shortcut_hint: None,
+            tooltip: "Place a reference to this tree object onto the active schematic page"
+                .to_string(),
+            action: TopBarAction::CenterSelectedOnCanvas,
+            enabled: true,
+            accent: true,
+        });
+    }
+
+    if ctx_info.kb_url.is_some() {
+        items.push(ToolbarItem {
+            group: ToolbarGroup::Contextual,
+            icon: "📖",
+            vector_icon: ToolbarIcon::BookDocs,
+            label: "Loxone Docs".to_string(),
+            shortcut_hint: None,
+            tooltip: "Open Loxone Knowledge Base documentation for this block type".to_string(),
+            action: TopBarAction::OpenSelectedDocs,
+            enabled: true,
+            accent: false,
+        });
+    }
+
+    items.push(ToolbarItem {
+        group: ToolbarGroup::Contextual,
+        icon: "🗑",
+        vector_icon: ToolbarIcon::DeleteTrash,
+        label: "Delete".to_string(),
+        shortcut_hint: Some("⌫"),
+        tooltip: "Delete the selected object (⌫ / Delete)".to_string(),
+        action: TopBarAction::DeleteSelected,
+        enabled: true,
+        accent: false,
+    });
+
+    items
+}
+
+#[derive(Debug, Clone, Default)]
+struct RibbonMemoryState {
+    active_tab: RibbonTab,
+}
+
+fn ribbon_memory_id() -> egui::Id {
+    egui::Id::new("loxone_top_ribbon_tab_state")
+}
+
+pub fn current_ribbon_tab(ctx: &Context) -> RibbonTab {
+    ctx.data(|d| {
+        d.get_temp::<RibbonMemoryState>(ribbon_memory_id())
+            .map(|s| s.active_tab)
+            .unwrap_or(RibbonTab::Schematic)
+    })
+}
+
+pub fn set_ribbon_tab(ctx: &Context, tab: RibbonTab) {
+    ctx.data_mut(|d| {
+        d.insert_temp(ribbon_memory_id(), RibbonMemoryState { active_tab: tab });
+    });
+}
+
 const CAPSULE_BG: Color32 = Color32::from_rgb(0x1C, 0x21, 0x2C);
 const BTN_HOVER_BG: Color32 = Color32::from_rgb(0x2A, 0x33, 0x46);
 const BTN_ACTIVE_BG: Color32 = Color32::from_rgb(0x32, 0x3D, 0x54);
 const LOXONE_GREEN: Color32 = Color32::from_rgb(0x69, 0xC3, 0x32);
+const CONTEXTUAL_OBJECT_ACCENT: Color32 = Color32::from_rgb(0xA8, 0x7F, 0xFB);
 
 /// Renders a single polished toolbar button with a vector icon, optional label, and optional keycap badge.
 fn render_vector_button(
@@ -556,6 +852,8 @@ fn render_vector_button(
     accent: bool,
     primary_green: bool,
 ) -> Response {
+    let label = crate::i18n::tr(label);
+    let tooltip = crate::i18n::tr(tooltip);
     let icon_size = 14.5_f32;
     let pad_x = if label.is_empty() { 7.5_f32 } else { 8.5_f32 };
     let btn_height = 26.0_f32;
@@ -739,6 +1037,1007 @@ fn render_toolbar_capsule(ui: &mut Ui, items: &[ToolbarItem]) -> Option<TopBarAc
     triggered
 }
 
+fn truncate_tab_title(s: &str, max_chars: usize) -> String {
+    let mut chars = s.chars();
+    let head: String = chars.by_ref().take(max_chars).collect();
+    if chars.next().is_some() {
+        format!("{}…", head.trim_end())
+    } else {
+        head
+    }
+}
+
+fn render_ribbon_tab_button(
+    ui: &mut Ui,
+    tab: RibbonTab,
+    is_active: bool,
+    selected_ctx: Option<&SelectedObjectContext>,
+) -> Response {
+    let display_text = match tab {
+        RibbonTab::SelectedObject => {
+            if let Some(sel) = selected_ctx {
+                format!(
+                    "✨ {} {}",
+                    crate::i18n::tr("Object:"),
+                    truncate_tab_title(&sel.title, 18)
+                )
+            } else {
+                format!("✨ {}", crate::i18n::tr("Object"))
+            }
+        }
+        RibbonTab::LiveView => format!("⚡ {}", crate::i18n::tr("Live View")),
+        other => crate::i18n::tr(other.base_label()).to_string(),
+    };
+
+    let tab_accent = match tab {
+        RibbonTab::SelectedObject => CONTEXTUAL_OBJECT_ACCENT,
+        RibbonTab::LiveView => LOXONE_GREEN,
+        _ => ACCENT_BLUE,
+    };
+
+    let font_id = if is_active {
+        egui::FontId::new(11.6, egui::FontFamily::Proportional)
+    } else {
+        egui::FontId::new(11.4, egui::FontFamily::Proportional)
+    };
+    let galley = ui
+        .painter()
+        .layout_no_wrap(display_text, font_id, TEXT_PRIMARY);
+    let pad_x = 10.0_f32;
+    let btn_h = 26.0_f32;
+    let btn_w = galley.size().x + pad_x * 2.0;
+
+    let (rect, resp) = ui.allocate_exact_size(Vec2::new(btn_w, btn_h), Sense::click());
+    if ui.is_rect_visible(rect) {
+        let painter = ui.painter();
+        let hovered = resp.hovered();
+
+        if is_active {
+            painter.rect_filled(
+                rect,
+                CornerRadius::same(6),
+                tab_accent.gamma_multiply(0.20),
+            );
+            painter.rect_stroke(
+                rect,
+                CornerRadius::same(6),
+                Stroke::new(1.0_f32, tab_accent.gamma_multiply(0.65)),
+                StrokeKind::Inside,
+            );
+            let bar_rect = Rect::from_min_max(
+                Pos2::new(rect.min.x + 6.0, rect.max.y - 2.5),
+                Pos2::new(rect.max.x - 6.0, rect.max.y - 0.5),
+            );
+            painter.rect_filled(bar_rect, CornerRadius::same(1), tab_accent);
+        } else if hovered {
+            painter.rect_filled(rect, CornerRadius::same(6), BTN_HOVER_BG);
+        } else if tab.is_contextual() {
+            painter.rect_filled(
+                rect,
+                CornerRadius::same(6),
+                tab_accent.gamma_multiply(0.10),
+            );
+            painter.rect_stroke(
+                rect,
+                CornerRadius::same(6),
+                Stroke::new(1.0_f32, tab_accent.gamma_multiply(0.35)),
+                StrokeKind::Inside,
+            );
+        }
+
+        if tab.is_contextual() {
+            let top_bar = Rect::from_min_max(
+                Pos2::new(rect.min.x + 6.0, rect.min.y + 0.5),
+                Pos2::new(rect.max.x - 6.0, rect.min.y + 2.5),
+            );
+            painter.rect_filled(top_bar, CornerRadius::same(1), tab_accent);
+        }
+
+        let text_color = if is_active || hovered {
+            Color32::WHITE
+        } else if tab.is_contextual() {
+            Color32::from_rgb(0xE2, 0xEA, 0xFF)
+        } else {
+            TEXT_MUTED
+        };
+        let text_pos = Pos2::new(
+            rect.center().x - galley.size().x * 0.5,
+            rect.center().y - galley.size().y * 0.5,
+        );
+        painter.galley(text_pos, galley, text_color);
+    }
+
+    resp
+}
+
+fn render_ribbon_chip(
+    ui: &mut Ui,
+    icon_glyph: &str,
+    label: &str,
+    tooltip: &str,
+    enabled: bool,
+    tint: Color32,
+) -> Response {
+    let label_tr = crate::i18n::tr(label);
+    let tooltip_tr = crate::i18n::tr(tooltip);
+    let text = format!("{} {}", icon_glyph, label_tr);
+    let galley = ui.painter().layout_no_wrap(
+        text,
+        egui::FontId::proportional(11.3),
+        TEXT_PRIMARY,
+    );
+    let pad_x = 8.0_f32;
+    let btn_h = 26.0_f32;
+    let total_w = galley.size().x + pad_x * 2.0;
+    let sense = if enabled {
+        Sense::click()
+    } else {
+        Sense::hover()
+    };
+    let (rect, resp) = ui.allocate_exact_size(Vec2::new(total_w, btn_h), sense);
+    if ui.is_rect_visible(rect) {
+        let painter = ui.painter();
+        let hovered = enabled && resp.hovered();
+        let active = enabled && resp.is_pointer_button_down_on();
+        if active {
+            painter.rect_filled(rect, CornerRadius::same(5), BTN_ACTIVE_BG);
+        } else if hovered {
+            painter.rect_filled(rect, CornerRadius::same(5), tint.gamma_multiply(0.24));
+            painter.rect_stroke(
+                rect,
+                CornerRadius::same(5),
+                Stroke::new(1.0_f32, tint.gamma_multiply(0.75)),
+                StrokeKind::Inside,
+            );
+        } else {
+            painter.rect_filled(rect, CornerRadius::same(5), tint.gamma_multiply(0.10));
+            painter.rect_stroke(
+                rect,
+                CornerRadius::same(5),
+                Stroke::new(1.0_f32, tint.gamma_multiply(0.32)),
+                StrokeKind::Inside,
+            );
+        }
+        let text_color = if !enabled {
+            TEXT_MUTED.gamma_multiply(0.45)
+        } else if hovered {
+            Color32::WHITE
+        } else {
+            TEXT_PRIMARY
+        };
+        let pos = Pos2::new(
+            rect.center().x - galley.size().x * 0.5,
+            rect.center().y - galley.size().y * 0.5,
+        );
+        painter.galley(pos, galley, text_color);
+    }
+    resp.on_hover_text(tooltip_tr)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn render_ribbon_row_1(
+    ui: &mut Ui,
+    project: Option<&LoxoneProject>,
+    loaded_path: Option<&Path>,
+    active_page_index: usize,
+    can_save: bool,
+    is_dirty: bool,
+    can_undo: bool,
+    can_redo: bool,
+    compact_pins: bool,
+    status_visuals: &StatusBadgeVisuals,
+    visible_tabs: &[RibbonTab],
+    active_tab: RibbonTab,
+    selected_ctx: Option<&SelectedObjectContext>,
+) -> Option<TopBarAction> {
+    let mut action = None;
+    ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+        ui.spacing_mut().item_spacing.x = 6.0;
+
+        // 1. Left Quick-Access & Breadcrumb Capsule
+        Frame::new()
+            .fill(CAPSULE_BG)
+            .stroke(Stroke::new(1.0_f32, BORDER_SUBTLE))
+            .corner_radius(CornerRadius::same(7))
+            .inner_margin(Margin::symmetric(4, 2))
+            .show(ui, |ui| {
+                ui.spacing_mut().item_spacing.x = 2.0;
+                if render_vector_button(
+                    ui,
+                    ToolbarIcon::SidebarLeft,
+                    "",
+                    None,
+                    "Toggle Explorer Sidebar (⌘B / Ctrl+B)",
+                    true,
+                    false,
+                    false,
+                )
+                .clicked()
+                {
+                    action = Some(TopBarAction::ToggleLeftPanel);
+                }
+                if render_vector_button(
+                    ui,
+                    ToolbarIcon::SaveDisk { dirty: is_dirty },
+                    "",
+                    None,
+                    "Save current project as .Loxone XML file (⌘S / Ctrl+S)",
+                    can_save,
+                    is_dirty,
+                    false,
+                )
+                .clicked()
+                    && can_save
+                {
+                    action = Some(TopBarAction::SaveFile);
+                }
+                if render_vector_button(
+                    ui,
+                    ToolbarIcon::Undo,
+                    "",
+                    None,
+                    "Undo last edit (⌘Z / Ctrl+Z)",
+                    can_undo,
+                    false,
+                    false,
+                )
+                .clicked()
+                    && can_undo
+                {
+                    action = Some(TopBarAction::Undo);
+                }
+                if render_vector_button(
+                    ui,
+                    ToolbarIcon::Redo,
+                    "",
+                    None,
+                    "Redo edit (⌘⇧Z / Ctrl+Y)",
+                    can_redo,
+                    false,
+                    false,
+                )
+                .clicked()
+                    && can_redo
+                {
+                    action = Some(TopBarAction::Redo);
+                }
+
+                render_capsule_divider(ui);
+
+                ui_icon(ui, LoxoneIcon::Miniserver, 14.5);
+                let proj_title = project
+                    .map(|p| {
+                        if p.metadata.title.trim().is_empty() {
+                            crate::i18n::tr("Project")
+                        } else {
+                            p.metadata.title.as_str()
+                        }
+                    })
+                    .unwrap_or("Loxone Portable");
+                let dirty_suffix = if is_dirty { " *" } else { "" };
+                let title_resp = ui
+                    .label(
+                        RichText::new(format!("{}{}", proj_title, dirty_suffix))
+                            .size(11.8)
+                            .color(TEXT_PRIMARY)
+                            .strong(),
+                    )
+                    .interact(Sense::click());
+                if title_resp.clicked() && project.is_some() {
+                    action = Some(TopBarAction::ShowProjectLauncher);
+                }
+                if let Some(loaded) = loaded_path {
+                    title_resp.on_hover_text(format!(
+                        "{}\n{}",
+                        loaded.display(),
+                        crate::i18n::tr("Click to switch project / show project list")
+                    ));
+                } else if project.is_some() {
+                    title_resp.on_hover_text(crate::i18n::tr(
+                        "Downloaded from Miniserver (unsaved in-memory project)\nClick to switch project / show project list",
+                    ));
+                }
+
+                if let Some(proj) = project {
+                    let page_name = proj
+                        .pages
+                        .get(active_page_index)
+                        .map(|pg| pg.title.as_str())
+                        .unwrap_or_else(|| crate::i18n::tr("No Page"));
+                    ui.label(RichText::new("›").size(12.5).color(TEXT_MUTED));
+
+                    let page_pill = Frame::new()
+                        .fill(CARD_BG)
+                        .corner_radius(CornerRadius::same(5))
+                        .inner_margin(Margin::symmetric(6, 2))
+                        .show(ui, |ui| {
+                            ui.spacing_mut().item_spacing.x = 4.0;
+                            ui_icon(ui, LoxoneIcon::Page, 13.0);
+                            ui.label(
+                                RichText::new(truncate_tab_title(page_name, 20))
+                                    .size(11.2)
+                                    .color(Color32::from_rgb(0xC5, 0xD4, 0xF5))
+                                    .strong(),
+                            );
+                        })
+                        .response
+                        .interact(Sense::click())
+                        .on_hover_text(crate::i18n::tr(
+                            "Click to switch page or jump (⌘K / Ctrl+K)",
+                        ));
+                    if page_pill.clicked() {
+                        action = Some(TopBarAction::OpenCommandPalette);
+                    }
+                }
+            });
+
+        // 2. Center Loxone Config Ribbon Tab Strip (Core Tabs + Contextual Optional Tabs)
+        Frame::new()
+            .fill(Color32::from_rgb(0x14, 0x18, 0x21))
+            .stroke(Stroke::new(1.0_f32, BORDER_SUBTLE))
+            .corner_radius(CornerRadius::same(7))
+            .inner_margin(Margin::symmetric(4, 2))
+            .show(ui, |ui| {
+                ui.spacing_mut().item_spacing.x = 3.0;
+                let mut seen_contextual = false;
+                for &tab in visible_tabs {
+                    if tab.is_contextual() && !seen_contextual {
+                        render_capsule_divider(ui);
+                        seen_contextual = true;
+                    }
+                    let resp = render_ribbon_tab_button(
+                        ui,
+                        tab,
+                        tab == active_tab,
+                        selected_ctx,
+                    );
+                    if resp.clicked() {
+                        action = Some(TopBarAction::SelectRibbonTab(tab));
+                    }
+                }
+            });
+
+        // 3. Right Pinned Global Utilities (Inspector, Settings/Language menu, Search, Status Dot)
+        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            ui.spacing_mut().item_spacing.x = 5.0;
+
+            Frame::new()
+                .fill(CAPSULE_BG)
+                .stroke(Stroke::new(1.0_f32, BORDER_SUBTLE))
+                .corner_radius(CornerRadius::same(7))
+                .inner_margin(Margin::symmetric(3, 2))
+                .show(ui, |ui| {
+                    ui.spacing_mut().item_spacing.x = 2.0;
+                    if render_vector_button(
+                        ui,
+                        ToolbarIcon::SidebarRight,
+                        "",
+                        None,
+                        "Toggle Property Inspector (⌘I / Ctrl+I)",
+                        true,
+                        false,
+                        false,
+                    )
+                    .clicked()
+                    {
+                        action = Some(TopBarAction::ToggleRightPanel);
+                    }
+
+                    render_capsule_divider(ui);
+
+                    // Settings gear menu button (houses Language selection & View preferences)
+                    let lang = crate::i18n::current_language();
+                    let menu_resp = ui.menu_button(
+                        RichText::new("⚙").size(13.0).color(TEXT_PRIMARY),
+                        |ui| {
+                            ui.set_min_width(190.0);
+                            ui.label(
+                                RichText::new(format!("⚙ {}", crate::i18n::tr("Settings")))
+                                    .size(11.5)
+                                    .color(TEXT_PRIMARY)
+                                    .strong(),
+                            );
+                            ui.separator();
+                            ui.label(
+                                RichText::new(format!("🌐 {}", crate::i18n::tr("Language")))
+                                    .size(10.8)
+                                    .color(TEXT_MUTED),
+                            );
+                            for avail in crate::i18n::available_languages() {
+                                let is_cur = avail == lang;
+                                let prefix = if is_cur { "✓ " } else { "   " };
+                                let item_label = format!(
+                                    "{}{} — {}",
+                                    prefix,
+                                    avail.code(),
+                                    avail.display_name()
+                                );
+                                if ui.selectable_label(is_cur, item_label).clicked() {
+                                    action = Some(TopBarAction::SetLanguage(avail));
+                                    ui.close_menu();
+                                }
+                            }
+                            ui.separator();
+                            let pin_label = if compact_pins {
+                                crate::i18n::tr("Pins: Connected")
+                            } else {
+                                crate::i18n::tr("Pins: All")
+                            };
+                            if ui.button(format!("⚡ {}", pin_label)).clicked() {
+                                action = Some(TopBarAction::ToggleCompactPins);
+                                ui.close_menu();
+                            }
+                            if ui
+                                .button(format!("◧ {}", crate::i18n::tr("Explorer")))
+                                .clicked()
+                            {
+                                action = Some(TopBarAction::ToggleLeftPanel);
+                                ui.close_menu();
+                            }
+                            if ui
+                                .button(format!("◨ {}", crate::i18n::tr("Inspector")))
+                                .clicked()
+                            {
+                                action = Some(TopBarAction::ToggleRightPanel);
+                                ui.close_menu();
+                            }
+                        },
+                    );
+                    menu_resp
+                        .response
+                        .on_hover_text(crate::i18n::tr("Settings"));
+                });
+
+            let search_resp = Frame::new()
+                .fill(Color32::from_rgb(0x13, 0x16, 0x1E))
+                .stroke(Stroke::new(1.0_f32, BORDER_SUBTLE))
+                .corner_radius(CornerRadius::same(7))
+                .inner_margin(Margin::symmetric(7, 4))
+                .show(ui, |ui| {
+                    ui.spacing_mut().item_spacing.x = 5.0;
+                    let (icon_r, _) =
+                        ui.allocate_exact_size(Vec2::splat(13.0), Sense::hover());
+                    paint_toolbar_icon(ui.painter(), icon_r, ToolbarIcon::Search, TEXT_MUTED);
+                    ui.label(
+                        RichText::new(crate::i18n::tr("Search…"))
+                            .size(11.0)
+                            .color(TEXT_MUTED),
+                    );
+                    Frame::new()
+                        .fill(CARD_BG)
+                        .stroke(Stroke::new(1.0_f32, BORDER_SUBTLE))
+                        .corner_radius(CornerRadius::same(3))
+                        .inner_margin(Margin::symmetric(4, 1))
+                        .show(ui, |ui| {
+                            ui.label(
+                                RichText::new("⌘K")
+                                    .monospace()
+                                    .size(9.5)
+                                    .color(TEXT_MUTED),
+                            );
+                        });
+                })
+                .response
+                .interact(Sense::click())
+                .on_hover_text(crate::i18n::tr(
+                    "Open Command Palette to search blocks, pages, or I/O (⌘K / Ctrl+K)",
+                ));
+            if search_resp.clicked() {
+                action = Some(TopBarAction::OpenCommandPalette);
+            }
+
+            let status_pill_resp = Frame::new()
+                .fill(CAPSULE_BG)
+                .stroke(Stroke::new(
+                    1.0_f32,
+                    status_visuals.dot_color.gamma_multiply(0.55),
+                ))
+                .corner_radius(CornerRadius::same(7))
+                .inner_margin(Margin::symmetric(6, 4))
+                .show(ui, |ui| {
+                    ui.spacing_mut().item_spacing.x = 4.0;
+                    paint_status_indicator(ui, status_visuals);
+                })
+                .response
+                .interact(Sense::click())
+                .on_hover_text(format!("{} — {}", status_visuals.label, status_visuals.tooltip));
+            if status_pill_resp.clicked() {
+                action = Some(TopBarAction::OpenMiniserverModal);
+            }
+        });
+    });
+    action
+}
+
+#[allow(clippy::too_many_arguments)]
+fn render_ribbon_row_2(
+    ui: &mut Ui,
+    active_tab: RibbonTab,
+    project: Option<&LoxoneProject>,
+    compact_pins: bool,
+    zoom: f32,
+    connection_status: &ConnectionStatus,
+    status_visuals: &StatusBadgeVisuals,
+    can_save: bool,
+    is_dirty: bool,
+    can_undo: bool,
+    can_redo: bool,
+    live_view_active: bool,
+    selected_ctx: Option<&SelectedObjectContext>,
+) -> Option<TopBarAction> {
+    let mut action = None;
+    let has_project = project.is_some();
+    let view_items = build_view_toolbar_items(compact_pins);
+
+    ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+        ui.spacing_mut().item_spacing.x = 6.0;
+
+        // Left Pinned LIVE tile button (as in Loxone Config ribbon)
+        let live_item = build_live_view_toolbar_item(has_project, live_view_active);
+        if let Some(act) = render_toolbar_capsule(ui, std::slice::from_ref(&live_item)) {
+            action = Some(act);
+        }
+
+        match active_tab {
+            RibbonTab::AddDevice => {
+                Frame::new()
+                    .fill(CAPSULE_BG)
+                    .stroke(Stroke::new(1.0_f32, BORDER_SUBTLE))
+                    .corner_radius(CornerRadius::same(7))
+                    .inner_margin(Margin::symmetric(4, 2))
+                    .show(ui, |ui| {
+                        ui.spacing_mut().item_spacing.x = 4.0;
+                        let device_tiles: &[(&str, &str, &str, Color32, TopBarAction)] = &[
+                            (
+                                "➕",
+                                "All Devices",
+                                "Insert a function block or reference on the active page (A)",
+                                LOXONE_GREEN,
+                                TopBarAction::AddDeviceFilter(""),
+                            ),
+                            (
+                                "🔍",
+                                "Search Devices",
+                                "Open Command Palette to search blocks, pages, or I/O (⌘K / Ctrl+K)",
+                                ACCENT_BLUE,
+                                TopBarAction::OpenCommandPalette,
+                            ),
+                            (
+                                "🌿",
+                                "Tree",
+                                "Tree",
+                                Color32::from_rgb(0x52, 0xB7, 0x88),
+                                TopBarAction::AddDeviceFilter("Tree"),
+                            ),
+                            (
+                                "📡",
+                                "Air",
+                                "Air",
+                                Color32::from_rgb(0x5E, 0x9C, 0xDB),
+                                TopBarAction::AddDeviceFilter("Air"),
+                            ),
+                            (
+                                "🔗",
+                                "Link",
+                                "Link",
+                                Color32::from_rgb(0x9B, 0x72, 0xCF),
+                                TopBarAction::AddDeviceFilter("Extension"),
+                            ),
+                            (
+                                "🔌",
+                                "Virtual I/O",
+                                "Virtual I/O",
+                                Color32::from_rgb(0xE4, 0xB3, 0x3B),
+                                TopBarAction::AddDeviceFilter("Virtual"),
+                            ),
+                            (
+                                "🚩",
+                                "Memory Flags",
+                                "Memory Flags",
+                                Color32::from_rgb(0xD9, 0x6C, 0x43),
+                                TopBarAction::AddDeviceFilter("Merker"),
+                            ),
+                        ];
+                        for (icon, label, tip, tint, act) in device_tiles {
+                            let enabled = has_project
+                                || matches!(act, TopBarAction::OpenCommandPalette);
+                            if render_ribbon_chip(ui, icon, label, tip, enabled, *tint).clicked()
+                                && enabled
+                            {
+                                action = Some(act.clone());
+                            }
+                        }
+                    });
+            }
+            RibbonTab::Schematic => {
+                let add_item = ToolbarItem {
+                    group: ToolbarGroup::Authoring,
+                    icon: "➕",
+                    vector_icon: ToolbarIcon::AddBlock,
+                    label: "Insert Block…".to_string(),
+                    shortcut_hint: Some("A"),
+                    tooltip: "Insert a function block or reference on the active page (A)"
+                        .to_string(),
+                    action: TopBarAction::AddBlock,
+                    enabled: has_project,
+                    accent: true,
+                };
+                if let Some(act) = render_toolbar_capsule(ui, std::slice::from_ref(&add_item)) {
+                    action = Some(act);
+                }
+
+                Frame::new()
+                    .fill(CAPSULE_BG)
+                    .stroke(Stroke::new(1.0_f32, BORDER_SUBTLE))
+                    .corner_radius(CornerRadius::same(7))
+                    .inner_margin(Margin::symmetric(4, 2))
+                    .show(ui, |ui| {
+                        ui.spacing_mut().item_spacing.x = 4.0;
+                        let categories: &[(&str, &str, &str, Color32)] = &[
+                            ("💡", "Lighting", "Lighting", Color32::from_rgb(0xE4, 0xB3, 0x3B)),
+                            ("🌡", "Climate", "Climate", Color32::from_rgb(0xD9, 0x6C, 0x43)),
+                            ("🪟", "Shading", "Shading", Color32::from_rgb(0x5E, 0x9C, 0xDB)),
+                            ("⚡", "Energy", "Energy", Color32::from_rgb(0x52, 0xB7, 0x88)),
+                            ("🔑", "Access", "Security", Color32::from_rgb(0xCC, 0x4B, 0x4B)),
+                            ("🎛", "Control", "Control", ACCENT_BLUE),
+                            ("🎵", "Multimedia", "Audio", Color32::from_rgb(0x9B, 0x72, 0xCF)),
+                            ("✥", "Central", "Central", LOXONE_GREEN),
+                        ];
+                        for &(icon, label, cat_key, tint) in categories {
+                            if render_ribbon_chip(ui, icon, label, label, has_project, tint)
+                                .clicked()
+                                && has_project
+                            {
+                                action = Some(TopBarAction::AddBlockCategory(cat_key));
+                            }
+                        }
+                    });
+
+                if let Some(sel) = selected_ctx {
+                    let quick_items = if sel.is_page_block {
+                        vec![ToolbarItem {
+                            group: ToolbarGroup::Contextual,
+                            icon: "⚙",
+                            vector_icon: ToolbarIcon::ConfigureSliders,
+                            label: "Configure Object…".to_string(),
+                            shortcut_hint: None,
+                            tooltip: "Open Loxone Object Configuration modal for this block"
+                                .to_string(),
+                            action: TopBarAction::ConfigureSelectedObject,
+                            enabled: true,
+                            accent: true,
+                        }]
+                    } else if sel.can_place_on_page {
+                        vec![ToolbarItem {
+                            group: ToolbarGroup::Contextual,
+                            icon: "➕",
+                            vector_icon: ToolbarIcon::AddBlock,
+                            label: "Place on Page".to_string(),
+                            shortcut_hint: None,
+                            tooltip:
+                                "Place a reference to this tree object onto the active schematic page"
+                                    .to_string(),
+                            action: TopBarAction::CenterSelectedOnCanvas,
+                            enabled: true,
+                            accent: true,
+                        }]
+                    } else {
+                        Vec::new()
+                    };
+                    if !quick_items.is_empty() {
+                        if let Some(act) = render_toolbar_capsule(ui, &quick_items) {
+                            action = Some(act);
+                        }
+                    }
+                }
+            }
+            RibbonTab::Project => {
+                let mut file_items = build_file_toolbar_items(can_save, is_dirty);
+                file_items.push(ToolbarItem {
+                    group: ToolbarGroup::File,
+                    icon: "⊞",
+                    vector_icon: ToolbarIcon::ProjectGrid,
+                    label: "Switch Project".to_string(),
+                    shortcut_hint: None,
+                    tooltip: "Click to switch project / show project list".to_string(),
+                    action: TopBarAction::ShowProjectLauncher,
+                    enabled: has_project,
+                    accent: false,
+                });
+                if let Some(act) = render_toolbar_capsule(ui, &file_items) {
+                    action = Some(act);
+                }
+
+                let auth_items = build_authoring_toolbar_items(has_project, can_undo, can_redo);
+                if let Some(act) = render_toolbar_capsule(ui, &auth_items[1..]) {
+                    action = Some(act);
+                }
+
+                if let Some(pins_item) = view_items.get(2) {
+                    if let Some(act) = render_toolbar_capsule(ui, std::slice::from_ref(pins_item)) {
+                        action = Some(act);
+                    }
+                }
+            }
+            RibbonTab::Miniserver => {
+                let ms_border = match connection_status {
+                    ConnectionStatus::Disconnected => BORDER_SUBTLE,
+                    _ => status_visuals.dot_color.gamma_multiply(0.60),
+                };
+                Frame::new()
+                    .fill(CAPSULE_BG)
+                    .stroke(Stroke::new(1.0_f32, ms_border))
+                    .corner_radius(CornerRadius::same(7))
+                    .inner_margin(Margin::symmetric(8, 4))
+                    .show(ui, |ui| {
+                        ui.spacing_mut().item_spacing.x = 6.0;
+                        paint_status_indicator(ui, status_visuals);
+                        ui.label(
+                            RichText::new(&status_visuals.label)
+                                .size(11.4)
+                                .color(TEXT_PRIMARY)
+                                .strong(),
+                        );
+                    })
+                    .response
+                    .interact(Sense::click())
+                    .on_hover_text(&status_visuals.tooltip)
+                    .clicked()
+                    .then(|| {
+                        action = Some(TopBarAction::OpenMiniserverModal);
+                    });
+
+                let mut ms_items =
+                    build_miniserver_toolbar_items(connection_status.is_connecting());
+                ms_items.push(ToolbarItem {
+                    group: ToolbarGroup::Authoring,
+                    icon: "✓",
+                    vector_icon: ToolbarIcon::VerifyCheck,
+                    label: "Verify".to_string(),
+                    shortcut_hint: None,
+                    tooltip: "Run Project Health Check / Linter (dangling references, missing Room/Category, unconnected blocks)"
+                        .to_string(),
+                    action: TopBarAction::VerifyProject,
+                    enabled: has_project,
+                    accent: false,
+                });
+                if let Some(pins_item) = view_items.get(2) {
+                    ms_items.push(pins_item.clone());
+                }
+                if let Some(act) = render_toolbar_capsule(ui, &ms_items) {
+                    action = Some(act);
+                }
+            }
+            RibbonTab::View => {
+                let diag_items = vec![
+                    ToolbarItem {
+                        group: ToolbarGroup::Authoring,
+                        icon: "✓",
+                        vector_icon: ToolbarIcon::VerifyCheck,
+                        label: "Verify".to_string(),
+                        shortcut_hint: None,
+                        tooltip: "Run Project Health Check / Linter (dangling references, missing Room/Category, unconnected blocks)"
+                            .to_string(),
+                        action: TopBarAction::VerifyProject,
+                        enabled: has_project,
+                        accent: true,
+                    },
+                    ToolbarItem {
+                        group: ToolbarGroup::Miniserver,
+                        icon: "⬇",
+                        vector_icon: ToolbarIcon::Download,
+                        label: "Miniserver".to_string(),
+                        shortcut_hint: None,
+                        tooltip: "Connect to Miniserver and download project backup (⌘⇧D / Ctrl+Shift+D)"
+                            .to_string(),
+                        action: TopBarAction::OpenMiniserverModal,
+                        enabled: !connection_status.is_connecting(),
+                        accent: false,
+                    },
+                ];
+                if let Some(act) = render_toolbar_capsule(ui, &diag_items) {
+                    action = Some(act);
+                }
+
+                let panel_items = vec![
+                    ToolbarItem {
+                        group: ToolbarGroup::View,
+                        icon: "◧",
+                        vector_icon: ToolbarIcon::SidebarLeft,
+                        label: "Explorer".to_string(),
+                        shortcut_hint: Some("⌘B"),
+                        tooltip: "Toggle Explorer Sidebar (⌘B / Ctrl+B)".to_string(),
+                        action: TopBarAction::ToggleLeftPanel,
+                        enabled: true,
+                        accent: false,
+                    },
+                    ToolbarItem {
+                        group: ToolbarGroup::View,
+                        icon: "◨",
+                        vector_icon: ToolbarIcon::SidebarRight,
+                        label: "Inspector".to_string(),
+                        shortcut_hint: Some("⌘I"),
+                        tooltip: "Toggle Property Inspector (⌘I / Ctrl+I)".to_string(),
+                        action: TopBarAction::ToggleRightPanel,
+                        enabled: true,
+                        accent: false,
+                    },
+                ];
+                if let Some(act) = render_toolbar_capsule(ui, &panel_items) {
+                    action = Some(act);
+                }
+
+                if let Some(proj) = project {
+                    Frame::new()
+                        .fill(CARD_BG)
+                        .stroke(Stroke::new(1.0_f32, BORDER_SUBTLE))
+                        .corner_radius(CornerRadius::same(6))
+                        .inner_margin(Margin::symmetric(8, 4))
+                        .show(ui, |ui| {
+                            ui.label(
+                                RichText::new(format!(
+                                    "{}: {}  ·  {}: {}  ·  {}: {}",
+                                    crate::i18n::tr("Pages"),
+                                    proj.pages.len(),
+                                    crate::i18n::tr("Rooms"),
+                                    proj.places.len(),
+                                    crate::i18n::tr("Categories"),
+                                    proj.categories.len(),
+                                ))
+                                .size(11.0)
+                                .color(TEXT_MUTED),
+                            );
+                        });
+                }
+            }
+            RibbonTab::SelectedObject => {
+                if let Some(sel) = selected_ctx {
+                    Frame::new()
+                        .fill(CONTEXTUAL_OBJECT_ACCENT.gamma_multiply(0.14))
+                        .stroke(Stroke::new(
+                            1.0_f32,
+                            CONTEXTUAL_OBJECT_ACCENT.gamma_multiply(0.45),
+                        ))
+                        .corner_radius(CornerRadius::same(6))
+                        .inner_margin(Margin::symmetric(8, 4))
+                        .show(ui, |ui| {
+                            ui.spacing_mut().item_spacing.x = 5.0;
+                            ui.label(
+                                RichText::new(crate::i18n::block_display_name(&sel.object_type))
+                                    .size(11.0)
+                                    .color(Color32::from_rgb(0xD8, 0xC4, 0xFF))
+                                    .strong(),
+                            );
+                            ui.label(RichText::new("·").size(11.0).color(TEXT_MUTED));
+                            ui.label(
+                                RichText::new(truncate_tab_title(&sel.title, 28))
+                                    .size(11.2)
+                                    .color(Color32::WHITE)
+                                    .strong(),
+                            );
+                        });
+
+                    let ctx_items = build_selected_object_toolbar_items(sel);
+                    if let Some(act) = render_toolbar_capsule(ui, &ctx_items) {
+                        action = Some(act);
+                    }
+                }
+            }
+            RibbonTab::LiveView => {
+                Frame::new()
+                    .fill(LOXONE_GREEN.gamma_multiply(0.16))
+                    .stroke(Stroke::new(1.0_f32, LOXONE_GREEN.gamma_multiply(0.55)))
+                    .corner_radius(CornerRadius::same(6))
+                    .inner_margin(Margin::symmetric(8, 4))
+                    .show(ui, |ui| {
+                        ui.spacing_mut().item_spacing.x = 6.0;
+                        paint_status_indicator(ui, status_visuals);
+                        ui.label(
+                            RichText::new(format!(
+                                "⚡ {}  ·  {}",
+                                crate::i18n::tr("Live View: ON"),
+                                status_visuals.label
+                            ))
+                            .size(11.2)
+                            .color(Color32::from_rgb(0xC8, 0xFA, 0x9E))
+                            .strong(),
+                        );
+                    });
+
+                let mut live_items =
+                    build_miniserver_toolbar_items(connection_status.is_connecting());
+                if let Some(pins_item) = view_items.get(2) {
+                    live_items.push(pins_item.clone());
+                }
+                if let Some(act) = render_toolbar_capsule(ui, &live_items) {
+                    action = Some(act);
+                }
+            }
+        }
+
+        // Right-aligned Pinned Zoom & Fit Capsule across all tabs
+        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            Frame::new()
+                .fill(CAPSULE_BG)
+                .stroke(Stroke::new(1.0_f32, BORDER_SUBTLE))
+                .corner_radius(CornerRadius::same(7))
+                .inner_margin(Margin::symmetric(3, 2))
+                .show(ui, |ui| {
+                    ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+                        ui.spacing_mut().item_spacing.x = 2.0;
+                        if render_vector_button(
+                            ui,
+                            ToolbarIcon::ZoomOut,
+                            "",
+                            None,
+                            "Zoom out (⌘- / Scroll down)",
+                            true,
+                            false,
+                            false,
+                        )
+                        .clicked()
+                        {
+                            action = Some(TopBarAction::ZoomOut);
+                        }
+
+                        let pct_resp = Frame::new()
+                            .corner_radius(CornerRadius::same(4))
+                            .inner_margin(Margin::symmetric(5, 3))
+                            .show(ui, |ui| {
+                                ui.label(
+                                    RichText::new(format!("{:.0}%", zoom * 100.0))
+                                        .monospace()
+                                        .size(11.2)
+                                        .color(TEXT_PRIMARY),
+                                );
+                            })
+                            .response
+                            .interact(Sense::click())
+                            .on_hover_text(crate::i18n::tr("Reset zoom to 100% (0)"));
+                        if pct_resp.clicked() {
+                            action = Some(TopBarAction::ResetZoom);
+                        }
+
+                        if render_vector_button(
+                            ui,
+                            ToolbarIcon::ZoomIn,
+                            "",
+                            None,
+                            "Zoom in (⌘+ / Scroll up)",
+                            true,
+                            false,
+                            false,
+                        )
+                        .clicked()
+                        {
+                            action = Some(TopBarAction::ZoomIn);
+                        }
+
+                        if let Some(fit_item) = view_items.get(1) {
+                            render_capsule_divider(ui);
+                            if render_vector_button(
+                                ui,
+                                fit_item.vector_icon,
+                                &fit_item.label,
+                                fit_item.shortcut_hint,
+                                &fit_item.tooltip,
+                                fit_item.enabled,
+                                fit_item.accent,
+                                false,
+                            )
+                            .clicked()
+                            {
+                                action = Some(fit_item.action.clone());
+                            }
+                        }
+                    });
+                });
+        });
+    });
+
+    action
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn render_top_bar(
     ctx: &Context,
@@ -754,6 +2053,39 @@ pub fn render_top_bar(
     can_redo: bool,
     live_view_active: bool,
 ) -> Option<TopBarAction> {
+    render_top_bar_with_selection(
+        ctx,
+        project,
+        loaded_path,
+        active_page_index,
+        compact_pins,
+        zoom,
+        connection_status,
+        configured_host,
+        is_dirty,
+        can_undo,
+        can_redo,
+        live_view_active,
+        None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn render_top_bar_with_selection(
+    ctx: &Context,
+    project: Option<&LoxoneProject>,
+    loaded_path: Option<&Path>,
+    active_page_index: usize,
+    compact_pins: bool,
+    zoom: f32,
+    connection_status: &ConnectionStatus,
+    configured_host: Option<&str>,
+    is_dirty: bool,
+    can_undo: bool,
+    can_redo: bool,
+    live_view_active: bool,
+    selected_uuid: Option<&str>,
+) -> Option<TopBarAction> {
     let mut action = None;
     let can_save = project.and_then(|p| p.raw_xml.as_ref()).is_some();
     let effective_host = configured_host
@@ -766,371 +2098,81 @@ pub fn render_top_bar(
                     .or(p.metadata.miniserver_hostname.as_deref())
             })
         });
-    let status_visuals = status_badge_visuals(connection_status, effective_host);
+    let status_visuals = status_badge_visuals_localized(connection_status, effective_host);
 
-    egui::TopBottomPanel::top("top_header")
-        .exact_height(46.0)
+    let selected_ctx = build_selected_object_context(project, selected_uuid);
+    let visible_tabs = visible_ribbon_tabs(selected_ctx.is_some(), live_view_active);
+    let stored_tab = current_ribbon_tab(ctx);
+    let mut active_tab =
+        resolve_active_ribbon_tab(stored_tab, selected_ctx.is_some(), live_view_active);
+    if active_tab != stored_tab {
+        set_ribbon_tab(ctx, active_tab);
+    }
+
+    egui::TopBottomPanel::top("top_title_bar")
+        .exact_height(36.0)
         .frame(
             Frame::new()
                 .fill(PANEL_BG)
                 .stroke(Stroke::new(1.0_f32, BORDER_SUBTLE))
-                .inner_margin(Margin::symmetric(10, 6)),
+                .inner_margin(Margin::symmetric(10, 4)),
         )
         .show(ctx, |ui| {
-            ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
-                ui.spacing_mut().item_spacing.x = 7.0;
-
-                // 1. Left Explorer Sidebar Toggle + Project/Page Breadcrumb Capsule
-                Frame::new()
-                    .fill(CAPSULE_BG)
-                    .stroke(Stroke::new(1.0_f32, BORDER_SUBTLE))
-                    .corner_radius(CornerRadius::same(7))
-                    .inner_margin(Margin::symmetric(4, 2))
-                    .show(ui, |ui| {
-                        ui.spacing_mut().item_spacing.x = 4.0;
-                        if render_vector_button(
-                            ui,
-                            ToolbarIcon::SidebarLeft,
-                            "",
-                            None,
-                            "Toggle Explorer Sidebar (⌘B / Ctrl+B)",
-                            true,
-                            false,
-                            false,
-                        )
-                        .clicked()
-                        {
-                            action = Some(TopBarAction::ToggleLeftPanel);
-                        }
-
-                        render_capsule_divider(ui);
-
-                        ui_icon(ui, LoxoneIcon::Miniserver, 15.0);
-                        let proj_title = project
-                            .map(|p| {
-                                if p.metadata.title.trim().is_empty() {
-                                    "Project"
-                                } else {
-                                    p.metadata.title.as_str()
-                                }
-                            })
-                            .unwrap_or("Loxone Portable");
-                        let dirty_suffix = if is_dirty { " *" } else { "" };
-                        let title_resp = ui
-                            .label(
-                                RichText::new(format!("{}{}", proj_title, dirty_suffix))
-                                    .size(12.0)
-                                    .color(TEXT_PRIMARY)
-                                    .strong(),
-                            )
-                            .interact(Sense::click());
-                        if title_resp.clicked() && project.is_some() {
-                            action = Some(TopBarAction::ShowProjectLauncher);
-                        }
-                        if let Some(loaded) = loaded_path {
-                            title_resp.on_hover_text(format!(
-                                "{}\nClick to switch project / show project list",
-                                loaded.display()
-                            ));
-                        } else if project.is_some() {
-                            title_resp.on_hover_text(
-                                "Downloaded from Miniserver (unsaved in-memory project)\nClick to switch project / show project list",
-                            );
-                        }
-
-                        if let Some(proj) = project {
-                            let page_name = proj
-                                .pages
-                                .get(active_page_index)
-                                .map(|pg| pg.title.as_str())
-                                .unwrap_or("No Page");
-                            ui.label(RichText::new("›").size(13.0).color(TEXT_MUTED));
-
-                            let page_pill = Frame::new()
-                                .fill(CARD_BG)
-                                .corner_radius(CornerRadius::same(5))
-                                .inner_margin(Margin::symmetric(6, 2))
-                                .show(ui, |ui| {
-                                    ui.spacing_mut().item_spacing.x = 4.0;
-                                    ui_icon(ui, LoxoneIcon::Page, 13.5);
-                                    ui.label(
-                                        RichText::new(page_name)
-                                            .size(11.5)
-                                            .color(Color32::from_rgb(0xC5, 0xD4, 0xF5))
-                                            .strong(),
-                                    );
-                                })
-                                .response
-                                .interact(Sense::click())
-                                .on_hover_text("Click to switch page or jump (⌘K / Ctrl+K)");
-                            if page_pill.clicked() {
-                                action = Some(TopBarAction::OpenCommandPalette);
-                            }
-                        }
-                    });
-
-                // 2. File Capsule (Open, Save .Loxone)
-                let file_items = build_file_toolbar_items(can_save, is_dirty);
-                if let Some(act) = render_toolbar_capsule(ui, &file_items) {
-                    action = Some(act);
+            if let Some(row1_act) = render_ribbon_row_1(
+                ui,
+                project,
+                loaded_path,
+                active_page_index,
+                can_save,
+                is_dirty,
+                can_undo,
+                can_redo,
+                compact_pins,
+                &status_visuals,
+                &visible_tabs,
+                active_tab,
+                selected_ctx.as_ref(),
+            ) {
+                if let TopBarAction::SelectRibbonTab(new_tab) = row1_act {
+                    active_tab = new_tab;
+                    set_ribbon_tab(ctx, new_tab);
+                    ctx.request_repaint();
                 }
+                action = Some(row1_act);
+            }
+        });
 
-                // 3. Authoring Capsule (+ Add Block [A], Undo, Redo)
-                let auth_items =
-                    build_authoring_toolbar_items(project.is_some(), can_undo, can_redo);
-                if let Some(act) = render_toolbar_capsule(ui, &auth_items) {
-                    action = Some(act);
+    egui::TopBottomPanel::top("top_ribbon_bar")
+        .exact_height(38.0)
+        .frame(
+            Frame::new()
+                .fill(PANEL_BG)
+                .stroke(Stroke::new(1.0_f32, BORDER_SUBTLE))
+                .inner_margin(Margin::symmetric(10, 4)),
+        )
+        .show(ctx, |ui| {
+            if let Some(row2_act) = render_ribbon_row_2(
+                ui,
+                active_tab,
+                project,
+                compact_pins,
+                zoom,
+                connection_status,
+                &status_visuals,
+                can_save,
+                is_dirty,
+                can_undo,
+                can_redo,
+                live_view_active,
+                selected_ctx.as_ref(),
+            ) {
+                if row2_act == TopBarAction::OpenSelectedDocs {
+                    if let Some(url) = selected_ctx.as_ref().and_then(|c| c.kb_url) {
+                        ctx.open_url(egui::OpenUrl::new_tab(url));
+                    }
                 }
-
-                // 4. Unified Miniserver Status, Download & LiveView Capsule
-                let ms_border = if live_view_active {
-                    Color32::from_rgb(0x59, 0xB8, 0x28).gamma_multiply(0.85)
-                } else {
-                    match connection_status {
-                        ConnectionStatus::Disconnected => BORDER_SUBTLE,
-                        _ => status_visuals.dot_color.gamma_multiply(0.60),
-                    }
-                };
-                Frame::new()
-                    .fill(CAPSULE_BG)
-                    .stroke(Stroke::new(1.0_f32, ms_border))
-                    .corner_radius(CornerRadius::same(7))
-                    .inner_margin(Margin::symmetric(4, 2))
-                    .show(ui, |ui| {
-                        ui.spacing_mut().item_spacing.x = 3.0;
-                        let status_resp = Frame::new()
-                            .corner_radius(CornerRadius::same(5))
-                            .inner_margin(Margin::symmetric(6, 3))
-                            .show(ui, |ui| {
-                                ui.spacing_mut().item_spacing.x = 5.0;
-                                paint_status_indicator(ui, &status_visuals);
-                                ui.label(
-                                    RichText::new(&status_visuals.label)
-                                        .size(11.5)
-                                        .color(TEXT_PRIMARY),
-                                );
-                            })
-                            .response
-                            .interact(Sense::click())
-                            .on_hover_text(&status_visuals.tooltip);
-                        if status_resp.clicked() {
-                            action = Some(TopBarAction::OpenMiniserverModal);
-                        }
-
-                        render_capsule_divider(ui);
-
-                        let ms_items =
-                            build_miniserver_toolbar_items(connection_status.is_connecting());
-                        for item in &ms_items {
-                            let resp = render_vector_button(
-                                ui,
-                                item.vector_icon,
-                                &item.label,
-                                item.shortcut_hint,
-                                &item.tooltip,
-                                item.enabled,
-                                item.accent,
-                                false,
-                            );
-                            if resp.clicked() && item.enabled {
-                                action = Some(item.action.clone());
-                            }
-                        }
-
-                        render_capsule_divider(ui);
-
-                        let live_item =
-                            build_live_view_toolbar_item(project.is_some(), live_view_active);
-                        let live_resp = render_vector_button(
-                            ui,
-                            live_item.vector_icon,
-                            &live_item.label,
-                            live_item.shortcut_hint,
-                            &live_item.tooltip,
-                            live_item.enabled,
-                            false,
-                            live_view_active,
-                        );
-                        if live_resp.clicked() && live_item.enabled {
-                            action = Some(live_item.action);
-                        }
-                    });
-
-                // 5. Command Palette Search Bar (⌘K)
-                let search_resp = Frame::new()
-                    .fill(Color32::from_rgb(0x13, 0x16, 0x1E))
-                    .stroke(Stroke::new(1.0_f32, BORDER_SUBTLE))
-                    .corner_radius(CornerRadius::same(7))
-                    .inner_margin(Margin::symmetric(8, 4))
-                    .show(ui, |ui| {
-                        ui.spacing_mut().item_spacing.x = 6.0;
-                        let (icon_r, _) =
-                            ui.allocate_exact_size(Vec2::splat(13.5), Sense::hover());
-                        paint_toolbar_icon(
-                            ui.painter(),
-                            icon_r,
-                            ToolbarIcon::Search,
-                            TEXT_MUTED,
-                        );
-                        ui.label(
-                            RichText::new("Search…")
-                                .size(11.5)
-                                .color(TEXT_MUTED),
-                        );
-                        Frame::new()
-                            .fill(CARD_BG)
-                            .stroke(Stroke::new(1.0_f32, BORDER_SUBTLE))
-                            .corner_radius(CornerRadius::same(3))
-                            .inner_margin(Margin::symmetric(5, 1))
-                            .show(ui, |ui| {
-                                ui.label(
-                                    RichText::new("⌘K")
-                                        .monospace()
-                                        .size(9.8)
-                                        .color(TEXT_MUTED),
-                                );
-                            });
-                    })
-                    .response
-                    .interact(Sense::click())
-                    .on_hover_text("Open Command Palette to search blocks, pages, or I/O (⌘K / Ctrl+K)");
-                if search_resp.clicked() {
-                    action = Some(TopBarAction::OpenCommandPalette);
-                }
-
-                // 6. Right-Aligned View, Pins & Zoom Controls
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    ui.spacing_mut().item_spacing.x = 6.0;
-
-                    let view_items = build_view_toolbar_items(compact_pins);
-                    // Inspector toggle button on the far right
-                    if let Some(insp_item) = view_items.first() {
-                        Frame::new()
-                            .fill(CAPSULE_BG)
-                            .stroke(Stroke::new(1.0_f32, BORDER_SUBTLE))
-                            .corner_radius(CornerRadius::same(7))
-                            .inner_margin(Margin::symmetric(3, 2))
-                            .show(ui, |ui| {
-                                if render_vector_button(
-                                    ui,
-                                    insp_item.vector_icon,
-                                    &insp_item.label,
-                                    insp_item.shortcut_hint,
-                                    &insp_item.tooltip,
-                                    insp_item.enabled,
-                                    insp_item.accent,
-                                    false,
-                                )
-                                .clicked()
-                                {
-                                    action = Some(insp_item.action.clone());
-                                }
-                            });
-                    }
-
-                    // Pins mode toggle capsule
-                    if let Some(pins_item) = view_items.get(2) {
-                        Frame::new()
-                            .fill(CAPSULE_BG)
-                            .stroke(Stroke::new(1.0_f32, BORDER_SUBTLE))
-                            .corner_radius(CornerRadius::same(7))
-                            .inner_margin(Margin::symmetric(3, 2))
-                            .show(ui, |ui| {
-                                if render_vector_button(
-                                    ui,
-                                    pins_item.vector_icon,
-                                    &pins_item.label,
-                                    pins_item.shortcut_hint,
-                                    &pins_item.tooltip,
-                                    pins_item.enabled,
-                                    pins_item.accent,
-                                    false,
-                                )
-                                .clicked()
-                                {
-                                    action = Some(pins_item.action.clone());
-                                }
-                            });
-                    }
-
-                    // Unified Zoom & Fit Capsule: [ - | 100% | + | Fit ]
-                    Frame::new()
-                        .fill(CAPSULE_BG)
-                        .stroke(Stroke::new(1.0_f32, BORDER_SUBTLE))
-                        .corner_radius(CornerRadius::same(7))
-                        .inner_margin(Margin::symmetric(3, 2))
-                        .show(ui, |ui| {
-                            ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
-                                ui.spacing_mut().item_spacing.x = 2.0;
-                                if render_vector_button(
-                                    ui,
-                                    ToolbarIcon::ZoomOut,
-                                    "",
-                                    None,
-                                    "Zoom out (⌘- / Scroll down)",
-                                    true,
-                                    false,
-                                    false,
-                                )
-                                .clicked()
-                                {
-                                    action = Some(TopBarAction::ZoomOut);
-                                }
-
-                                let pct_resp = Frame::new()
-                                    .corner_radius(CornerRadius::same(4))
-                                    .inner_margin(Margin::symmetric(5, 3))
-                                    .show(ui, |ui| {
-                                        ui.label(
-                                            RichText::new(format!("{:.0}%", zoom * 100.0))
-                                                .monospace()
-                                                .size(11.2)
-                                                .color(TEXT_PRIMARY),
-                                        );
-                                    })
-                                    .response
-                                    .interact(Sense::click())
-                                    .on_hover_text("Reset zoom to 100% (0)");
-                                if pct_resp.clicked() {
-                                    action = Some(TopBarAction::ResetZoom);
-                                }
-
-                                if render_vector_button(
-                                    ui,
-                                    ToolbarIcon::ZoomIn,
-                                    "",
-                                    None,
-                                    "Zoom in (⌘+ / Scroll up)",
-                                    true,
-                                    false,
-                                    false,
-                                )
-                                .clicked()
-                                {
-                                    action = Some(TopBarAction::ZoomIn);
-                                }
-
-                                if let Some(fit_item) = view_items.get(1) {
-                                    render_capsule_divider(ui);
-                                    if render_vector_button(
-                                        ui,
-                                        fit_item.vector_icon,
-                                        &fit_item.label,
-                                        fit_item.shortcut_hint,
-                                        &fit_item.tooltip,
-                                        fit_item.enabled,
-                                        fit_item.accent,
-                                        false,
-                                    )
-                                    .clicked()
-                                    {
-                                        action = Some(fit_item.action.clone());
-                                    }
-                                }
-                            });
-                        });
-                });
-            });
+                action = Some(row2_act);
+            }
         });
 
     action
@@ -1280,5 +2322,110 @@ mod tests {
                 true,
             );
         });
+    }
+
+    #[test]
+    fn test_ribbon_tabs_and_contextual_object_toolbar() {
+        crate::i18n::set_language(crate::i18n::Language::En);
+
+        // 1. Core tabs when no contextual state is active
+        let core_only = visible_ribbon_tabs(false, false);
+        assert_eq!(
+            core_only,
+            vec![
+                RibbonTab::AddDevice,
+                RibbonTab::Schematic,
+                RibbonTab::Project,
+                RibbonTab::Miniserver,
+                RibbonTab::View,
+            ]
+        );
+
+        // 2. Contextual tabs appear dynamically when object selected or Live View active
+        let with_obj = visible_ribbon_tabs(true, false);
+        assert!(with_obj.contains(&RibbonTab::SelectedObject));
+        assert!(!with_obj.contains(&RibbonTab::LiveView));
+
+        let with_both = visible_ribbon_tabs(true, true);
+        assert!(with_both.contains(&RibbonTab::SelectedObject));
+        assert!(with_both.contains(&RibbonTab::LiveView));
+
+        // 3. Fallback when contextual condition ends
+        assert_eq!(
+            resolve_active_ribbon_tab(RibbonTab::SelectedObject, false, false),
+            RibbonTab::Schematic
+        );
+        assert_eq!(
+            resolve_active_ribbon_tab(RibbonTab::LiveView, true, false),
+            RibbonTab::Schematic
+        );
+        assert_eq!(
+            resolve_active_ribbon_tab(RibbonTab::SelectedObject, true, false),
+            RibbonTab::SelectedObject
+        );
+
+        // 4. Contextual object context & toolbar items from Klimczaki.Loxone
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("Klimczaki.Loxone");
+        let proj = loxone_core::parser::load_loxone_file(&path).expect("load Klimczaki.Loxone");
+        let first_block = &proj.pages[0].blocks[0];
+        let obj_ctx = build_selected_object_context(Some(&proj), Some(&first_block.uuid))
+            .expect("selected object context should resolve");
+        assert!(obj_ctx.is_page_block);
+        assert!(!obj_ctx.title.is_empty());
+
+        let obj_items = build_selected_object_toolbar_items(&obj_ctx);
+        assert!(obj_items
+            .iter()
+            .any(|i| i.action == TopBarAction::ConfigureSelectedObject));
+        assert!(obj_items
+            .iter()
+            .any(|i| i.action == TopBarAction::CenterSelectedOnCanvas));
+        assert!(obj_items
+            .iter()
+            .any(|i| i.action == TopBarAction::DuplicateSelected));
+        assert!(obj_items
+            .iter()
+            .any(|i| i.action == TopBarAction::DeleteSelected));
+
+        // 5. Headless render across all 7 RibbonTabs
+        let ctx = egui::Context::default();
+        let status = ConnectionStatus::Connected {
+            host: "192.168.1.100".to_string(),
+            server_info: "OK".to_string(),
+        };
+        for tab in [
+            RibbonTab::AddDevice,
+            RibbonTab::Schematic,
+            RibbonTab::Project,
+            RibbonTab::Miniserver,
+            RibbonTab::View,
+            RibbonTab::SelectedObject,
+            RibbonTab::LiveView,
+        ] {
+            set_ribbon_tab(&ctx, tab);
+            let _ = ctx.run(egui::RawInput::default(), |ctx| {
+                let _ = render_top_bar_with_selection(
+                    ctx,
+                    Some(&proj),
+                    Some(&path),
+                    0,
+                    true,
+                    1.0,
+                    &status,
+                    Some("192.168.1.100"),
+                    true,
+                    true,
+                    true,
+                    true,
+                    Some(&first_block.uuid),
+                );
+            });
+            assert_eq!(current_ribbon_tab(&ctx), tab);
+        }
     }
 }
