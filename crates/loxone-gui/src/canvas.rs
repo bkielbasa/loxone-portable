@@ -7,7 +7,8 @@ use loxone_core::xref::XrefIndex;
 
 use crate::theme::{
     blend_block_header_color, ACCENT_BLUE, BORDER_SUBTLE, CANVAS_BG, CARD_BG, CARD_BORDER,
-    GRID_DOT, TEXT_MUTED, TEXT_PRIMARY, WIRE_ANALOG, WIRE_DIGITAL,
+    ELEVATED_BG, GRID_DOT, LOXONE_GREEN, PANEL_BG, TEXT_MUTED, TEXT_PRIMARY, WIRE_ANALOG,
+    WIRE_DIGITAL,
 };
 
 pub const LOXONE_UNITS_PER_PX: f32 = 8.0;
@@ -103,6 +104,33 @@ pub struct CanvasInteractionState {
     pub context_menu: Option<CanvasContextMenu>,
     pub live_value_popup: Option<LiveValuePopupState>,
     pub inline_rename: Option<InlineRenameState>,
+    pub last_clicked_block_uuid: Option<String>,
+}
+
+pub fn block_has_advanced_modal(block: &PageBlock) -> bool {
+    loxone_core::supports_object_config(block)
+        || loxone_core::supports_room_controller_config(block)
+        || loxone_core::EfmConfig::is_efm_block(&block.block_type)
+        || loxone_core::LightControllerConfig::is_light_controller_block(&block.block_type)
+        || loxone_core::StateBlockConfig::is_state_block(&block.block_type)
+        || loxone_core::AlarmClockConfig::is_alarm_clock_block(&block.block_type)
+        || matches!(
+            block.block_type.as_str(),
+            "CentralLight"
+                | "CentralLightController"
+                | "CentralMusic"
+                | "CentralAudio"
+                | "CentralShade"
+                | "CentralJalousie"
+                | "CentralGate"
+                | "MusicPlayer"
+                | "AudioZone"
+                | "MusicServerZone"
+                | "Heatmixer2"
+                | "ClimateControllerUS"
+                | "ClimateController"
+                | "Sequence"
+        )
 }
 
 #[derive(Debug, Clone)]
@@ -110,6 +138,7 @@ pub struct CanvasViewport {
     pub pan: Vec2,
     pub zoom: f32,
     pub compact_pins: bool,
+    pub show_minimap: bool,
     pub interaction: CanvasInteractionState,
 }
 
@@ -119,7 +148,128 @@ impl Default for CanvasViewport {
             pan: Vec2::new(40.0, 40.0),
             zoom: 1.0,
             compact_pins: true,
+            show_minimap: true,
             interaction: CanvasInteractionState::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MultiSelectAlign {
+    AlignLeft,
+    AlignTop,
+}
+
+/// Computes the Loxone coordinate bounding box `(min_lx, min_ly)..(max_lx, max_ly)`
+/// across all positioned blocks on the page, with a small margin.
+pub fn compute_page_loxone_bounds(page: &Page) -> Option<Rect> {
+    let mut min_x = f32::INFINITY;
+    let mut min_y = f32::INFINITY;
+    let mut max_x = f32::NEG_INFINITY;
+    let mut max_y = f32::NEG_INFINITY;
+    let mut found = false;
+
+    for block in &page.blocks {
+        if !block.has_position {
+            continue;
+        }
+        found = true;
+        min_x = min_x.min(block.px);
+        min_y = min_y.min(block.py);
+        let bw = if block.is_note() {
+            (block.px2 - block.px).max(512.0)
+        } else if block.is_ref_bar() {
+            1680.0
+        } else {
+            1888.0
+        };
+        let bh = if block.is_note() {
+            (block.py2 - block.py).max(192.0)
+        } else if block.is_ref_bar() {
+            240.0
+        } else {
+            640.0
+        };
+        max_x = max_x.max(block.px + bw);
+        max_y = max_y.max(block.py + bh);
+    }
+
+    if !found {
+        return None;
+    }
+
+    let pad = 256.0_f32;
+    Some(Rect::from_min_max(
+        Pos2::new((min_x - pad).max(0.0), (min_y - pad).max(0.0)),
+        Pos2::new(max_x + pad, max_y + pad),
+    ))
+}
+
+/// Maps a Loxone coordinate `(lx, ly)` into a screen position inside `minimap_rect`
+/// given the page's Loxone coordinate `bounds`.
+pub fn loxone_to_minimap_pos(bounds: Rect, minimap_rect: Rect, lx: f32, ly: f32) -> Pos2 {
+    let inner = minimap_rect.shrink(6.0);
+    let bw = bounds.width().max(1.0);
+    let bh = bounds.height().max(1.0);
+    let nx = ((lx - bounds.min.x) / bw).clamp(0.0, 1.0);
+    let ny = ((ly - bounds.min.y) / bh).clamp(0.0, 1.0);
+    Pos2::new(
+        inner.min.x + nx * inner.width(),
+        inner.min.y + ny * inner.height(),
+    )
+}
+
+/// Maps a screen position inside `minimap_rect` back to Loxone coordinates `(lx, ly)`.
+pub fn minimap_pos_to_loxone(bounds: Rect, minimap_rect: Rect, pos: Pos2) -> (f32, f32) {
+    let inner = minimap_rect.shrink(6.0);
+    let iw = inner.width().max(1.0);
+    let ih = inner.height().max(1.0);
+    let nx = ((pos.x - inner.min.x) / iw).clamp(0.0, 1.0);
+    let ny = ((pos.y - inner.min.y) / ih).clamp(0.0, 1.0);
+    (
+        bounds.min.x + nx * bounds.width(),
+        bounds.min.y + ny * bounds.height(),
+    )
+}
+
+/// Computes grid-snapped `(block_uuid, px, py)` moves for aligning 2+ selected blocks
+/// on `page` either to the minimum `px` (`AlignLeft`) or minimum `py` (`AlignTop`).
+pub fn compute_aligned_block_moves(
+    page: &Page,
+    selected_uuids: &[String],
+    mode: MultiSelectAlign,
+) -> Vec<(String, f32, f32)> {
+    let selected: Vec<&PageBlock> = page
+        .blocks
+        .iter()
+        .filter(|b| b.has_position && selected_uuids.contains(&b.uuid))
+        .collect();
+    if selected.len() < 2 {
+        return Vec::new();
+    }
+
+    match mode {
+        MultiSelectAlign::AlignLeft => {
+            let min_px = selected
+                .iter()
+                .map(|b| b.px)
+                .fold(f32::INFINITY, f32::min);
+            let target_px = snap_to_loxone_grid(min_px).max(0.0);
+            selected
+                .into_iter()
+                .map(|b| (b.uuid.clone(), target_px, snap_to_loxone_grid(b.py).max(0.0)))
+                .collect()
+        }
+        MultiSelectAlign::AlignTop => {
+            let min_py = selected
+                .iter()
+                .map(|b| b.py)
+                .fold(f32::INFINITY, f32::min);
+            let target_py = snap_to_loxone_grid(min_py).max(0.0);
+            selected
+                .into_iter()
+                .map(|b| (b.uuid.clone(), snap_to_loxone_grid(b.px).max(0.0), target_py))
+                .collect()
         }
     }
 }
@@ -629,11 +779,11 @@ pub fn collect_block_display_pins(
     (inputs, outputs)
 }
 
-const LIVE_ACTIVE_GREEN: Color32 = Color32::from_rgb(0x59, 0xB8, 0x28);
-const LIVE_INACTIVE_CAPSULE_BG: Color32 = Color32::from_rgb(0x2D, 0x35, 0x45);
-const OFF_CAPSULE_BG: Color32 = Color32::from_rgb(0x1E, 0x25, 0x32);
-const OFF_CAPSULE_BORDER: Color32 = Color32::from_rgb(0x3D, 0x49, 0x5E);
-const OFF_CAPSULE_SELECTED_BG: Color32 = Color32::from_rgb(0x1D, 0x3E, 0x6E);
+const LIVE_ACTIVE_GREEN: Color32 = Color32::from_rgb(0x69, 0xC3, 0x50);
+const LIVE_INACTIVE_CAPSULE_BG: Color32 = Color32::from_rgb(0x22, 0x22, 0x22);
+const OFF_CAPSULE_BG: Color32 = Color32::from_rgb(0x1C, 0x1C, 0x1C);
+const OFF_CAPSULE_BORDER: Color32 = Color32::from_rgb(0x33, 0x33, 0x33);
+const OFF_CAPSULE_SELECTED_BG: Color32 = Color32::from_rgb(0x1F, 0x36, 0x1A);
 
 pub fn compute_ref_bar_chrome_layout(
     block: &PageBlock,
@@ -1220,33 +1370,6 @@ pub fn render_page_canvas(
         }
     }
 
-    // Double-click a block -> open Object Configuration modal (for Alarm / Central / Room Controller blocks)
-    // or inline rename popover for standard blocks
-    if response.double_clicked() {
-        if let Some(pos) = pointer_pos.or(hover_pos) {
-            if let Some(hit_layout) = layouts.iter().rev().find(|l| l.rect.contains(pos)) {
-                if loxone_core::supports_object_config(hit_layout.block) {
-                    viewport.interaction.selected_blocks = vec![hit_layout.block.uuid.clone()];
-                    action = Some(CanvasAction::OpenObjectConfig(
-                        hit_layout.block.uuid.clone(),
-                    ));
-                } else {
-                    let current_title = if hit_layout.block.title.is_empty() {
-                        hit_layout.block.block_type.clone()
-                    } else {
-                        hit_layout.block.title.clone()
-                    };
-                    viewport.interaction.inline_rename = Some(InlineRenameState {
-                        screen_pos: Pos2::new(hit_layout.rect.min.x, hit_layout.rect.min.y - 4.0),
-                        block_uuid: hit_layout.block.uuid.clone(),
-                        title_input: current_title,
-                    });
-                    action = Some(CanvasAction::SelectObject(hit_layout.block.uuid.clone()));
-                }
-            }
-        }
-    }
-
     // Middle-click or Right-drag pans the canvas
     if response.dragged_by(egui::PointerButton::Middle)
         || response.dragged_by(egui::PointerButton::Secondary)
@@ -1254,8 +1377,44 @@ pub fn render_page_canvas(
         viewport.pan += response.drag_delta();
     }
 
+    // Compute overlay rectangles for minimap, floating bottom-right toolbar, and multi-select bar
+    let page_bounds = compute_page_loxone_bounds(page);
+    let minimap_rect = Rect::from_min_size(
+        Pos2::new(canvas_rect.max.x - 194.0, canvas_rect.max.y - 162.0),
+        Vec2::new(180.0, 116.0),
+    );
+    let minimap_visible = viewport.show_minimap && page_bounds.is_some();
+    let bottom_toolbar_w = if viewport.interaction.selected_blocks.len() > 1 {
+        244.0
+    } else {
+        106.0
+    };
+    let bottom_toolbar_rect = Rect::from_min_size(
+        Pos2::new(
+            canvas_rect.max.x - bottom_toolbar_w - 14.0,
+            canvas_rect.max.y - 40.0,
+        ),
+        Vec2::new(bottom_toolbar_w, 26.0),
+    );
+    let multi_align_bar_rect = if viewport.interaction.selected_blocks.len() > 1 {
+        Some(Rect::from_center_size(
+            Pos2::new(canvas_rect.center().x, canvas_rect.min.y + 22.0),
+            Vec2::new(560.0_f32.min(canvas_rect.width() - 32.0), 30.0),
+        ))
+    } else {
+        None
+    };
+    let is_in_overlay = |pos: Pos2| -> bool {
+        (minimap_visible && minimap_rect.contains(pos))
+            || bottom_toolbar_rect.contains(pos)
+            || multi_align_bar_rect.is_some_and(|r| r.contains(pos))
+    };
+    let press_origin = ui.input(|i| i.pointer.press_origin());
+    let press_in_minimap = minimap_visible && press_origin.is_some_and(|p| minimap_rect.contains(p));
+    let press_in_overlay = press_origin.is_some_and(is_in_overlay);
+
     // Handle drag start, active drag, and drag stop
-    if response.drag_started_by(egui::PointerButton::Primary) && !pan_mod {
+    if response.drag_started_by(egui::PointerButton::Primary) && !pan_mod && !press_in_overlay {
         let press_pos = ui.input(|i| i.pointer.press_origin()).or(hover_pos);
         if let Some(ppos) = press_pos {
             let pin_at_press = pin_hit_targets
@@ -1393,13 +1552,25 @@ pub fn render_page_canvas(
                 }
             }
             viewport.interaction.selected_blocks = next_selected;
-        } else if viewport.interaction.wiring_from.is_none() {
+        } else if press_in_minimap {
+            if let (Some(bounds), Some(pos)) = (page_bounds, hover_pos.or(pointer_pos)) {
+                let (target_lx, target_ly) = minimap_pos_to_loxone(bounds, minimap_rect, pos);
+                viewport.pan = Vec2::new(
+                    canvas_rect.width() * 0.5
+                        - (target_lx / LOXONE_UNITS_PER_PX) * viewport.zoom,
+                    canvas_rect.height() * 0.5
+                        - (target_ly / LOXONE_UNITS_PER_PX) * viewport.zoom,
+                );
+            }
+        } else if viewport.interaction.wiring_from.is_none() && !press_in_overlay {
             viewport.pan += delta;
         }
     }
 
+    let mut stationary_drag_released_on_block = false;
     if response.drag_stopped_by(egui::PointerButton::Primary) {
         if let Some(resize) = viewport.interaction.resizing_block.take() {
+            viewport.interaction.last_clicked_block_uuid = None;
             let snapped_px2 = snap_to_loxone_grid(resize.current_px2);
             let snapped_py2 = snap_to_loxone_grid(resize.current_py2);
             if (snapped_px2 - resize.start_px2).abs() > 0.5
@@ -1433,6 +1604,7 @@ pub fn render_page_canvas(
                 }
             }
             if moves.len() == 1 {
+                viewport.interaction.last_clicked_block_uuid = None;
                 let (block_uuid, px, py) = moves.into_iter().next().unwrap();
                 action = Some(CanvasAction::MoveBlock {
                     page_uuid: page.uuid.clone(),
@@ -1441,13 +1613,26 @@ pub fn render_page_canvas(
                     py,
                 });
             } else if moves.len() > 1 {
+                viewport.interaction.last_clicked_block_uuid = None;
                 action = Some(CanvasAction::MoveBlocks {
                     page_uuid: page.uuid.clone(),
                     moves,
                 });
+            } else {
+                let small_drag = ui
+                    .input(|i| i.pointer.press_origin())
+                    .zip(pointer_pos.or(hover_pos))
+                    .map(|(orig, cur)| orig.distance(cur) <= 6.0)
+                    .unwrap_or(true);
+                if small_drag {
+                    stationary_drag_released_on_block = true;
+                } else {
+                    viewport.interaction.last_clicked_block_uuid = None;
+                }
             }
         }
         if viewport.interaction.marquee_start.take().is_some() {
+            viewport.interaction.last_clicked_block_uuid = None;
             viewport.interaction.marquee_current = None;
             viewport.interaction.marquee_base_selection.clear();
             if let Some(first) = viewport.interaction.selected_blocks.first().cloned() {
@@ -1457,6 +1642,7 @@ pub fn render_page_canvas(
             }
         }
         if let Some(wire_drag) = viewport.interaction.wiring_from.take() {
+            viewport.interaction.last_clicked_block_uuid = None;
             if let Some(target_pin) = &hovered_pin_target {
                 let target_is_output = target_pin.side == PinSide::Output;
                 if target_pin.block_uuid != wire_drag.block_uuid
@@ -1659,44 +1845,13 @@ pub fn render_page_canvas(
     }
 
     // Pass 3: Draw blocks, reference bars, and notes ON TOP of wires
-    let pin_label_color = Color32::from_rgb(0xC8, 0xD2, 0xE3);
+    let pin_label_color = Color32::from_rgb(0xCB, 0xCB, 0xCB);
     for layout in &layouts {
         let block = layout.block;
         let rect = layout.rect;
         let is_selected = selected_uuid == Some(block.uuid.as_str())
             || viewport.interaction.selected_blocks.contains(&block.uuid);
         let (header_fill, accent_color) = blend_block_header_color(block.color_rgb);
-
-        if clicked && !clicked_any_pin_or_wire {
-            if let Some(pos) = pointer_pos {
-                if rect.contains(pos) {
-                    clicked_any_block = true;
-                    viewport.interaction.selected_wire = None;
-                    if multi_mod {
-                        if let Some(idx) = viewport
-                            .interaction
-                            .selected_blocks
-                            .iter()
-                            .position(|u| u == &block.uuid)
-                        {
-                            viewport.interaction.selected_blocks.remove(idx);
-                        } else {
-                            viewport.interaction.selected_blocks.push(block.uuid.clone());
-                        }
-                        action = viewport
-                            .interaction
-                            .selected_blocks
-                            .last()
-                            .cloned()
-                            .map(CanvasAction::SelectObject)
-                            .or(Some(CanvasAction::ClearSelection));
-                    } else {
-                        viewport.interaction.selected_blocks = vec![block.uuid.clone()];
-                        action = Some(CanvasAction::SelectObject(block.uuid.clone()));
-                    }
-                }
-            }
-        }
 
         let border_stroke = if is_selected {
             Stroke::new(2.5_f32, ACCENT_BLUE)
@@ -2253,6 +2408,7 @@ pub fn render_page_canvas(
                 if let Some(pos) = pointer_pos {
                     if pill_rect.contains(pos) {
                         clicked_any_block = true;
+                        viewport.interaction.last_clicked_block_uuid = None;
                         if let Some(src_page_idx) = first_meta.page_index {
                             action = Some(CanvasAction::NavigateToBlock {
                                 page_index: src_page_idx,
@@ -2262,6 +2418,73 @@ pub fn render_page_canvas(
                             action =
                                 Some(CanvasAction::SelectObject(first_meta.owner_uuid.clone()));
                         }
+                    }
+                }
+            }
+        }
+    }
+
+    // Unified block click & 2-click advanced modal / inline rename handler
+    if clicked_any_pin_or_wire {
+        viewport.interaction.last_clicked_block_uuid = None;
+    }
+    let block_click = clicked || stationary_drag_released_on_block;
+    if (block_click || response.double_clicked())
+        && !clicked_any_pin_or_wire
+        && !clicked_any_block
+        && !pan_mod
+    {
+        if let Some(pos) = pointer_pos.or(hover_pos) {
+            if let Some(hit_layout) = layouts.iter().rev().find(|l| l.rect.contains(pos)) {
+                clicked_any_block = true;
+                viewport.interaction.selected_wire = None;
+                let hit_uuid = hit_layout.block.uuid.clone();
+                if multi_mod {
+                    viewport.interaction.last_clicked_block_uuid = None;
+                    if let Some(idx) = viewport
+                        .interaction
+                        .selected_blocks
+                        .iter()
+                        .position(|u| u == &hit_uuid)
+                    {
+                        viewport.interaction.selected_blocks.remove(idx);
+                    } else {
+                        viewport.interaction.selected_blocks.push(hit_uuid);
+                    }
+                    action = viewport
+                        .interaction
+                        .selected_blocks
+                        .last()
+                        .cloned()
+                        .map(CanvasAction::SelectObject)
+                        .or(Some(CanvasAction::ClearSelection));
+                } else {
+                    let is_second_click = response.double_clicked()
+                        || viewport.interaction.last_clicked_block_uuid.as_deref()
+                            == Some(hit_uuid.as_str());
+                    viewport.interaction.selected_blocks = vec![hit_uuid.clone()];
+                    if is_second_click && block_has_advanced_modal(hit_layout.block) {
+                        viewport.interaction.last_clicked_block_uuid = None;
+                        action = Some(CanvasAction::OpenObjectConfig(hit_uuid));
+                    } else if response.double_clicked() {
+                        viewport.interaction.last_clicked_block_uuid = None;
+                        let current_title = if hit_layout.block.title.is_empty() {
+                            hit_layout.block.block_type.clone()
+                        } else {
+                            hit_layout.block.title.clone()
+                        };
+                        viewport.interaction.inline_rename = Some(InlineRenameState {
+                            screen_pos: Pos2::new(
+                                hit_layout.rect.min.x,
+                                hit_layout.rect.min.y - 4.0,
+                            ),
+                            block_uuid: hit_uuid.clone(),
+                            title_input: current_title,
+                        });
+                        action = Some(CanvasAction::SelectObject(hit_uuid));
+                    } else {
+                        viewport.interaction.last_clicked_block_uuid = Some(hit_uuid.clone());
+                        action = Some(CanvasAction::SelectObject(hit_uuid));
                     }
                 }
             }
@@ -2317,33 +2540,277 @@ pub fn render_page_canvas(
         );
     }
 
-    // Draw floating multi-selection badge when 2+ blocks are marked
-    if viewport.interaction.selected_blocks.len() > 1 {
+    // Draw floating multi-selection badge & quick alignment tools when 2+ blocks are marked
+    if let Some(badge_rect) = multi_align_bar_rect {
         let count = viewport.interaction.selected_blocks.len();
         let badge_text = crate::i18n::tr_fmt(
-            "✓ {count} items selected  ·  Drag any selected item to move together  ·  ⌫ Delete",
+            "✓ {count} items selected  ·  Drag to move  ·  ⌫ Delete",
             &[("count", &count.to_string())],
-        );
-        let badge_w = 420.0_f32.min(canvas_rect.width() - 32.0);
-        let badge_h = 28.0_f32;
-        let badge_rect = Rect::from_center_size(
-            Pos2::new(canvas_rect.center().x, canvas_rect.min.y + 22.0),
-            Vec2::new(badge_w, badge_h),
         );
         painter.rect(
             badge_rect,
             CornerRadius::same(6),
-            CARD_BG.gamma_multiply(0.95),
-            Stroke::new(1.5_f32, ACCENT_BLUE),
+            CARD_BG.gamma_multiply(0.96),
+            Stroke::new(1.5_f32, LOXONE_GREEN),
             egui::StrokeKind::Inside,
         );
         painter.text(
-            badge_rect.center(),
-            Align2::CENTER_CENTER,
+            Pos2::new(badge_rect.min.x + 12.0, badge_rect.center().y),
+            Align2::LEFT_CENTER,
             badge_text,
-            FontId::proportional(12.0),
+            FontId::proportional(11.5),
             TEXT_PRIMARY,
         );
+
+        let btn_h = 20.0_f32;
+        let align_top_rect = Rect::from_min_size(
+            Pos2::new(badge_rect.max.x - 84.0, badge_rect.center().y - btn_h * 0.5),
+            Vec2::new(76.0, btn_h),
+        );
+        let align_left_rect = Rect::from_min_size(
+            Pos2::new(
+                align_top_rect.min.x - 84.0,
+                badge_rect.center().y - btn_h * 0.5,
+            ),
+            Vec2::new(78.0, btn_h),
+        );
+
+        for (btn_rect, label, mode) in [
+            (
+                align_left_rect,
+                crate::i18n::tr("⇤ Align Left"),
+                MultiSelectAlign::AlignLeft,
+            ),
+            (
+                align_top_rect,
+                crate::i18n::tr("⤒ Align Top"),
+                MultiSelectAlign::AlignTop,
+            ),
+        ] {
+            let hovered = hover_pos.is_some_and(|hp| btn_rect.contains(hp));
+            painter.rect(
+                btn_rect,
+                CornerRadius::same(4),
+                if hovered {
+                    LOXONE_GREEN.gamma_multiply(0.22)
+                } else {
+                    ELEVATED_BG
+                },
+                Stroke::new(
+                    1.0_f32,
+                    if hovered { LOXONE_GREEN } else { BORDER_SUBTLE },
+                ),
+                egui::StrokeKind::Inside,
+            );
+            painter.text(
+                btn_rect.center(),
+                Align2::CENTER_CENTER,
+                label,
+                FontId::proportional(10.5),
+                if hovered { LOXONE_GREEN } else { TEXT_PRIMARY },
+            );
+            if clicked && pointer_pos.is_some_and(|p| btn_rect.contains(p)) {
+                clicked_any_block = true;
+                let moves = compute_aligned_block_moves(
+                    page,
+                    &viewport.interaction.selected_blocks,
+                    mode,
+                );
+                if !moves.is_empty() {
+                    action = Some(CanvasAction::MoveBlocks {
+                        page_uuid: page.uuid.clone(),
+                        moves,
+                    });
+                }
+            }
+        }
+        if clicked && pointer_pos.is_some_and(|p| badge_rect.contains(p)) {
+            clicked_any_block = true;
+        }
+    }
+
+    // Draw Encore-style bottom-right corner minimap (180x116) when enabled
+    if minimap_visible {
+        if let Some(bounds) = page_bounds {
+            painter.rect(
+                minimap_rect,
+                CornerRadius::same(6),
+                PANEL_BG.gamma_multiply(0.95),
+                Stroke::new(1.0_f32, CARD_BORDER),
+                egui::StrokeKind::Inside,
+            );
+            let inner_mm = minimap_rect.shrink(4.0);
+            painter.rect_filled(inner_mm, CornerRadius::same(4), CARD_BG);
+
+            for &block in &positioned_blocks {
+                let p_min = loxone_to_minimap_pos(bounds, minimap_rect, block.px, block.py);
+                let p_max = loxone_to_minimap_pos(
+                    bounds,
+                    minimap_rect,
+                    block.px2.max(block.px + 512.0),
+                    block.py2.max(block.py + 192.0),
+                );
+                let b_max = Pos2::new(p_max.x.max(p_min.x + 3.0), p_max.y.max(p_min.y + 2.0));
+                let b_rect = Rect::from_min_max(p_min, b_max).intersect(inner_mm);
+                if b_rect.is_positive() {
+                    let is_sel = selected_uuid == Some(block.uuid.as_str())
+                        || viewport.interaction.selected_blocks.contains(&block.uuid);
+                    let b_color = if is_sel {
+                        LOXONE_GREEN
+                    } else if block.is_ref_bar() {
+                        ACCENT_BLUE.gamma_multiply(0.85)
+                    } else {
+                        blend_block_header_color(block.color_rgb)
+                            .1
+                            .gamma_multiply(0.85)
+                    };
+                    painter.rect_filled(b_rect, CornerRadius::same(1), b_color);
+                }
+            }
+
+            let (vp_min_lx, vp_min_ly) = viewport.screen_to_loxone(origin, canvas_rect.min);
+            let (vp_max_lx, vp_max_ly) = viewport.screen_to_loxone(origin, canvas_rect.max);
+            let vp_mm_min = loxone_to_minimap_pos(bounds, minimap_rect, vp_min_lx, vp_min_ly);
+            let vp_mm_max = loxone_to_minimap_pos(bounds, minimap_rect, vp_max_lx, vp_max_ly);
+            let vp_mm_rect = Rect::from_min_max(vp_mm_min, vp_mm_max).intersect(inner_mm);
+            if vp_mm_rect.is_positive() {
+                painter.rect(
+                    vp_mm_rect,
+                    CornerRadius::same(2),
+                    LOXONE_GREEN.gamma_multiply(0.12),
+                    Stroke::new(1.2_f32, LOXONE_GREEN),
+                    egui::StrokeKind::Inside,
+                );
+            }
+
+            if clicked && pointer_pos.is_some_and(|p| minimap_rect.contains(p)) {
+                clicked_any_block = true;
+                if let Some(pos) = pointer_pos {
+                    let (target_lx, target_ly) = minimap_pos_to_loxone(bounds, minimap_rect, pos);
+                    viewport.pan = Vec2::new(
+                        canvas_rect.width() * 0.5
+                            - (target_lx / LOXONE_UNITS_PER_PX) * viewport.zoom,
+                        canvas_rect.height() * 0.5
+                            - (target_ly / LOXONE_UNITS_PER_PX) * viewport.zoom,
+                    );
+                }
+            }
+        }
+    }
+
+    // Draw Encore-style bottom-right floating toolbar (Minimap toggle + Multi-select alignment)
+    painter.rect(
+        bottom_toolbar_rect,
+        CornerRadius::same(6),
+        PANEL_BG.gamma_multiply(0.95),
+        Stroke::new(1.0_f32, CARD_BORDER),
+        egui::StrokeKind::Inside,
+    );
+    let mm_btn_rect = Rect::from_min_size(
+        Pos2::new(
+            bottom_toolbar_rect.max.x - 98.0,
+            bottom_toolbar_rect.min.y + 3.0,
+        ),
+        Vec2::new(94.0, 20.0),
+    );
+    let mm_hovered = hover_pos.is_some_and(|hp| mm_btn_rect.contains(hp));
+    painter.rect(
+        mm_btn_rect,
+        CornerRadius::same(4),
+        if viewport.show_minimap {
+            LOXONE_GREEN.gamma_multiply(0.20)
+        } else if mm_hovered {
+            ELEVATED_BG
+        } else {
+            CARD_BG
+        },
+        Stroke::new(
+            1.0_f32,
+            if viewport.show_minimap || mm_hovered {
+                LOXONE_GREEN
+            } else {
+                BORDER_SUBTLE
+            },
+        ),
+        egui::StrokeKind::Inside,
+    );
+    painter.text(
+        mm_btn_rect.center(),
+        Align2::CENTER_CENTER,
+        crate::i18n::tr("🗺 Minimap"),
+        FontId::proportional(10.5),
+        if viewport.show_minimap {
+            LOXONE_GREEN
+        } else {
+            TEXT_MUTED
+        },
+    );
+    if clicked && pointer_pos.is_some_and(|p| mm_btn_rect.contains(p)) {
+        viewport.show_minimap = !viewport.show_minimap;
+        clicked_any_block = true;
+    }
+
+    if viewport.interaction.selected_blocks.len() > 1 {
+        let tb_left_rect = Rect::from_min_size(
+            Pos2::new(bottom_toolbar_rect.min.x + 4.0, bottom_toolbar_rect.min.y + 3.0),
+            Vec2::new(66.0, 20.0),
+        );
+        let tb_top_rect = Rect::from_min_size(
+            Pos2::new(tb_left_rect.max.x + 4.0, bottom_toolbar_rect.min.y + 3.0),
+            Vec2::new(64.0, 20.0),
+        );
+        for (btn_rect, label, mode) in [
+            (
+                tb_left_rect,
+                crate::i18n::tr("⇤ Left"),
+                MultiSelectAlign::AlignLeft,
+            ),
+            (
+                tb_top_rect,
+                crate::i18n::tr("⤒ Top"),
+                MultiSelectAlign::AlignTop,
+            ),
+        ] {
+            let hovered = hover_pos.is_some_and(|hp| btn_rect.contains(hp));
+            painter.rect(
+                btn_rect,
+                CornerRadius::same(4),
+                if hovered {
+                    LOXONE_GREEN.gamma_multiply(0.22)
+                } else {
+                    ELEVATED_BG
+                },
+                Stroke::new(
+                    1.0_f32,
+                    if hovered { LOXONE_GREEN } else { BORDER_SUBTLE },
+                ),
+                egui::StrokeKind::Inside,
+            );
+            painter.text(
+                btn_rect.center(),
+                Align2::CENTER_CENTER,
+                label,
+                FontId::proportional(10.5),
+                if hovered { LOXONE_GREEN } else { TEXT_PRIMARY },
+            );
+            if clicked && pointer_pos.is_some_and(|p| btn_rect.contains(p)) {
+                clicked_any_block = true;
+                let moves = compute_aligned_block_moves(
+                    page,
+                    &viewport.interaction.selected_blocks,
+                    mode,
+                );
+                if !moves.is_empty() {
+                    action = Some(CanvasAction::MoveBlocks {
+                        page_uuid: page.uuid.clone(),
+                        moves,
+                    });
+                }
+            }
+        }
+    }
+    if clicked && pointer_pos.is_some_and(|p| bottom_toolbar_rect.contains(p)) {
+        clicked_any_block = true;
     }
 
     // Handle right-click context menu trigger
@@ -2429,7 +2896,7 @@ pub fn render_page_canvas(
                                     .blocks
                                     .iter()
                                     .find(|b| &b.uuid == block_uuid)
-                                    .is_some_and(loxone_core::supports_object_config)
+                                    .is_some_and(block_has_advanced_modal)
                                     && ui
                                         .button(crate::i18n::tr("⚙ Object Configuration… (Double-click)"))
                                         .clicked()
@@ -2754,7 +3221,8 @@ pub fn render_page_canvas(
         }
     }
 
-    if clicked && !clicked_any_block && !clicked_any_pin_or_wire {
+    if (block_click || clicked) && !clicked_any_block && !clicked_any_pin_or_wire {
+        viewport.interaction.last_clicked_block_uuid = None;
         viewport.interaction.selected_wire = None;
         if !multi_mod {
             viewport.interaction.selected_blocks.clear();
@@ -3029,5 +3497,172 @@ mod tests {
         assert_eq!(extract_numeric_prefix("48%"), Some(48.0));
         assert_eq!(format_clean_float(22.5), "22.5");
         assert_eq!(format_clean_float(23.0), "23");
+    }
+
+    #[test]
+    fn test_two_clicks_on_block_with_advanced_modal_opens_config() {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../Klimczaki.Loxone");
+        let project = load_loxone_file(&path).expect("Klimczaki.Loxone should parse");
+        let page_idx = project
+            .pages
+            .iter()
+            .position(|p| p.title == "Pokój Agatki")
+            .expect("Pokój Agatki page should exist");
+        let page = &project.pages[page_idx];
+        let lc_block = page
+            .blocks
+            .iter()
+            .find(|b| b.block_type == "LightController2" && b.has_position)
+            .expect("LightController2 block should exist on Pokój Agatki");
+
+        let mut vp = CanvasViewport::default();
+        let ctx = egui::Context::default();
+
+        // Warm-up frame so egui registers widget rects
+        let _ = ctx.run(egui::RawInput::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                let _ = render_page_canvas(ui, &project, page_idx, &mut vp, None, None);
+            });
+        });
+
+        // Compute screen position inside the LightController2 block header
+        // CentralPanel default inner origin is (8.0, 8.0)
+        let origin = Pos2::new(8.0, 8.0);
+        let block_top_left = vp.loxone_to_screen(origin, lc_block.px, lc_block.py);
+        let click_pos = Pos2::new(block_top_left.x + 60.0, block_top_left.y + 14.0);
+
+        let simulate_click = |ctx: &egui::Context, vp: &mut CanvasViewport, time: f64| -> Option<CanvasAction> {
+            let mut press_input = egui::RawInput {
+                time: Some(time),
+                ..Default::default()
+            };
+            press_input.events.push(egui::Event::PointerMoved(click_pos));
+            press_input.events.push(egui::Event::PointerButton {
+                pos: click_pos,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: egui::Modifiers::NONE,
+            });
+            let _ = ctx.run(press_input, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    let _ = render_page_canvas(ui, &project, page_idx, vp, None, None);
+                });
+            });
+
+            let mut release_input = egui::RawInput {
+                time: Some(time + 0.05),
+                ..Default::default()
+            };
+            release_input.events.push(egui::Event::PointerButton {
+                pos: click_pos,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: egui::Modifiers::NONE,
+            });
+            let mut out_action = None;
+            let _ = ctx.run(release_input, |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    out_action = render_page_canvas(ui, &project, page_idx, vp, None, None);
+                });
+            });
+            out_action
+        };
+
+        // 1st click selects the block
+        let action1 = simulate_click(&ctx, &mut vp, 1.0);
+        assert_eq!(
+            action1,
+            Some(CanvasAction::SelectObject(lc_block.uuid.clone()))
+        );
+
+        // 2nd click on the same block opens the advanced modal (even when >0.5s apart)
+        let action2 = simulate_click(&ctx, &mut vp, 2.0);
+        assert_eq!(
+            action2,
+            Some(CanvasAction::OpenObjectConfig(lc_block.uuid.clone()))
+        );
+    }
+
+    #[test]
+    fn test_minimap_bounds_mapping_and_multiselect_alignment_math() {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../Klimczaki.Loxone");
+        let project = load_loxone_file(&path).expect("Klimczaki.Loxone should parse");
+        let page0 = &project.pages[0];
+
+        let vp = CanvasViewport::default();
+        assert!(vp.show_minimap);
+
+        let bounds = compute_page_loxone_bounds(page0).expect("Page 0 should have positioned blocks");
+        assert!(bounds.max.x > bounds.min.x && bounds.max.y > bounds.min.y);
+
+        let mm_rect = Rect::from_min_size(Pos2::new(800.0, 600.0), Vec2::new(180.0, 116.0));
+        let mid_lx = bounds.center().x;
+        let mid_ly = bounds.center().y;
+        let mm_pos = loxone_to_minimap_pos(bounds, mm_rect, mid_lx, mid_ly);
+        assert!(mm_rect.contains(mm_pos));
+        let (back_lx, back_ly) = minimap_pos_to_loxone(bounds, mm_rect, mm_pos);
+        assert!((back_lx - mid_lx).abs() < 1.0);
+        assert!((back_ly - mid_ly).abs() < 1.0);
+
+        // Verify newly added advanced modal block types
+        for btype in [
+            "CentralLight",
+            "CentralLightController",
+            "CentralMusic",
+            "CentralAudio",
+            "CentralShade",
+            "CentralJalousie",
+            "CentralGate",
+            "MusicPlayer",
+            "AudioZone",
+            "MusicServerZone",
+            "Heatmixer2",
+            "ClimateControllerUS",
+            "ClimateController",
+            "Sequence",
+        ] {
+            let mut dummy = page0.blocks[0].clone();
+            dummy.block_type = btype.to_string();
+            assert!(
+                block_has_advanced_modal(&dummy),
+                "{btype} should support advanced modal"
+            );
+        }
+
+        // Verify multi-select AlignLeft and AlignTop math
+        let positioned: Vec<&PageBlock> = page0
+            .blocks
+            .iter()
+            .filter(|b| b.has_position)
+            .take(4)
+            .collect();
+        assert!(positioned.len() >= 2);
+        let selected_uuids: Vec<String> = positioned.iter().map(|b| b.uuid.clone()).collect();
+        let min_px = snap_to_loxone_grid(
+            positioned
+                .iter()
+                .map(|b| b.px)
+                .fold(f32::INFINITY, f32::min),
+        )
+        .max(0.0);
+        let min_py = snap_to_loxone_grid(
+            positioned
+                .iter()
+                .map(|b| b.py)
+                .fold(f32::INFINITY, f32::min),
+        )
+        .max(0.0);
+
+        let left_moves =
+            compute_aligned_block_moves(page0, &selected_uuids, MultiSelectAlign::AlignLeft);
+        for (_, new_px, _) in &left_moves {
+            assert!((new_px - min_px).abs() < 0.01);
+        }
+
+        let top_moves =
+            compute_aligned_block_moves(page0, &selected_uuids, MultiSelectAlign::AlignTop);
+        for (_, _, new_py) in &top_moves {
+            assert!((new_py - min_py).abs() < 0.01);
+        }
     }
 }

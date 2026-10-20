@@ -307,24 +307,10 @@ impl CommandPaletteState {
         }
 
         // Subtle backdrop on Order::Middle (strictly behind Order::Foreground modal)
-        let screen_rect = ctx.screen_rect();
-        let mut backdrop_clicked = false;
-        egui::Area::new(Id::new("cmd_palette_backdrop"))
-            .order(Order::Middle)
-            .fixed_pos(screen_rect.min)
-            .show(ctx, |ui| {
-                let resp = ui.allocate_rect(screen_rect, Sense::click());
-                ui.painter().rect_filled(
-                    screen_rect,
-                    0.0,
-                    Color32::from_black_alpha(55),
-                );
-                if resp.clicked() {
-                    backdrop_clicked = true;
-                }
-            });
+        let (backdrop_clicked, popup_was_open) =
+            crate::theme::draw_modal_backdrop(ctx, "cmd_palette_backdrop", Order::Middle, 55);
 
-        egui::Area::new(Id::new("cmd_palette_modal"))
+        let win_resp = egui::Area::new(Id::new("cmd_palette_modal"))
             .order(Order::Foreground)
             .anchor(Align2::CENTER_TOP, Vec2::new(0.0, 72.0))
             .show(ctx, |ui| {
@@ -432,7 +418,15 @@ impl CommandPaletteState {
                     });
             });
 
-        if triggered_action.is_some() || backdrop_clicked {
+        let outside_clicked = crate::theme::should_close_modal_on_outside_click(
+            ctx,
+            "cmd_palette_modal",
+            backdrop_clicked,
+            popup_was_open,
+            Some(win_resp.response.rect),
+        );
+
+        if triggered_action.is_some() || outside_clicked {
             self.close();
         }
         triggered_action

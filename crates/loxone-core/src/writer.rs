@@ -25,6 +25,10 @@ pub enum ProjectEdit {
         attr_name: String,
         value: Option<String>,
     },
+    SetExtraChildren {
+        control_uuid: String,
+        extra_children: Vec<RawNode>,
+    },
     MovePageBlock {
         page_uuid: String,
         block_uuid: String,
@@ -307,6 +311,30 @@ fn apply_edit_inner(
                 child_tag: child_tag.clone(),
                 attr_name: attr_name.clone(),
                 value: old_value,
+            })
+        }
+        ProjectEdit::SetExtraChildren {
+            control_uuid,
+            extra_children,
+        } => {
+            let mut old_children = Vec::new();
+            if let Some(block) = find_page_block_mut(project, control_uuid) {
+                old_children = std::mem::replace(&mut block.extra_children, extra_children.clone());
+                let (pr, cr) = extract_io_data_from_children(&block.extra_children);
+                block.room_uuid = pr.map(str::to_string);
+                block.category_uuid = cr.map(str::to_string);
+                *needs_xref_rebuild = true;
+            } else if let Some(tree_node) = find_tree_node_mut(project, control_uuid) {
+                old_children =
+                    std::mem::replace(&mut tree_node.extra_children, extra_children.clone());
+                let (pr, cr) = extract_io_data_from_children(&tree_node.extra_children);
+                tree_node.room_uuid = pr.map(str::to_string);
+                tree_node.category_uuid = cr.map(str::to_string);
+                *needs_xref_rebuild = true;
+            }
+            Ok(ProjectEdit::SetExtraChildren {
+                control_uuid: control_uuid.clone(),
+                extra_children: old_children,
             })
         }
         ProjectEdit::MovePageBlock {

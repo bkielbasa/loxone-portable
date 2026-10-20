@@ -296,7 +296,14 @@ pub fn show_insert_modal(
     let (px, py) = state.target_pos.unwrap_or((256.0, 256.0));
     let total_blocks = page_block_schemas().count();
 
-    egui::Window::new(crate::i18n::tr("Quick Insert"))
+    let (backdrop_clicked, popup_was_open) = crate::theme::draw_modal_backdrop(
+        ctx,
+        "quick_insert_modal_backdrop",
+        Order::Foreground,
+        55,
+    );
+
+    let win_resp = egui::Window::new(crate::i18n::tr("Quick Insert"))
         .id(egui::Id::new("quick_insert_modal_window"))
         .order(Order::Tooltip)
         .collapsible(false)
@@ -640,7 +647,16 @@ pub fn show_insert_modal(
             }
         });
 
-    if selection.is_some() {
+    let win_rect = win_resp.map(|r| r.response.rect);
+    let outside_clicked = crate::theme::should_close_modal_on_outside_click(
+        ctx,
+        "quick_insert_modal_window",
+        backdrop_clicked,
+        popup_was_open,
+        win_rect,
+    );
+
+    if selection.is_some() || outside_clicked {
         state.close();
     }
 

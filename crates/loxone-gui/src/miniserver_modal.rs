@@ -138,21 +138,10 @@ pub fn render_miniserver_modal(
     let can_submit = !state.host.trim().is_empty() && !is_busy;
     let badge = status_badge_visuals_localized(connection_status, Some(&state.host));
 
-    // Subtle backdrop on Order::Middle (strictly behind Order::Foreground modal)
-    let screen_rect = ctx.screen_rect();
-    egui::Area::new(Id::new("miniserver_modal_backdrop"))
-        .order(Order::Middle)
-        .fixed_pos(screen_rect.min)
-        .show(ctx, |ui| {
-            let _ = ui.allocate_rect(screen_rect, egui::Sense::click());
-            ui.painter().rect_filled(
-                screen_rect,
-                0.0,
-                Color32::from_black_alpha(55),
-            );
-        });
+    let (backdrop_clicked, popup_was_open) =
+        crate::theme::draw_modal_backdrop(ctx, "miniserver_modal_backdrop", Order::Middle, 55);
 
-    egui::Area::new(Id::new("miniserver_modal_window"))
+    let win_resp = egui::Area::new(Id::new("miniserver_modal_window"))
         .order(Order::Foreground)
         .anchor(Align2::CENTER_TOP, Vec2::new(0.0, 68.0))
         .show(ctx, |ui| {
@@ -662,6 +651,16 @@ pub fn render_miniserver_modal(
                     }
                 });
         });
+
+    if crate::theme::should_close_modal_on_outside_click(
+        ctx,
+        "miniserver_modal_window",
+        backdrop_clicked,
+        popup_was_open,
+        Some(win_resp.response.rect),
+    ) {
+        action = Some(MiniserverModalAction::Close);
+    }
 
     action
 }

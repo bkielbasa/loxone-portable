@@ -8,21 +8,34 @@ use loxone_core::miniserver::{
 };
 use loxone_core::model::{LoxoneProject, TreeNode, TreeSectionKind};
 use loxone_core::parser::{load_loxone_file, parse_loxone_xml};
+use loxone_core::simulator::OfflineSimulator;
 use loxone_core::writer::ProjectEdit;
 use loxone_core::xref::ObjectLocation;
 
+use crate::advanced_blocks_modal::{render_advanced_blocks_modal, AdvancedBlocksModalState};
 use crate::canvas::{render_page_canvas, CanvasAction, CanvasViewport};
 use crate::command_palette::{CommandPaletteState, PaletteAction};
+use crate::efm_modal::{render_efm_modal, EfmModalState};
 use crate::insert_modal::{show_insert_modal, InsertModalSelection, InsertModalState};
 use crate::inspector::{render_right_inspector, InspectorAction, LiveCommand};
+use crate::light_controller_modal::{
+    render_light_controller_modal, LightControllerModalState,
+};
 use crate::miniserver_modal::{
     render_miniserver_modal, MiniserverModalAction, MiniserverModalState,
 };
 use crate::object_config_modal::{
     render_object_config_modal, ObjectConfigModalAction, ObjectConfigModalState,
 };
+use crate::periphery_modal::{render_periphery_modal, PeripheryModalState};
 use crate::project_launcher::{
     record_recent_project, render_project_launcher, LauncherAction, ProjectLauncherState,
+};
+use crate::room_controller_modal::{
+    render_room_controller_modal, RoomControllerModalAction, RoomControllerModalState,
+};
+use crate::state_alarm_modal::{
+    render_alarm_clock_modal, render_state_modal, AlarmClockModalState, StateModalState,
 };
 use crate::theme::{apply_minimalist_theme, BORDER_SUBTLE, PANEL_BG};
 use crate::top_bar::{render_top_bar_with_selection, TopBarAction};
@@ -53,6 +66,10 @@ pub enum MiniserverWorkerEvent {
     },
     LiveValuesPolled(Vec<(String, LiveControlSnapshot)>),
     LiveCommandSent(Result<(String, LiveControlSnapshot), String>),
+    DeviceIdentified {
+        uuid: String,
+        result: Result<String, String>,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -83,6 +100,14 @@ pub struct LoxonePortableApp {
     pub allow_close_after_discard: bool,
     pub insert_modal: InsertModalState,
     pub object_config_modal: ObjectConfigModalState,
+    pub efm_modal: EfmModalState,
+    pub light_controller_modal: LightControllerModalState,
+    pub room_controller_modal: RoomControllerModalState,
+    pub state_modal: StateModalState,
+    pub alarm_clock_modal: AlarmClockModalState,
+    pub advanced_blocks_modal: AdvancedBlocksModalState,
+    pub periphery_modal: PeripheryModalState,
+    pub simulator: OfflineSimulator,
     pub next_created_counter: usize,
     pub error_banner: Option<String>,
     pub active_page_index: usize,
@@ -101,6 +126,14 @@ pub struct LoxonePortableApp {
     pub live_store: LiveValueStore,
     pub last_live_poll: Option<std::time::Instant>,
     pub live_poll_in_flight: bool,
+    pub identifying_devices: std::collections::HashMap<
+        String,
+        (
+            loxone_core::DeviceIdentifyTarget,
+            std::time::Instant,
+            Option<String>,
+        ),
+    >,
     pub language: crate::i18n::Language,
     pub worker_tx: Sender<MiniserverWorkerEvent>,
     pub worker_rx: Receiver<MiniserverWorkerEvent>,
@@ -132,6 +165,14 @@ impl Default for LoxonePortableApp {
             allow_close_after_discard: false,
             insert_modal: InsertModalState::default(),
             object_config_modal: ObjectConfigModalState::default(),
+            efm_modal: EfmModalState::default(),
+            light_controller_modal: LightControllerModalState::default(),
+            room_controller_modal: RoomControllerModalState::default(),
+            state_modal: StateModalState::default(),
+            alarm_clock_modal: AlarmClockModalState::default(),
+            advanced_blocks_modal: AdvancedBlocksModalState::default(),
+            periphery_modal: PeripheryModalState::default(),
+            simulator: OfflineSimulator::default(),
             next_created_counter: 1,
             error_banner: None,
             active_page_index: 0,
@@ -150,6 +191,7 @@ impl Default for LoxonePortableApp {
             live_store: LiveValueStore::default(),
             last_live_poll: None,
             live_poll_in_flight: false,
+            identifying_devices: std::collections::HashMap::new(),
             language,
             worker_tx,
             worker_rx,
@@ -189,6 +231,14 @@ impl LoxonePortableApp {
                 self.pending_dirty_action = None;
                 self.insert_modal.close();
                 self.object_config_modal.is_open = false;
+                self.efm_modal.is_open = false;
+                self.light_controller_modal.is_open = false;
+                self.room_controller_modal.is_open = false;
+                self.room_controller_modal.is_schedule_open = false;
+                self.advanced_blocks_modal.is_open = false;
+                self.periphery_modal.close();
+                self.identifying_devices.clear();
+                self.simulator = OfflineSimulator::default();
                 self.viewport.interaction = Default::default();
                 self.error_banner = None;
                 self.active_page_index = 0;
@@ -225,6 +275,13 @@ impl LoxonePortableApp {
         self.pending_dirty_action = None;
         self.insert_modal.close();
         self.object_config_modal.is_open = false;
+        self.efm_modal.is_open = false;
+        self.light_controller_modal.is_open = false;
+        self.room_controller_modal.is_open = false;
+        self.room_controller_modal.is_schedule_open = false;
+        self.advanced_blocks_modal.is_open = false;
+        self.periphery_modal.close();
+        self.simulator = OfflineSimulator::default();
         self.viewport.interaction = Default::default();
         self.error_banner = None;
         self.active_page_index = 0;
@@ -256,6 +313,9 @@ impl LoxonePortableApp {
                     self.redo_stack.clear();
                     self.is_dirty = true;
                     self.error_banner = None;
+                    if self.simulator.enabled {
+                        self.simulator.recompute(proj);
+                    }
                 }
                 Err(e) => {
                     self.error_banner = Some(format!("Edit error: {}", e));
@@ -274,6 +334,9 @@ impl LoxonePortableApp {
                     self.redo_stack.push(redo_edit);
                     self.is_dirty = true;
                     self.error_banner = None;
+                    if self.simulator.enabled {
+                        self.simulator.recompute(proj);
+                    }
                 }
                 Err(e) => {
                     self.error_banner = Some(format!("Undo error: {}", e));
@@ -292,6 +355,9 @@ impl LoxonePortableApp {
                     self.undo_stack.push(undo_edit);
                     self.is_dirty = true;
                     self.error_banner = None;
+                    if self.simulator.enabled {
+                        self.simulator.recompute(proj);
+                    }
                 }
                 Err(e) => {
                     self.error_banner = Some(format!("Redo error: {}", e));
@@ -350,6 +416,9 @@ impl LoxonePortableApp {
         self.cached_diagnostics.clear();
         self.selected_uuid = None;
         self.insert_modal.close();
+        self.advanced_blocks_modal.is_open = false;
+        self.periphery_modal.close();
+        self.simulator = OfflineSimulator::default();
         self.viewport.interaction = Default::default();
         self.project_launcher.refresh();
     }
@@ -705,8 +774,70 @@ impl LoxonePortableApp {
                         self.live_store.apply_polled_snapshot(id, snap);
                     }
                 }
+                MiniserverWorkerEvent::DeviceIdentified { uuid, result } => {
+                    if let Some(entry) = self.identifying_devices.get_mut(&uuid) {
+                        entry.2 = Some(match result {
+                            Ok(msg) => msg,
+                            Err(err) => err,
+                        });
+                    }
+                }
             }
         }
+    }
+
+    pub fn trigger_device_identification(
+        &mut self,
+        node_uuid: &str,
+    ) -> Option<loxone_core::DeviceIdentifyTarget> {
+        let target = self
+            .project
+            .as_ref()
+            .and_then(|proj| loxone_core::resolve_device_identify_target(proj, node_uuid))?;
+
+        self.selected_uuid = Some(target.uuid.clone());
+        self.show_right_panel = true;
+        self.left_tab = LeftTab::Periphery;
+
+        let initial_status = if self.connection_status.is_connected() {
+            Some("Sending identify signal to Miniserver…".to_string())
+        } else {
+            Some("Flashing LED & acoustic signal (local preview)".to_string())
+        };
+        self.identifying_devices.insert(
+            target.uuid.clone(),
+            (target.clone(), std::time::Instant::now(), initial_status),
+        );
+
+        let pulse_uuid = target
+            .feedback_io_uuid
+            .clone()
+            .unwrap_or_else(|| target.uuid.clone());
+        self.handle_live_command(LiveCommand {
+            control_uuid: pulse_uuid,
+            pin_key: None,
+            command: "Pulse".to_string(),
+        });
+
+        if self.connection_status.is_connected() && !self.miniserver_modal.host.trim().is_empty() {
+            let creds = MiniserverCredentials {
+                host: self.miniserver_modal.host.clone(),
+                username: self.miniserver_modal.username.clone(),
+                password: self.miniserver_modal.password.clone(),
+            };
+            let target_clone = target.clone();
+            let tx = self.worker_tx.clone();
+            std::thread::spawn(move || {
+                let result = MiniserverClient::identify_device(&creds, &target_clone)
+                    .map_err(|e| e.to_string());
+                let _ = tx.send(MiniserverWorkerEvent::DeviceIdentified {
+                    uuid: target_clone.uuid,
+                    result,
+                });
+            });
+        }
+
+        Some(target)
     }
 
     pub fn collect_active_page_poll_identifiers(&self) -> Vec<String> {
@@ -778,6 +909,17 @@ impl LoxonePortableApp {
             "Off" | "off" => "0",
             other => other,
         };
+        if self.simulator.enabled {
+            if let Some(proj) = &self.project {
+                self.simulator.apply_command(
+                    proj,
+                    &cmd.control_uuid,
+                    cmd.pin_key.as_deref(),
+                    optimistic_val,
+                );
+            }
+            return;
+        }
         let target_io_id = self.live_store.apply_interactive_command(
             self.project.as_ref(),
             &cmd.control_uuid,
@@ -836,6 +978,18 @@ impl LoxonePortableApp {
                     self.insert_modal.open_references_with_query(q);
                 }
             }
+            TopBarAction::OpenPeripheryModal => {
+                if let Some(proj) = &self.project {
+                    self.periphery_modal
+                        .open_provision(proj, self.selected_uuid.clone());
+                }
+            }
+            TopBarAction::OpenHardwareInventory => {
+                if let Some(proj) = &self.project {
+                    self.periphery_modal
+                        .open_inventory(self.selected_uuid.clone(), proj);
+                }
+            }
             TopBarAction::Undo => {
                 self.undo();
             }
@@ -851,12 +1005,32 @@ impl LoxonePortableApp {
             TopBarAction::ToggleLiveView => {
                 self.live_view_enabled = !self.live_view_enabled;
                 if self.live_view_enabled {
+                    self.simulator.stop();
                     if let Some(proj) = &self.project {
                         if self.live_store.controls.is_empty() {
                             self.live_store.seed_project_defaults(proj);
                         }
                     }
                     self.last_live_poll = None;
+                }
+            }
+            TopBarAction::ToggleSimulation => {
+                if let Some(proj) = &self.project {
+                    let enabled = self.simulator.toggle(proj);
+                    if enabled {
+                        self.live_view_enabled = false;
+                    }
+                }
+            }
+            TopBarAction::StepSimulation => {
+                if let Some(proj) = &self.project {
+                    self.live_view_enabled = false;
+                    self.simulator.step_tick(proj);
+                }
+            }
+            TopBarAction::ResetSimulation => {
+                if let Some(proj) = &self.project {
+                    self.simulator.reset(proj);
                 }
             }
             TopBarAction::OpenCommandPalette => {
@@ -1171,6 +1345,20 @@ impl LoxonePortableApp {
             TreeAction::PlaceOnPage(target_uuid) => {
                 self.place_tree_node_on_active_page(&target_uuid, None);
             }
+            TreeAction::OpenPeripheryProvisioning => {
+                if let Some(proj) = &self.project {
+                    self.periphery_modal
+                        .open_provision(proj, self.selected_uuid.clone());
+                }
+            }
+            TreeAction::OpenHardwareInventory(focus_uuid) => {
+                if let Some(proj) = &self.project {
+                    self.periphery_modal.open_inventory(focus_uuid, proj);
+                }
+            }
+            TreeAction::IdentifyDevice(uuid) => {
+                self.trigger_device_identification(&uuid);
+            }
         }
     }
 
@@ -1358,7 +1546,25 @@ impl LoxonePortableApp {
 
     pub fn open_object_config_modal(&mut self, block_uuid: &str) {
         if let Some(proj) = &self.project {
-            if self.object_config_modal.open_for_block(proj, block_uuid) {
+            self.object_config_modal.is_open = false;
+            self.efm_modal.is_open = false;
+            self.light_controller_modal.is_open = false;
+            self.room_controller_modal.is_open = false;
+            self.room_controller_modal.is_schedule_open = false;
+            self.state_modal.is_open = false;
+            self.alarm_clock_modal.is_open = false;
+            self.advanced_blocks_modal.is_open = false;
+            self.periphery_modal.close();
+
+            let opened = self.efm_modal.open_for_block(proj, block_uuid)
+                || self.light_controller_modal.open_for_block(proj, block_uuid)
+                || self.room_controller_modal.open_for_block_uuid(proj, block_uuid)
+                || self.state_modal.open_for_block(proj, block_uuid)
+                || self.alarm_clock_modal.open_for_block(proj, block_uuid)
+                || self.advanced_blocks_modal.open_for_block(proj, block_uuid)
+                || self.object_config_modal.open_for_block(proj, block_uuid);
+
+            if opened {
                 self.selected_uuid = Some(block_uuid.to_string());
                 self.show_right_panel = true;
             }
@@ -1636,6 +1842,13 @@ impl LoxonePortableApp {
         if self.miniserver_modal.is_open
             || self.insert_modal.is_open
             || self.object_config_modal.is_open
+            || self.efm_modal.is_open
+            || self.light_controller_modal.is_open
+            || self.room_controller_modal.is_open
+            || self.state_modal.is_open
+            || self.alarm_clock_modal.is_open
+            || self.advanced_blocks_modal.is_open
+            || self.periphery_modal.is_open
             || self.pending_dirty_action.is_some()
         {
             return;
@@ -1788,37 +2001,30 @@ impl eframe::App for LoxonePortableApp {
         }
         self.maybe_schedule_live_poll(ctx);
 
+        self.identifying_devices
+            .retain(|_, (_, started, _)| started.elapsed() < std::time::Duration::from_secs(6));
+        let active_identify_map: std::collections::HashMap<String, f32> = self
+            .identifying_devices
+            .iter()
+            .map(|(u, (_, started, _))| (u.clone(), started.elapsed().as_secs_f32()))
+            .collect();
+        if !active_identify_map.is_empty() {
+            ctx.request_repaint_after(std::time::Duration::from_millis(60));
+        }
+        crate::tree_panel::set_active_identifying_devices(ctx, active_identify_map);
+
         self.handle_shortcuts(ctx);
 
-        // Extensible 2-Row Ribbon Top Bar with Contextual Tabs & Connection Status
-        if let Some(top_act) = render_top_bar_with_selection(
-            ctx,
-            self.project.as_ref(),
-            self.loaded_path.as_deref(),
-            self.active_page_index,
-            self.viewport.compact_pins,
-            self.viewport.zoom,
-            &self.connection_status,
-            Some(&self.miniserver_modal.host),
-            self.is_dirty,
-            self.can_undo(),
-            self.can_redo(),
-            self.live_view_enabled,
-            self.selected_uuid.as_deref(),
-        ) {
-            self.execute_top_bar_action(top_act);
-        }
-
-        if let Some(err) = &self.error_banner {
-            egui::TopBottomPanel::top("error_banner").show(ctx, |ui| {
-                ui.colored_label(egui::Color32::LIGHT_RED, err);
-            });
-        }
-
-        // Left Explorer Panel
+        // Full-height Encore-style Left Explorer Sidebar (rendered before top bar so it spans full window height)
         if self.show_left_panel {
             let mut tree_act = None;
-            let live_opt = self.live_view_enabled.then_some(&self.live_store);
+            let live_opt = if self.live_view_enabled {
+                Some(&self.live_store)
+            } else if self.simulator.enabled {
+                Some(&self.simulator.live_store)
+            } else {
+                None
+            };
             if let Some(proj) = &self.project {
                 egui::SidePanel::left("left_explorer")
                     .default_width(250.0)
@@ -1826,7 +2032,7 @@ impl eframe::App for LoxonePortableApp {
                         egui::Frame::new()
                             .fill(PANEL_BG)
                             .stroke(Stroke::new(1.0_f32, BORDER_SUBTLE))
-                            .inner_margin(egui::Margin::symmetric(10, 6)),
+                            .inner_margin(egui::Margin::symmetric(10, 8)),
                     )
                     .show(ctx, |ui| {
                         tree_act = render_left_explorer(
@@ -1846,10 +2052,110 @@ impl eframe::App for LoxonePortableApp {
             }
         }
 
+        // Extensible 2-Row Ribbon Top Bar with Contextual Tabs & Connection Status
+        if let Some(top_act) = render_top_bar_with_selection(
+            ctx,
+            self.project.as_ref(),
+            self.loaded_path.as_deref(),
+            self.active_page_index,
+            self.viewport.compact_pins,
+            self.viewport.zoom,
+            &self.connection_status,
+            Some(&self.miniserver_modal.host),
+            self.is_dirty,
+            self.can_undo(),
+            self.can_redo(),
+            self.live_view_enabled || self.simulator.enabled,
+            self.selected_uuid.as_deref(),
+        ) {
+            self.execute_top_bar_action(top_act);
+        }
+
+        if let Some(err) = &self.error_banner {
+            egui::TopBottomPanel::top("error_banner").show(ctx, |ui| {
+                ui.colored_label(egui::Color32::LIGHT_RED, err);
+            });
+        }
+
+        if !self.identifying_devices.is_empty() {
+            let mut stop_uuid = None;
+            egui::TopBottomPanel::top("device_identify_banner")
+                .frame(
+                    egui::Frame::new()
+                        .fill(crate::theme::CARD_BG)
+                        .stroke(Stroke::new(1.0_f32, crate::theme::LOXONE_GREEN))
+                        .inner_margin(egui::Margin::symmetric(12, 5)),
+                )
+                .show(ctx, |ui| {
+                    for (uuid, (target, started, status_msg)) in &self.identifying_devices {
+                        let elapsed = started.elapsed().as_secs_f32();
+                        let blink_on = ((elapsed * 5.0) as u32) % 2 == 0;
+                        let led_color = if blink_on {
+                            crate::theme::LOXONE_GREEN
+                        } else {
+                            crate::theme::ACCENT_AMBER
+                        };
+                        ui.horizontal(|ui| {
+                            let (dot_rect, _) = ui.allocate_exact_size(
+                                egui::vec2(10.0, 10.0),
+                                egui::Sense::hover(),
+                            );
+                            ui.painter()
+                                .circle_filled(dot_rect.center(), 4.5, led_color);
+                            ui.label(
+                                egui::RichText::new(format!(
+                                    "{}: {}",
+                                    crate::i18n::tr("Identifying device"),
+                                    target.title
+                                ))
+                                .strong()
+                                .size(11.5)
+                                .color(crate::theme::TEXT_PRIMARY),
+                            );
+                            ui.label(
+                                egui::RichText::new(format!("[{}]", target.bus_kind.label()))
+                                    .size(10.5)
+                                    .color(crate::theme::LOXONE_GREEN),
+                            );
+                            if !target.serial.is_empty() {
+                                ui.label(
+                                    egui::RichText::new(format!("SN {}", target.serial))
+                                        .monospace()
+                                        .size(10.5)
+                                        .color(crate::theme::TEXT_MUTED),
+                                );
+                            }
+                            if let Some(msg) = status_msg {
+                                ui.label(
+                                    egui::RichText::new(format!("· {}", msg))
+                                        .size(10.5)
+                                        .color(crate::theme::TEXT_MUTED),
+                                );
+                            }
+                            if ui
+                                .small_button(crate::i18n::tr("Stop"))
+                                .clicked()
+                            {
+                                stop_uuid = Some(uuid.clone());
+                            }
+                        });
+                    }
+                });
+            if let Some(u) = stop_uuid {
+                self.identifying_devices.remove(&u);
+            }
+        }
+
         // Right Inspector Panel
         if self.show_right_panel {
             let mut insp_out = crate::inspector::InspectorOutput::default();
-            let live_opt = self.live_view_enabled.then_some(&self.live_store);
+            let live_opt = if self.live_view_enabled {
+                Some(&self.live_store)
+            } else if self.simulator.enabled {
+                Some(&self.simulator.live_store)
+            } else {
+                None
+            };
             if let Some(proj) = &self.project {
                 egui::SidePanel::right("right_inspector")
                     .default_width(300.0)
@@ -1885,6 +2191,10 @@ impl eframe::App for LoxonePortableApp {
                 self.place_tree_node_on_active_page(&place_uuid, None);
             }
 
+            if let Some(id_uuid) = insp_out.identify_device_uuid {
+                self.trigger_device_identification(&id_uuid);
+            }
+
             if let Some(act) = insp_out.nav_action {
                 match act {
                     InspectorAction::NavigateToBlock {
@@ -1912,7 +2222,13 @@ impl eframe::App for LoxonePortableApp {
             .show(ctx, |ui| {
                 let view_size = ui.available_size();
                 let mut pending_canvas_act = None;
-                let live_opt = self.live_view_enabled.then_some(&self.live_store);
+                let live_opt = if self.live_view_enabled {
+                    Some(&self.live_store)
+                } else if self.simulator.enabled {
+                    Some(&self.simulator.live_store)
+                } else {
+                    None
+                };
                 if let Some(proj) = &self.project {
                     if self.needs_initial_fit {
                         if let Some(page) = proj.pages.get(self.active_page_index) {
@@ -1999,6 +2315,58 @@ impl eframe::App for LoxonePortableApp {
             }
         }
 
+        // Energy Flow Monitor (EFM) Configuration Modal Overlay
+        if let Some(edit) = render_efm_modal(ctx, &mut self.efm_modal, self.project.as_ref()) {
+            self.execute_edit(edit);
+        }
+
+        // Light Controller (LightController2) Configuration Modal Overlay
+        if let Some(edit) = render_light_controller_modal(
+            ctx,
+            &mut self.light_controller_modal,
+            self.project.as_ref(),
+        ) {
+            self.execute_edit(edit);
+        }
+
+        // Intelligent Room Controller (HeatIRoomController2) Configuration & Schedule Modal Overlay
+        let rc_action = if let Some(proj) = &self.project {
+            render_room_controller_modal(ctx, proj, &mut self.room_controller_modal)
+        } else {
+            None
+        };
+        if let Some(RoomControllerModalAction::CommitEdits(edits)) = rc_action {
+            if !edits.is_empty() {
+                self.execute_edit(ProjectEdit::Batch(edits));
+            }
+        }
+
+        // Status (State) Condition Rule-Builder Modal Overlay
+        if let Some(edit) = render_state_modal(ctx, &mut self.state_modal, self.project.as_ref()) {
+            self.execute_edit(edit);
+        }
+
+        // Alarm Clock (Budzik) Schedule & Parameters Modal Overlay
+        if let Some(edit) =
+            render_alarm_clock_modal(ctx, &mut self.alarm_clock_modal, self.project.as_ref())
+        {
+            self.execute_edit(edit);
+        }
+
+        // Remaining Advanced Block Double-Click Modals (Central, AudioZone, Climate, Sequence)
+        if let Some(edit) = render_advanced_blocks_modal(
+            ctx,
+            &mut self.advanced_blocks_modal,
+            self.project.as_ref(),
+        ) {
+            self.execute_edit(edit);
+        }
+
+        // Periphery Hardware Provisioning & Serial Replacement Modal Overlay
+        for edit in render_periphery_modal(ctx, &mut self.periphery_modal, self.project.as_ref()) {
+            self.execute_edit(edit);
+        }
+
         // Miniserver Connection & Backup Browser Modal Overlay
         if let Some(modal_act) = render_miniserver_modal(
             ctx,
@@ -2017,8 +2385,18 @@ impl eframe::App for LoxonePortableApp {
         if let Some(pending) = self.pending_dirty_action.clone() {
             let mut resolved: Option<bool> = None; // Some(true) = proceed, Some(false) = cancel
             let mut try_save_first = false;
-            egui::Window::new(crate::i18n::tr("Unsaved Changes"))
+            if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+                resolved = Some(false);
+            }
+            let (backdrop_clicked, popup_was_open) = crate::theme::draw_modal_backdrop(
+                ctx,
+                "unsaved_changes_modal_backdrop",
+                egui::Order::Middle,
+                120,
+            );
+            let win_resp = egui::Window::new(crate::i18n::tr("Unsaved Changes"))
                 .id(egui::Id::new("unsaved_changes_modal"))
+                .order(egui::Order::Foreground)
                 .collapsible(false)
                 .resizable(false)
                 .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
@@ -2056,6 +2434,16 @@ impl eframe::App for LoxonePortableApp {
                         }
                     });
                 });
+            let win_rect = win_resp.map(|r| r.response.rect);
+            if crate::theme::should_close_modal_on_outside_click(
+                ctx,
+                "unsaved_changes_modal",
+                backdrop_clicked,
+                popup_was_open,
+                win_rect,
+            ) {
+                resolved = Some(false);
+            }
 
             if let Some(proceed) = resolved {
                 self.pending_dirty_action = None;
@@ -2095,8 +2483,18 @@ impl eframe::App for LoxonePortableApp {
             let mut open = self.show_diagnostics_modal;
             let mut jump_to: Option<(Option<usize>, String)> = None;
             let mut rerun = false;
-            egui::Window::new(crate::i18n::tr("✓ Project Verification & Diagnostics"))
+            if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+                open = false;
+            }
+            let (backdrop_clicked, popup_was_open) = crate::theme::draw_modal_backdrop(
+                ctx,
+                "project_diagnostics_modal_backdrop",
+                egui::Order::Middle,
+                120,
+            );
+            let win_resp = egui::Window::new(crate::i18n::tr("✓ Project Verification & Diagnostics"))
                 .id(egui::Id::new("project_diagnostics_modal"))
+                .order(egui::Order::Foreground)
                 .open(&mut open)
                 .collapsible(false)
                 .resizable(true)
@@ -2233,6 +2631,16 @@ impl eframe::App for LoxonePortableApp {
                             });
                     }
                 });
+            let win_rect = win_resp.map(|r| r.response.rect);
+            if crate::theme::should_close_modal_on_outside_click(
+                ctx,
+                "project_diagnostics_modal",
+                backdrop_clicked,
+                popup_was_open,
+                win_rect,
+            ) {
+                open = false;
+            }
             self.show_diagnostics_modal = open;
             if rerun {
                 self.run_project_verification();
@@ -3033,6 +3441,45 @@ mod tests {
         assert!(page.blocks.iter().any(|b| b.uuid == "blk-server"));
         // Local-added block is preserved
         assert!(page.blocks.iter().any(|b| b.title == "Local Added Button"));
+    }
+
+    #[test]
+    fn test_app_identify_link_and_tree_device_from_context_menu() {
+        let mut app = LoxonePortableApp::default();
+        app.load_file(std::path::Path::new("../../Klimczaki.Loxone"));
+        let proj = app.project.as_ref().expect("project loaded").clone();
+
+        let inventory = loxone_core::collect_provisioned_hardware(&proj);
+        let link_ext = inventory
+            .iter()
+            .find(|d| d.node_type == "LoxTree")
+            .expect("LoxTree extension present");
+
+        // 1. Identify a Loxone Link extension
+        app.handle_tree_action(TreeAction::IdentifyDevice(link_ext.uuid.clone()));
+        assert!(app.identifying_devices.contains_key(&link_ext.uuid));
+        assert_eq!(app.selected_uuid.as_deref(), Some(link_ext.uuid.as_str()));
+        let (link_target, _, _) = &app.identifying_devices[&link_ext.uuid];
+        assert_eq!(link_target.bus_kind, loxone_core::DeviceBusKind::Link);
+        assert_eq!(link_target.serial, link_ext.serial);
+
+        // 2. Identify a Loxone Tree device (and also test right-clicking its child feedback channel)
+        let tree_dev = inventory
+            .iter()
+            .find(|d| d.node_type == "TreeDevice" && !d.serial.is_empty())
+            .expect("TreeDevice present");
+        let resolved_direct = loxone_core::resolve_device_identify_target(&proj, &tree_dev.uuid)
+            .expect("TreeDevice resolves");
+        let click_uuid = resolved_direct
+            .feedback_io_uuid
+            .clone()
+            .unwrap_or_else(|| tree_dev.uuid.clone());
+        app.handle_tree_action(TreeAction::IdentifyDevice(click_uuid));
+        assert!(app.identifying_devices.contains_key(&tree_dev.uuid));
+        assert_eq!(app.selected_uuid.as_deref(), Some(tree_dev.uuid.as_str()));
+        let (tree_target, _, _) = &app.identifying_devices[&tree_dev.uuid];
+        assert_eq!(tree_target.bus_kind, loxone_core::DeviceBusKind::Tree);
+        assert_eq!(tree_target.serial, tree_dev.serial);
     }
 }
 

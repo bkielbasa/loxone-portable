@@ -1,8 +1,10 @@
-use egui::{Color32, RichText, ScrollArea, Ui};
+use egui::{Color32, CornerRadius, Margin, RichText, ScrollArea, Sense, Stroke, Ui, Vec2};
 use loxone_core::model::{LoxoneProject, TreeNode};
 
 use crate::icons::{icon_for_block_type, icon_for_tree_node, tree_node_attr, ui_icon, LoxoneIcon};
-use crate::theme::{ACCENT_BLUE, TEXT_MUTED, TEXT_PRIMARY};
+use crate::theme::{
+    ACCENT_BLUE, BORDER_SUBTLE, CARD_BG, ELEVATED_BG, LOXONE_GREEN, TEXT_MUTED, TEXT_PRIMARY,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum LeftTab {
@@ -25,6 +27,30 @@ pub enum TreeAction {
     CreateVirtualIn,
     CreateVirtualOut,
     PlaceOnPage(String),
+    OpenPeripheryProvisioning,
+    OpenHardwareInventory(Option<String>),
+    IdentifyDevice(String),
+}
+
+pub fn set_active_identifying_devices(
+    ctx: &egui::Context,
+    active: std::collections::HashMap<String, f32>,
+) {
+    ctx.data_mut(|d| {
+        d.insert_temp(egui::Id::new("loxone_identifying_devices"), active);
+    });
+}
+
+pub fn device_identify_elapsed(ctx: &egui::Context, uuid: &str) -> Option<f32> {
+    if uuid.is_empty() {
+        return None;
+    }
+    ctx.data(|d| {
+        d.get_temp::<std::collections::HashMap<String, f32>>(egui::Id::new(
+            "loxone_identifying_devices",
+        ))
+        .and_then(|m| m.get(uuid).copied())
+    })
 }
 
 pub fn render_left_explorer(
@@ -38,30 +64,115 @@ pub fn render_left_explorer(
 ) -> Option<TreeAction> {
     let mut action = None;
 
-    ui.add_space(6.0);
+    // 1. Encore-style Top Workspace Header (Circular Loxone-Green LX badge + Title)
+    ui.add_space(2.0);
     ui.horizontal(|ui| {
-        for (tab, label) in [
-            (LeftTab::Pages, "Pages"),
-            (LeftTab::Periphery, "Periphery"),
-            (LeftTab::Rooms, "Rooms"),
-            (LeftTab::System, "System"),
-        ] {
-            let selected = *active_tab == tab;
-            if ui
-                .selectable_label(
-                    selected,
-                    RichText::new(crate::i18n::tr(label))
-                        .size(12.0)
-                        .color(if selected { ACCENT_BLUE } else { TEXT_MUTED }),
-                )
-                .clicked()
-            {
-                *active_tab = tab;
-            }
-        }
+        ui.spacing_mut().item_spacing.x = 8.0;
+        let (badge_rect, _) = ui.allocate_exact_size(Vec2::splat(22.0), Sense::hover());
+        ui.painter()
+            .circle_filled(badge_rect.center(), 10.5, LOXONE_GREEN);
+        ui.painter().text(
+            badge_rect.center(),
+            egui::Align2::CENTER_CENTER,
+            "LX",
+            egui::FontId::proportional(9.5),
+            Color32::from_rgb(0x0B, 0x16, 0x08),
+        );
+        ui.label(
+            RichText::new("Loxone")
+                .size(13.5)
+                .color(Color32::WHITE)
+                .strong(),
+        );
+        ui.label(RichText::new("⌄").size(12.0).color(TEXT_MUTED));
     });
 
-    ui.add_space(4.0);
+    ui.add_space(6.0);
+
+    // 2. Encore-style Project Switcher Card (Green rounded-square icon + Project Title)
+    let proj_title = if project.metadata.title.trim().is_empty() {
+        crate::i18n::tr("Project")
+    } else {
+        project.metadata.title.as_str()
+    };
+    egui::Frame::new()
+        .fill(CARD_BG)
+        .stroke(Stroke::new(1.0_f32, BORDER_SUBTLE))
+        .corner_radius(CornerRadius::same(6))
+        .inner_margin(Margin::symmetric(8, 6))
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 8.0;
+                let (sq_rect, _) = ui.allocate_exact_size(Vec2::splat(18.0), Sense::hover());
+                ui.painter()
+                    .rect_filled(sq_rect, CornerRadius::same(4), LOXONE_GREEN);
+                ui.painter().rect_stroke(
+                    sq_rect.shrink(4.5),
+                    CornerRadius::same(1),
+                    Stroke::new(1.3_f32, Color32::WHITE),
+                    egui::StrokeKind::Middle,
+                );
+                ui.label(
+                    RichText::new(proj_title)
+                        .size(12.5)
+                        .color(Color32::WHITE)
+                        .strong(),
+                );
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.label(RichText::new("⇅").size(11.0).color(TEXT_MUTED));
+                });
+            });
+        });
+
+    ui.add_space(8.0);
+
+    // 3. Encore-style Segmented Section Pill Bar
+    egui::Frame::new()
+        .fill(Color32::from_rgb(0x16, 0x16, 0x16))
+        .stroke(Stroke::new(1.0_f32, BORDER_SUBTLE))
+        .corner_radius(CornerRadius::same(6))
+        .inner_margin(Margin::symmetric(3, 3))
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 2.0;
+                for (tab, label) in [
+                    (LeftTab::Pages, "Pages"),
+                    (LeftTab::Periphery, "Periphery"),
+                    (LeftTab::Rooms, "Rooms"),
+                    (LeftTab::System, "System"),
+                ] {
+                    let selected = *active_tab == tab;
+                    let pill_fill = if selected {
+                        ELEVATED_BG
+                    } else {
+                        Color32::TRANSPARENT
+                    };
+                    let pill_resp = egui::Frame::new()
+                        .fill(pill_fill)
+                        .corner_radius(CornerRadius::same(4))
+                        .inner_margin(Margin::symmetric(7, 3))
+                        .show(ui, |ui| {
+                            ui.label(
+                                RichText::new(crate::i18n::tr(label))
+                                    .size(11.2)
+                                    .color(if selected {
+                                        Color32::WHITE
+                                    } else {
+                                        TEXT_MUTED
+                                    })
+                                    .strong(),
+                            );
+                        })
+                        .response
+                        .interact(Sense::click());
+                    if pill_resp.clicked() {
+                        *active_tab = tab;
+                    }
+                }
+            });
+        });
+
+    ui.add_space(6.0);
     ui.add(
         egui::TextEdit::singleline(filter)
             .hint_text(crate::i18n::tr("Filter list…"))
@@ -71,7 +182,7 @@ pub fn render_left_explorer(
     ui.horizontal(|ui| match *active_tab {
         LeftTab::Pages => {
             if ui
-                .small_button(RichText::new(crate::i18n::tr("+ Page")).color(ACCENT_BLUE))
+                .small_button(RichText::new(crate::i18n::tr("+ Page")).color(LOXONE_GREEN))
                 .on_hover_text(crate::i18n::tr("Create a new schematic page"))
                 .clicked()
             {
@@ -80,14 +191,30 @@ pub fn render_left_explorer(
         }
         LeftTab::Periphery => {
             if ui
-                .small_button(RichText::new(crate::i18n::tr("+ VIn")).color(ACCENT_BLUE))
+                .small_button(RichText::new("+ Hardware").color(LOXONE_GREEN))
+                .on_hover_text("Provision Extensions, Loxone Tree devices, or Loxone Air devices")
+                .clicked()
+            {
+                action = Some(TreeAction::OpenPeripheryProvisioning);
+            }
+            if ui
+                .small_button(RichText::new("Serials").color(ACCENT_BLUE))
+                .on_hover_text("Hardware Serial Inventory & In-Place Serial Swap")
+                .clicked()
+            {
+                action = Some(TreeAction::OpenHardwareInventory(
+                    selected_uuid.map(str::to_string),
+                ));
+            }
+            if ui
+                .small_button(RichText::new(crate::i18n::tr("+ VIn")).color(LOXONE_GREEN))
                 .on_hover_text(crate::i18n::tr("Create a new Virtual Input"))
                 .clicked()
             {
                 action = Some(TreeAction::CreateVirtualIn);
             }
             if ui
-                .small_button(RichText::new(crate::i18n::tr("+ VOut")).color(ACCENT_BLUE))
+                .small_button(RichText::new(crate::i18n::tr("+ VOut")).color(LOXONE_GREEN))
                 .on_hover_text(crate::i18n::tr("Create a new Virtual Output"))
                 .clicked()
             {
@@ -96,14 +223,14 @@ pub fn render_left_explorer(
         }
         LeftTab::Rooms => {
             if ui
-                .small_button(RichText::new(crate::i18n::tr("+ Room")).color(ACCENT_BLUE))
+                .small_button(RichText::new(crate::i18n::tr("+ Room")).color(LOXONE_GREEN))
                 .on_hover_text(crate::i18n::tr("Create a new Room"))
                 .clicked()
             {
                 action = Some(TreeAction::CreateRoom);
             }
             if ui
-                .small_button(RichText::new(crate::i18n::tr("+ Category")).color(ACCENT_BLUE))
+                .small_button(RichText::new(crate::i18n::tr("+ Category")).color(LOXONE_GREEN))
                 .on_hover_text(crate::i18n::tr("Create a new Category"))
                 .clicked()
             {
@@ -112,7 +239,7 @@ pub fn render_left_explorer(
         }
         LeftTab::System => {
             if ui
-                .small_button(RichText::new(crate::i18n::tr("+ Flag")).color(ACCENT_BLUE))
+                .small_button(RichText::new(crate::i18n::tr("+ Flag")).color(LOXONE_GREEN))
                 .on_hover_text(crate::i18n::tr("Create a new Memory Flag (Merker)"))
                 .clicked()
             {
@@ -120,8 +247,9 @@ pub fn render_left_explorer(
             }
         }
     });
-    ui.add_space(2.0);
+    ui.add_space(4.0);
     ui.separator();
+    ui.add_space(2.0);
 
     let q = filter.trim().to_lowercase();
 
@@ -134,21 +262,25 @@ pub fn render_left_explorer(
                     }
                     let is_active = idx == active_page_idx;
                     let bg = if is_active {
-                        Color32::from_rgba_unmultiplied(0x5E, 0x81, 0xFF, 36)
+                        ELEVATED_BG
                     } else {
                         Color32::TRANSPARENT
                     };
                     let resp = egui::Frame::new()
                         .fill(bg)
-                        .corner_radius(5)
+                        .corner_radius(6)
                         .inner_margin(egui::Margin::symmetric(8, 5))
                         .show(ui, |ui| {
                             ui.horizontal(|ui| {
-                                ui_icon(ui, LoxoneIcon::Page, 16.0);
-                                ui.label(
-                                    RichText::new(&page.title)
-                                        .color(if is_active { ACCENT_BLUE } else { TEXT_PRIMARY }),
+                                ui_icon(ui, LoxoneIcon::Page, 15.0);
+                                let title_rt = RichText::new(&page.title).size(12.2).color(
+                                    if is_active {
+                                        Color32::WHITE
+                                    } else {
+                                        TEXT_MUTED
+                                    },
                                 );
+                                ui.label(if is_active { title_rt.strong() } else { title_rt });
                                 ui.with_layout(
                                     egui::Layout::right_to_left(egui::Align::Center),
                                     |ui| {
@@ -156,8 +288,12 @@ pub fn render_left_explorer(
                                             page.blocks.iter().filter(|b| b.has_position).count();
                                         ui.label(
                                             RichText::new(format!("{}", visible_count))
-                                                .size(11.0)
-                                                .color(TEXT_MUTED),
+                                                .size(10.8)
+                                                .color(if is_active {
+                                                    LOXONE_GREEN
+                                                } else {
+                                                    TEXT_MUTED
+                                                }),
                                         );
                                     },
                                 );
@@ -384,6 +520,100 @@ pub fn tree_node_subtitle(project: &LoxoneProject, node: &TreeNode) -> Option<St
     None
 }
 
+fn render_identifying_badge(ui: &mut Ui, node: &TreeNode, elapsed_secs: f32) {
+    ui.ctx()
+        .request_repaint_after(std::time::Duration::from_millis(120));
+    let blink_green = ((elapsed_secs * 4.5) as u32) % 2 == 0;
+    let led_color = if blink_green {
+        LOXONE_GREEN
+    } else {
+        Color32::from_rgb(0xF5, 0x9E, 0x0B)
+    };
+    let serial_suffix = node
+        .attr("Serial")
+        .or_else(|| node.attr("MAC"))
+        .filter(|s| !s.trim().is_empty())
+        .map(|s| format!(" · {}", s.trim()))
+        .unwrap_or_default();
+    egui::Frame::new()
+        .fill(led_color.gamma_multiply(0.22))
+        .stroke(Stroke::new(1.0_f32, led_color))
+        .corner_radius(CornerRadius::same(4))
+        .inner_margin(Margin::symmetric(5, 1))
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 4.0;
+                let (dot_rect, _) = ui.allocate_exact_size(Vec2::splat(7.0), Sense::hover());
+                ui.painter().circle_filled(dot_rect.center(), 3.2, led_color);
+                ui.label(
+                    RichText::new(format!(
+                        "{}{}",
+                        crate::i18n::tr("IDENTIFYING"),
+                        serial_suffix
+                    ))
+                    .size(9.8)
+                    .color(Color32::WHITE)
+                    .strong(),
+                );
+            });
+        });
+}
+
+fn attach_tree_node_context_menu(
+    resp: &egui::Response,
+    project: &LoxoneProject,
+    node: &TreeNode,
+    placeable: bool,
+    action: &mut Option<TreeAction>,
+) {
+    let is_hw_device = loxone_core::periphery_provisioning::is_identifiable_hardware_node(node);
+    let can_identify = is_hw_device
+        || (!node.uuid.is_empty()
+            && loxone_core::periphery_provisioning::resolve_device_identify_target(
+                project, &node.uuid,
+            )
+            .is_some());
+    if !placeable && !can_identify {
+        return;
+    }
+    resp.context_menu(|ui| {
+        if can_identify {
+            if ui
+                .button(
+                    RichText::new(crate::i18n::tr("🔦 Identify Device"))
+                        .color(LOXONE_GREEN)
+                        .strong(),
+                )
+                .clicked()
+            {
+                *action = Some(TreeAction::IdentifyDevice(node.uuid.clone()));
+                ui.close_menu();
+            }
+        }
+        if is_hw_device {
+            if ui
+                .button(crate::i18n::tr("🔢 Swap Serial Number…"))
+                .clicked()
+            {
+                *action = Some(TreeAction::OpenHardwareInventory(Some(node.uuid.clone())));
+                ui.close_menu();
+            }
+        }
+        if placeable {
+            if can_identify {
+                ui.separator();
+            }
+            if ui
+                .button(crate::i18n::tr("📥 Place on Current Page"))
+                .clicked()
+            {
+                *action = Some(TreeAction::PlaceOnPage(node.uuid.clone()));
+                ui.close_menu();
+            }
+        }
+    });
+}
+
 fn render_tree_node(
     ui: &mut Ui,
     project: &LoxoneProject,
@@ -406,6 +636,7 @@ fn render_tree_node(
     let placeable = !node.uuid.is_empty() && is_placeable_tree_node(&node.control_type);
     let icon = icon_for_tree_node(node);
     let subtitle = tree_node_subtitle(project, node);
+    let identifying_elapsed = device_identify_elapsed(ui.ctx(), &node.uuid);
 
     if node.children.is_empty() {
         ui.horizontal(|ui| {
@@ -417,8 +648,10 @@ fn render_tree_node(
                 label_title.to_string()
             };
             let resp = ui.selectable_label(
-                is_selected,
-                RichText::new(text).color(if is_selected {
+                is_selected || identifying_elapsed.is_some(),
+                RichText::new(text).color(if identifying_elapsed.is_some() {
+                    LOXONE_GREEN
+                } else if is_selected {
                     ACCENT_BLUE
                 } else {
                     TEXT_PRIMARY
@@ -426,6 +659,9 @@ fn render_tree_node(
             );
             if let Some(sub) = &subtitle {
                 ui.label(RichText::new(format!("({})", sub)).size(11.5).color(TEXT_MUTED));
+            }
+            if let Some(elapsed) = identifying_elapsed {
+                render_identifying_badge(ui, node, elapsed);
             }
             if placeable {
                 if let Some(store) = live_store {
@@ -442,17 +678,7 @@ fn render_tree_node(
             if resp.clicked() && !node.uuid.is_empty() {
                 action = Some(TreeAction::SelectObject(node.uuid.clone()));
             }
-            if placeable {
-                resp.context_menu(|ui| {
-                    if ui
-                        .button(crate::i18n::tr("📥 Place on Current Page"))
-                        .clicked()
-                    {
-                        action = Some(TreeAction::PlaceOnPage(node.uuid.clone()));
-                        ui.close_menu();
-                    }
-                });
-            }
+            attach_tree_node_context_menu(&resp, project, node, placeable, &mut action);
         });
     } else {
         let salt = if node.uuid.is_empty() {
@@ -472,8 +698,10 @@ fn render_tree_node(
         let header_res = state.show_header(ui, |ui| {
             ui_icon(ui, icon, 16.0);
             let resp = ui.selectable_label(
-                is_selected,
-                RichText::new(label_title).color(if is_selected {
+                is_selected || identifying_elapsed.is_some(),
+                RichText::new(label_title).color(if identifying_elapsed.is_some() {
+                    LOXONE_GREEN
+                } else if is_selected {
                     ACCENT_BLUE
                 } else {
                     TEXT_PRIMARY
@@ -482,20 +710,13 @@ fn render_tree_node(
             if let Some(sub) = &subtitle {
                 ui.label(RichText::new(format!("({})", sub)).size(11.5).color(TEXT_MUTED));
             }
+            if let Some(elapsed) = identifying_elapsed {
+                render_identifying_badge(ui, node, elapsed);
+            }
             if resp.clicked() && !node.uuid.is_empty() {
                 action = Some(TreeAction::SelectObject(node.uuid.clone()));
             }
-            if placeable {
-                resp.context_menu(|ui| {
-                    if ui
-                        .button(crate::i18n::tr("📥 Place on Current Page"))
-                        .clicked()
-                    {
-                        action = Some(TreeAction::PlaceOnPage(node.uuid.clone()));
-                        ui.close_menu();
-                    }
-                });
-            }
+            attach_tree_node_context_menu(&resp, project, node, placeable, &mut action);
         });
         header_res.body(|ui| {
             for child in &node.children {

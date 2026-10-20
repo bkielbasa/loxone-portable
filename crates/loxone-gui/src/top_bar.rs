@@ -7,7 +7,6 @@ use egui::{
 use loxone_core::miniserver::ConnectionStatus;
 use loxone_core::model::LoxoneProject;
 
-use crate::icons::{ui_icon, LoxoneIcon};
 use crate::theme::{
     ACCENT_BLUE, BORDER_SUBTLE, CARD_BG, PANEL_BG, STATUS_CONNECTED, STATUS_CONNECTING,
     STATUS_DISCONNECTED, STATUS_ERROR, TEXT_MUTED, TEXT_PRIMARY,
@@ -149,6 +148,11 @@ pub enum TopBarAction {
     DuplicateSelected,
     DeleteSelected,
     OpenSelectedDocs,
+    OpenPeripheryModal,
+    OpenHardwareInventory,
+    ToggleSimulation,
+    StepSimulation,
+    ResetSimulation,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -835,11 +839,39 @@ pub fn set_ribbon_tab(ctx: &Context, tab: RibbonTab) {
     });
 }
 
-const CAPSULE_BG: Color32 = Color32::from_rgb(0x1C, 0x21, 0x2C);
-const BTN_HOVER_BG: Color32 = Color32::from_rgb(0x2A, 0x33, 0x46);
-const BTN_ACTIVE_BG: Color32 = Color32::from_rgb(0x32, 0x3D, 0x54);
-const LOXONE_GREEN: Color32 = Color32::from_rgb(0x69, 0xC3, 0x32);
-const CONTEXTUAL_OBJECT_ACCENT: Color32 = Color32::from_rgb(0xA8, 0x7F, 0xFB);
+const CAPSULE_BG: Color32 = Color32::from_rgb(0x16, 0x16, 0x16);
+const BTN_HOVER_BG: Color32 = Color32::from_rgb(0x24, 0x24, 0x24);
+const BTN_ACTIVE_BG: Color32 = Color32::from_rgb(0x2E, 0x2E, 0x2E);
+const LOXONE_GREEN: Color32 = Color32::from_rgb(0x69, 0xC3, 0x50);
+const CONTEXTUAL_OBJECT_ACCENT: Color32 = Color32::from_rgb(0x69, 0xC3, 0x50);
+
+/// Paints Encore's signature solid Loxone-green rounded-square badge with a crisp white 3D cube icon.
+fn paint_encore_green_cube_badge(ui: &mut Ui, size: f32) -> Response {
+    let (rect, resp) = ui.allocate_exact_size(Vec2::splat(size), Sense::click());
+    if ui.is_rect_visible(rect) {
+        let painter = ui.painter();
+        painter.rect_filled(rect, CornerRadius::same(7), LOXONE_GREEN);
+        let c = rect.center();
+        let r = size * 0.28;
+        let top = Pos2::new(c.x, c.y - r);
+        let right = Pos2::new(c.x + r * 0.88, c.y - r * 0.45);
+        let bottom_right = Pos2::new(c.x + r * 0.88, c.y + r * 0.50);
+        let bottom = Pos2::new(c.x, c.y + r);
+        let bottom_left = Pos2::new(c.x - r * 0.88, c.y + r * 0.50);
+        let left = Pos2::new(c.x - r * 0.88, c.y - r * 0.45);
+        let mid = Pos2::new(c.x, c.y + r * 0.04);
+        let stroke = Stroke::new(1.5_f32, Color32::from_rgb(0x0F, 0x1A, 0x0C));
+        painter.add(Shape::convex_polygon(
+            vec![top, right, bottom_right, bottom, bottom_left, left],
+            Color32::WHITE,
+            stroke,
+        ));
+        painter.line_segment([left, mid], stroke);
+        painter.line_segment([right, mid], stroke);
+        painter.line_segment([bottom, mid], stroke);
+    }
+    resp
+}
 
 /// Renders a single polished toolbar button with a vector icon, optional label, and optional keycap badge.
 fn render_vector_button(
@@ -896,47 +928,45 @@ fn render_vector_button(
         let active = enabled && resp.is_pointer_button_down_on();
 
         if active {
-            painter.rect_filled(rect, CornerRadius::same(5), BTN_ACTIVE_BG);
+            painter.rect_filled(rect, CornerRadius::same(6), BTN_ACTIVE_BG);
         } else if hovered {
-            painter.rect_filled(rect, CornerRadius::same(5), BTN_HOVER_BG);
+            painter.rect_filled(rect, CornerRadius::same(6), BTN_HOVER_BG);
             painter.rect_stroke(
                 rect,
-                CornerRadius::same(5),
-                Stroke::new(1.0_f32, ACCENT_BLUE.gamma_multiply(0.65)),
+                CornerRadius::same(6),
+                Stroke::new(1.0_f32, LOXONE_GREEN.gamma_multiply(0.75)),
                 StrokeKind::Inside,
             );
         } else if enabled && primary_green {
             painter.rect_filled(
                 rect,
-                CornerRadius::same(5),
-                LOXONE_GREEN.gamma_multiply(0.14),
+                CornerRadius::same(6),
+                LOXONE_GREEN.gamma_multiply(0.18),
             );
             painter.rect_stroke(
                 rect,
-                CornerRadius::same(5),
-                Stroke::new(1.0_f32, LOXONE_GREEN.gamma_multiply(0.45)),
+                CornerRadius::same(6),
+                Stroke::new(1.0_f32, LOXONE_GREEN.gamma_multiply(0.60)),
                 StrokeKind::Inside,
             );
         } else if enabled && accent {
             painter.rect_filled(
                 rect,
-                CornerRadius::same(5),
-                ACCENT_BLUE.gamma_multiply(0.16),
+                CornerRadius::same(6),
+                LOXONE_GREEN.gamma_multiply(0.15),
             );
             painter.rect_stroke(
                 rect,
-                CornerRadius::same(5),
-                Stroke::new(1.0_f32, ACCENT_BLUE.gamma_multiply(0.50)),
+                CornerRadius::same(6),
+                Stroke::new(1.0_f32, LOXONE_GREEN.gamma_multiply(0.50)),
                 StrokeKind::Inside,
             );
         }
 
         let fg = if !enabled {
             TEXT_MUTED.gamma_multiply(0.42)
-        } else if primary_green {
-            Color32::from_rgb(0x8E, 0xE8, 0x58)
-        } else if accent {
-            Color32::from_rgb(0x88, 0xA8, 0xFF)
+        } else if primary_green || accent {
+            LOXONE_GREEN
         } else if hovered {
             Color32::WHITE
         } else {
@@ -977,7 +1007,7 @@ fn render_vector_button(
             painter.rect_filled(
                 badge_rect,
                 CornerRadius::same(3),
-                Color32::from_rgb(0x13, 0x16, 0x1E).gamma_multiply(badge_alpha),
+                Color32::from_rgb(0x14, 0x14, 0x14).gamma_multiply(badge_alpha),
             );
             painter.rect_stroke(
                 badge_rect,
@@ -1047,6 +1077,7 @@ fn truncate_tab_title(s: &str, max_chars: usize) -> String {
     }
 }
 
+/// Renders an Encore-style segmented pill tab button (`#242424` active fill, crisp border, bright white label).
 fn render_ribbon_tab_button(
     ui: &mut Ui,
     tab: RibbonTab,
@@ -1057,35 +1088,30 @@ fn render_ribbon_tab_button(
         RibbonTab::SelectedObject => {
             if let Some(sel) = selected_ctx {
                 format!(
-                    "✨ {} {}",
+                    "{} {}",
                     crate::i18n::tr("Object:"),
                     truncate_tab_title(&sel.title, 18)
                 )
             } else {
-                format!("✨ {}", crate::i18n::tr("Object"))
+                crate::i18n::tr("Object").to_string()
             }
         }
-        RibbonTab::LiveView => format!("⚡ {}", crate::i18n::tr("Live View")),
+        RibbonTab::LiveView => crate::i18n::tr("Live View").to_string(),
         other => crate::i18n::tr(other.base_label()).to_string(),
     };
 
-    let tab_accent = match tab {
-        RibbonTab::SelectedObject => CONTEXTUAL_OBJECT_ACCENT,
-        RibbonTab::LiveView => LOXONE_GREEN,
-        _ => ACCENT_BLUE,
-    };
-
     let font_id = if is_active {
-        egui::FontId::new(11.6, egui::FontFamily::Proportional)
+        egui::FontId::new(11.8, egui::FontFamily::Proportional)
     } else {
-        egui::FontId::new(11.4, egui::FontFamily::Proportional)
+        egui::FontId::new(11.5, egui::FontFamily::Proportional)
     };
     let galley = ui
         .painter()
         .layout_no_wrap(display_text, font_id, TEXT_PRIMARY);
-    let pad_x = 10.0_f32;
+    let dot_extra = if tab.is_contextual() { 10.0_f32 } else { 0.0_f32 };
+    let pad_x = 11.0_f32;
     let btn_h = 26.0_f32;
-    let btn_w = galley.size().x + pad_x * 2.0;
+    let btn_w = galley.size().x + pad_x * 2.0 + dot_extra;
 
     let (rect, resp) = ui.allocate_exact_size(Vec2::new(btn_w, btn_h), Sense::click());
     if ui.is_rect_visible(rect) {
@@ -1093,57 +1119,41 @@ fn render_ribbon_tab_button(
         let hovered = resp.hovered();
 
         if is_active {
+            // Encore segmented pill active state: solid #262626 pill inside #141414 track
             painter.rect_filled(
                 rect,
                 CornerRadius::same(6),
-                tab_accent.gamma_multiply(0.20),
+                Color32::from_rgb(0x26, 0x26, 0x26),
             );
             painter.rect_stroke(
                 rect,
                 CornerRadius::same(6),
-                Stroke::new(1.0_f32, tab_accent.gamma_multiply(0.65)),
+                Stroke::new(1.0_f32, Color32::from_rgb(0x36, 0x36, 0x36)),
                 StrokeKind::Inside,
             );
-            let bar_rect = Rect::from_min_max(
-                Pos2::new(rect.min.x + 6.0, rect.max.y - 2.5),
-                Pos2::new(rect.max.x - 6.0, rect.max.y - 0.5),
-            );
-            painter.rect_filled(bar_rect, CornerRadius::same(1), tab_accent);
         } else if hovered {
-            painter.rect_filled(rect, CornerRadius::same(6), BTN_HOVER_BG);
-        } else if tab.is_contextual() {
             painter.rect_filled(
                 rect,
                 CornerRadius::same(6),
-                tab_accent.gamma_multiply(0.10),
-            );
-            painter.rect_stroke(
-                rect,
-                CornerRadius::same(6),
-                Stroke::new(1.0_f32, tab_accent.gamma_multiply(0.35)),
-                StrokeKind::Inside,
+                Color32::from_rgb(0x1E, 0x1E, 0x1E),
             );
         }
 
+        let mut text_x = rect.center().x - (galley.size().x + dot_extra) * 0.5;
         if tab.is_contextual() {
-            let top_bar = Rect::from_min_max(
-                Pos2::new(rect.min.x + 6.0, rect.min.y + 0.5),
-                Pos2::new(rect.max.x - 6.0, rect.min.y + 2.5),
-            );
-            painter.rect_filled(top_bar, CornerRadius::same(1), tab_accent);
+            let dot_center = Pos2::new(text_x + 3.5, rect.center().y);
+            painter.circle_filled(dot_center, 3.2, LOXONE_GREEN);
+            text_x += dot_extra;
         }
 
         let text_color = if is_active || hovered {
             Color32::WHITE
         } else if tab.is_contextual() {
-            Color32::from_rgb(0xE2, 0xEA, 0xFF)
+            LOXONE_GREEN
         } else {
             TEXT_MUTED
         };
-        let text_pos = Pos2::new(
-            rect.center().x - galley.size().x * 0.5,
-            rect.center().y - galley.size().y * 0.5,
-        );
+        let text_pos = Pos2::new(text_x, rect.center().y - galley.size().y * 0.5);
         painter.galley(text_pos, galley, text_color);
     }
 
@@ -1234,12 +1244,87 @@ fn render_ribbon_row_1(
     ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
         ui.spacing_mut().item_spacing.x = 6.0;
 
-        // 1. Left Quick-Access & Breadcrumb Capsule
+        // 1. Encore-style Left Header Identity (Green Cube Badge + Page/Project Title + Quick Actions)
+        let cube_resp = paint_encore_green_cube_badge(ui, 24.0).on_hover_text(crate::i18n::tr(
+            "Click to switch project / show project list",
+        ));
+        if cube_resp.clicked() && project.is_some() {
+            action = Some(TopBarAction::ShowProjectLauncher);
+        }
+
+        let proj_title = project
+            .map(|p| {
+                if p.metadata.title.trim().is_empty() {
+                    crate::i18n::tr("Project")
+                } else {
+                    p.metadata.title.as_str()
+                }
+            })
+            .unwrap_or("Loxone Portable");
+        let dirty_suffix = if is_dirty { " *" } else { "" };
+
+        if let Some(proj) = project {
+            let page_name = proj
+                .pages
+                .get(active_page_index)
+                .map(|pg| pg.title.as_str())
+                .unwrap_or_else(|| crate::i18n::tr("No Page"));
+            let page_resp = ui
+                .label(
+                    RichText::new(truncate_tab_title(page_name, 22))
+                        .size(13.5)
+                        .color(Color32::WHITE)
+                        .strong(),
+                )
+                .interact(Sense::click())
+                .on_hover_text(crate::i18n::tr(
+                    "Click to switch page or jump (⌘K / Ctrl+K)",
+                ));
+            if page_resp.clicked() {
+                action = Some(TopBarAction::OpenCommandPalette);
+            }
+        } else {
+            ui.label(
+                RichText::new(format!("{}{}", proj_title, dirty_suffix))
+                    .size(13.5)
+                    .color(Color32::WHITE)
+                    .strong(),
+            );
+        }
+
+        // Encore-style subtle dark status pill next to title
+        let proj_pill_resp = Frame::new()
+            .fill(Color32::from_rgb(0x1C, 0x1C, 0x1C))
+            .stroke(Stroke::new(1.0_f32, BORDER_SUBTLE))
+            .corner_radius(CornerRadius::same(5))
+            .inner_margin(Margin::symmetric(6, 2))
+            .show(ui, |ui| {
+                ui.spacing_mut().item_spacing.x = 4.0;
+                ui.label(
+                    RichText::new(format!("{}{}", truncate_tab_title(proj_title, 18), dirty_suffix))
+                        .size(10.8)
+                        .color(TEXT_MUTED),
+                );
+            })
+            .response
+            .interact(Sense::click());
+        if proj_pill_resp.clicked() && project.is_some() {
+            action = Some(TopBarAction::ShowProjectLauncher);
+        }
+        if let Some(loaded) = loaded_path {
+            proj_pill_resp.on_hover_text(format!(
+                "{}\n{}",
+                loaded.display(),
+                crate::i18n::tr("Click to switch project / show project list")
+            ));
+        }
+
+        // Compact quick-access capsule (Sidebar, Save, Undo, Redo)
         Frame::new()
             .fill(CAPSULE_BG)
             .stroke(Stroke::new(1.0_f32, BORDER_SUBTLE))
-            .corner_radius(CornerRadius::same(7))
-            .inner_margin(Margin::symmetric(4, 2))
+            .corner_radius(CornerRadius::same(6))
+            .inner_margin(Margin::symmetric(3, 2))
             .show(ui, |ui| {
                 ui.spacing_mut().item_spacing.x = 2.0;
                 if render_vector_button(
@@ -1301,84 +1386,16 @@ fn render_ribbon_row_1(
                 {
                     action = Some(TopBarAction::Redo);
                 }
-
-                render_capsule_divider(ui);
-
-                ui_icon(ui, LoxoneIcon::Miniserver, 14.5);
-                let proj_title = project
-                    .map(|p| {
-                        if p.metadata.title.trim().is_empty() {
-                            crate::i18n::tr("Project")
-                        } else {
-                            p.metadata.title.as_str()
-                        }
-                    })
-                    .unwrap_or("Loxone Portable");
-                let dirty_suffix = if is_dirty { " *" } else { "" };
-                let title_resp = ui
-                    .label(
-                        RichText::new(format!("{}{}", proj_title, dirty_suffix))
-                            .size(11.8)
-                            .color(TEXT_PRIMARY)
-                            .strong(),
-                    )
-                    .interact(Sense::click());
-                if title_resp.clicked() && project.is_some() {
-                    action = Some(TopBarAction::ShowProjectLauncher);
-                }
-                if let Some(loaded) = loaded_path {
-                    title_resp.on_hover_text(format!(
-                        "{}\n{}",
-                        loaded.display(),
-                        crate::i18n::tr("Click to switch project / show project list")
-                    ));
-                } else if project.is_some() {
-                    title_resp.on_hover_text(crate::i18n::tr(
-                        "Downloaded from Miniserver (unsaved in-memory project)\nClick to switch project / show project list",
-                    ));
-                }
-
-                if let Some(proj) = project {
-                    let page_name = proj
-                        .pages
-                        .get(active_page_index)
-                        .map(|pg| pg.title.as_str())
-                        .unwrap_or_else(|| crate::i18n::tr("No Page"));
-                    ui.label(RichText::new("›").size(12.5).color(TEXT_MUTED));
-
-                    let page_pill = Frame::new()
-                        .fill(CARD_BG)
-                        .corner_radius(CornerRadius::same(5))
-                        .inner_margin(Margin::symmetric(6, 2))
-                        .show(ui, |ui| {
-                            ui.spacing_mut().item_spacing.x = 4.0;
-                            ui_icon(ui, LoxoneIcon::Page, 13.0);
-                            ui.label(
-                                RichText::new(truncate_tab_title(page_name, 20))
-                                    .size(11.2)
-                                    .color(Color32::from_rgb(0xC5, 0xD4, 0xF5))
-                                    .strong(),
-                            );
-                        })
-                        .response
-                        .interact(Sense::click())
-                        .on_hover_text(crate::i18n::tr(
-                            "Click to switch page or jump (⌘K / Ctrl+K)",
-                        ));
-                    if page_pill.clicked() {
-                        action = Some(TopBarAction::OpenCommandPalette);
-                    }
-                }
             });
 
-        // 2. Center Loxone Config Ribbon Tab Strip (Core Tabs + Contextual Optional Tabs)
+        // 2. Encore Segmented Pill Tab Control
         Frame::new()
-            .fill(Color32::from_rgb(0x14, 0x18, 0x21))
+            .fill(Color32::from_rgb(0x16, 0x16, 0x16))
             .stroke(Stroke::new(1.0_f32, BORDER_SUBTLE))
             .corner_radius(CornerRadius::same(7))
-            .inner_margin(Margin::symmetric(4, 2))
+            .inner_margin(Margin::symmetric(3, 2))
             .show(ui, |ui| {
-                ui.spacing_mut().item_spacing.x = 3.0;
+                ui.spacing_mut().item_spacing.x = 2.0;
                 let mut seen_contextual = false;
                 for &tab in visible_tabs {
                     if tab.is_contextual() && !seen_contextual {
@@ -1489,7 +1506,7 @@ fn render_ribbon_row_1(
                 });
 
             let search_resp = Frame::new()
-                .fill(Color32::from_rgb(0x13, 0x16, 0x1E))
+                .fill(Color32::from_rgb(0x16, 0x16, 0x16))
                 .stroke(Stroke::new(1.0_f32, BORDER_SUBTLE))
                 .corner_radius(CornerRadius::same(7))
                 .inner_margin(Margin::symmetric(7, 4))
@@ -1588,6 +1605,20 @@ fn render_ribbon_row_2(
                     .show(ui, |ui| {
                         ui.spacing_mut().item_spacing.x = 4.0;
                         let device_tiles: &[(&str, &str, &str, Color32, TopBarAction)] = &[
+                            (
+                                "🔌",
+                                "Provision Hardware…",
+                                "Provision Extensions, Loxone Tree devices, or Loxone Air devices into Periphery",
+                                LOXONE_GREEN,
+                                TopBarAction::OpenPeripheryModal,
+                            ),
+                            (
+                                "🔢",
+                                "Serial Inventory",
+                                "Inspect provisioned hardware and swap physical Serial Numbers in-place",
+                                ACCENT_BLUE,
+                                TopBarAction::OpenHardwareInventory,
+                            ),
                             (
                                 "➕",
                                 "All Devices",
@@ -1807,6 +1838,54 @@ fn render_ribbon_row_2(
                 if let Some(act) = render_toolbar_capsule(ui, &ms_items) {
                     action = Some(act);
                 }
+
+                Frame::new()
+                    .fill(CAPSULE_BG)
+                    .stroke(Stroke::new(1.0_f32, BORDER_SUBTLE))
+                    .corner_radius(CornerRadius::same(7))
+                    .inner_margin(Margin::symmetric(4, 2))
+                    .show(ui, |ui| {
+                        ui.spacing_mut().item_spacing.x = 4.0;
+                        if render_ribbon_chip(
+                            ui,
+                            "▶",
+                            "Simulate Offline",
+                            "Toggle interactive offline logic simulation on the schematic canvas",
+                            has_project,
+                            LOXONE_GREEN,
+                        )
+                        .clicked()
+                            && has_project
+                        {
+                            action = Some(TopBarAction::ToggleSimulation);
+                        }
+                        if render_ribbon_chip(
+                            ui,
+                            "⏭",
+                            "Step +1s",
+                            "Advance offline simulation clock by +1.0 second (for timers, delays & sequences)",
+                            has_project,
+                            ACCENT_BLUE,
+                        )
+                        .clicked()
+                            && has_project
+                        {
+                            action = Some(TopBarAction::StepSimulation);
+                        }
+                        if render_ribbon_chip(
+                            ui,
+                            "↺",
+                            "Reset Sim",
+                            "Reset all offline simulation overrides, latches, and virtual clock",
+                            has_project,
+                            Color32::from_rgb(0xE4, 0xB3, 0x3B),
+                        )
+                        .clicked()
+                            && has_project
+                        {
+                            action = Some(TopBarAction::ResetSimulation);
+                        }
+                    });
             }
             RibbonTab::View => {
                 let diag_items = vec![
@@ -1905,7 +1984,7 @@ fn render_ribbon_row_2(
                             ui.label(
                                 RichText::new(crate::i18n::block_display_name(&sel.object_type))
                                     .size(11.0)
-                                    .color(Color32::from_rgb(0xD8, 0xC4, 0xFF))
+                                    .color(Color32::from_rgb(0xB8, 0xF2, 0xA6))
                                     .strong(),
                             );
                             ui.label(RichText::new("·").size(11.0).color(TEXT_MUTED));
@@ -1952,6 +2031,54 @@ fn render_ribbon_row_2(
                 if let Some(act) = render_toolbar_capsule(ui, &live_items) {
                     action = Some(act);
                 }
+
+                Frame::new()
+                    .fill(CAPSULE_BG)
+                    .stroke(Stroke::new(1.0_f32, BORDER_SUBTLE))
+                    .corner_radius(CornerRadius::same(7))
+                    .inner_margin(Margin::symmetric(4, 2))
+                    .show(ui, |ui| {
+                        ui.spacing_mut().item_spacing.x = 4.0;
+                        if render_ribbon_chip(
+                            ui,
+                            "▶",
+                            "Simulate Offline",
+                            "Toggle interactive offline logic simulation on the schematic canvas",
+                            has_project,
+                            LOXONE_GREEN,
+                        )
+                        .clicked()
+                            && has_project
+                        {
+                            action = Some(TopBarAction::ToggleSimulation);
+                        }
+                        if render_ribbon_chip(
+                            ui,
+                            "⏭",
+                            "Step +1s",
+                            "Advance offline simulation clock by +1.0 second",
+                            has_project,
+                            ACCENT_BLUE,
+                        )
+                        .clicked()
+                            && has_project
+                        {
+                            action = Some(TopBarAction::StepSimulation);
+                        }
+                        if render_ribbon_chip(
+                            ui,
+                            "↺",
+                            "Reset Sim",
+                            "Reset all offline simulation overrides, latches, and virtual clock",
+                            has_project,
+                            Color32::from_rgb(0xE4, 0xB3, 0x3B),
+                        )
+                        .clicked()
+                            && has_project
+                        {
+                            action = Some(TopBarAction::ResetSimulation);
+                        }
+                    });
             }
         }
 
@@ -2108,6 +2235,87 @@ pub fn render_top_bar_with_selection(
     if active_tab != stored_tab {
         set_ribbon_tab(ctx, active_tab);
     }
+
+    // Encore-style Top Loxone-Green Accent Strip + Centered Hanging Environment/Status Pill
+    egui::TopBottomPanel::top("encore_env_banner")
+        .exact_height(20.0)
+        .frame(
+            Frame::new()
+                .fill(PANEL_BG)
+                .stroke(Stroke::NONE)
+                .inner_margin(Margin::ZERO),
+        )
+        .show(ctx, |ui| {
+            let full_rect = ui.max_rect();
+            let top_strip = egui::Rect::from_min_max(
+                full_rect.min,
+                egui::pos2(full_rect.max.x, full_rect.min.y + 4.0),
+            );
+            ui.painter()
+                .rect_filled(top_strip, CornerRadius::ZERO, LOXONE_GREEN);
+
+            let env_proj = project
+                .map(|p| {
+                    if p.metadata.title.trim().is_empty() {
+                        "loxone-config"
+                    } else {
+                        p.metadata.title.as_str()
+                    }
+                })
+                .unwrap_or("loxone-portable");
+            let env_target = if live_view_active {
+                crate::i18n::tr("Live View")
+            } else {
+                effective_host.unwrap_or(&status_visuals.label)
+            };
+            let pill_text = format!(
+                "{}  •  {}",
+                truncate_tab_title(env_proj, 24),
+                truncate_tab_title(env_target, 22)
+            );
+            let font_id = egui::FontId::proportional(11.0);
+            let dark_fg = Color32::from_rgb(0x0B, 0x16, 0x08);
+            let galley = ui
+                .painter()
+                .layout_no_wrap(pill_text, font_id, dark_fg);
+            let pill_w = (galley.size().x + 28.0).max(140.0);
+            let pill_rect = egui::Rect::from_min_max(
+                egui::pos2(full_rect.center().x - pill_w * 0.5, full_rect.min.y),
+                egui::pos2(full_rect.center().x + pill_w * 0.5, full_rect.min.y + 19.0),
+            );
+            let pill_resp = ui.interact(
+                pill_rect,
+                ui.id().with("encore_hanging_env_pill"),
+                Sense::click(),
+            );
+            let pill_fill = if pill_resp.hovered() {
+                Color32::from_rgb(0x78, 0xD2, 0x5E)
+            } else {
+                LOXONE_GREEN
+            };
+            ui.painter().rect_filled(
+                pill_rect,
+                CornerRadius {
+                    nw: 0,
+                    ne: 0,
+                    sw: 7,
+                    se: 7,
+                },
+                pill_fill,
+            );
+            let text_pos = egui::pos2(
+                pill_rect.center().x - galley.size().x * 0.5,
+                pill_rect.center().y - galley.size().y * 0.5 + 0.5,
+            );
+            ui.painter().galley(text_pos, galley, dark_fg);
+
+            if pill_resp
+                .on_hover_text(format!("{} — {}", status_visuals.label, status_visuals.tooltip))
+                .clicked()
+            {
+                action = Some(TopBarAction::OpenMiniserverModal);
+            }
+        });
 
     egui::TopBottomPanel::top("top_title_bar")
         .exact_height(36.0)

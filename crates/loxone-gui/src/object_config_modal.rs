@@ -56,7 +56,7 @@ impl Default for ObjectConfigModalState {
             block_uuid: String::new(),
             block_title: String::new(),
             block_type: String::new(),
-            filter_by_selection: true,
+            filter_by_selection: false,
             search_query: String::new(),
             sort_column: ObjectConfigSortColumn::DefaultOrder,
             sort_ascending: true,
@@ -79,7 +79,6 @@ impl ObjectConfigModalState {
         };
 
         let rows = build_object_config_rows(project, &page_uuid, &block.uuid);
-        let has_any_selected = rows.iter().any(|r| r.is_input || r.is_output);
 
         self.is_open = true;
         self.page_uuid = page_uuid;
@@ -90,7 +89,7 @@ impl ObjectConfigModalState {
             block.title.clone()
         };
         self.block_type = block.block_type.clone();
-        self.filter_by_selection = has_any_selected;
+        self.filter_by_selection = false;
         self.search_query.clear();
         self.sort_column = ObjectConfigSortColumn::DefaultOrder;
         self.sort_ascending = true;
@@ -261,7 +260,7 @@ fn render_cell_label(ui: &mut Ui, width: f32, text: &str, color: Color32, strong
         Vec2::new(width, 22.0),
         Layout::left_to_right(Align::Center),
         |ui| {
-            ui.set_clip_rect(ui.max_rect());
+            ui.set_clip_rect(ui.clip_rect().intersect(ui.max_rect()));
             let mut rt = RichText::new(text).size(12.0).color(color);
             if strong {
                 rt = rt.strong();
@@ -285,23 +284,24 @@ pub fn render_object_config_modal(
         return None;
     }
 
-    let screen = ctx.screen_rect();
-    ctx.layer_painter(egui::LayerId::new(
-        egui::Order::Foreground,
-        Id::new("object_config_modal_backdrop"),
-    ))
-    .rect_filled(screen, 0.0, Color32::from_black_alpha(150));
-
     let mut action: Option<ObjectConfigModalAction> = None;
     let mut open_flag = state.is_open;
     let mut should_close = false;
+
+    let screen = ctx.screen_rect();
+    let (backdrop_clicked, popup_was_open) = crate::theme::draw_modal_backdrop(
+        ctx,
+        "object_config_modal_backdrop",
+        egui::Order::Middle,
+        150,
+    );
 
     let modal_w = (screen.width() - 80.0).clamp(760.0, 1180.0);
     let modal_h = (screen.height() - 90.0).clamp(460.0, 740.0);
 
     use crate::i18n::{tr, tr_fmt};
 
-    egui::Window::new(format!(
+    let win_resp = egui::Window::new(format!(
         "{} — {}",
         tr("Object Configuration"),
         state.block_title
@@ -653,6 +653,16 @@ pub fn render_object_config_modal(
         });
     });
 
+    if crate::theme::should_close_modal_on_outside_click(
+        ctx,
+        "loxone_object_config_modal_window",
+        backdrop_clicked,
+        popup_was_open,
+        win_resp.as_ref().map(|r| r.response.rect),
+    ) {
+        should_close = true;
+    }
+
     if !open_flag || should_close {
         state.is_open = false;
     }
@@ -677,24 +687,50 @@ mod tests {
         let mut modal = ObjectConfigModalState::default();
         assert!(modal.open_for_block(&project, "19eb19a9-024d-3a10-ffff51535bcccc04"));
         assert!(modal.is_open);
-        assert!(modal.filter_by_selection);
-        let initial_selected = modal.visible_row_indices().len();
-        assert_eq!(initial_selected, 37); // 11 inputs + 26 outputs
+        assert!(!modal.filter_by_selection);
+        let initial_all = modal.visible_row_indices().len();
+        assert_eq!(initial_all, 49); // 11 inputs + 25 outputs + 13 unselected candidates
 
         // Search filter narrows visible rows
         modal.search_query = "Wiatrołap".to_string();
         let filtered = modal.visible_row_indices();
         assert!(filtered.len() >= 2);
 
-        // Unchecking "Filtruj według wyboru" shows all candidate objects
+        // Checking "Filtruj według wyboru" shows only the 36 selected objects
         modal.search_query.clear();
-        modal.filter_by_selection = false;
-        assert!(modal.visible_row_indices().len() > initial_selected);
+        modal.filter_by_selection = true;
+        assert_eq!(modal.visible_row_indices().len(), 36);
 
         // Verify headless egui rendering completes without panic
         let ctx = egui::Context::default();
         let _ = ctx.run(egui::RawInput::default(), |ctx| {
             let _ = render_object_config_modal(ctx, &mut modal);
         });
+        assert!(modal.is_open);
+
+        // Clicking outside closes the modal
+        let outside_pos = egui::Pos2::new(5.0, 5.0);
+        let mut press_input = egui::RawInput::default();
+        press_input.events.push(egui::Event::PointerMoved(outside_pos));
+        press_input.events.push(egui::Event::PointerButton {
+            pos: outside_pos,
+            button: egui::PointerButton::Primary,
+            pressed: true,
+            modifiers: egui::Modifiers::NONE,
+        });
+        let _ = ctx.run(press_input, |ctx| {
+            let _ = render_object_config_modal(ctx, &mut modal);
+        });
+        let mut release_input = egui::RawInput::default();
+        release_input.events.push(egui::Event::PointerButton {
+            pos: outside_pos,
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers: egui::Modifiers::NONE,
+        });
+        let _ = ctx.run(release_input, |ctx| {
+            let _ = render_object_config_modal(ctx, &mut modal);
+        });
+        assert!(!modal.is_open);
     }
 }

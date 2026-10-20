@@ -635,6 +635,67 @@ impl MiniserverClient {
         Ok(snap)
     }
 
+    /// Triggers physical LED / acoustic identification on a Loxone Link extension, Tree device,
+    /// or Air device connected to the Miniserver.
+    pub fn identify_device(
+        creds: &MiniserverCredentials,
+        target: &crate::periphery_provisioning::DeviceIdentifyTarget,
+    ) -> Result<String, MiniserverError> {
+        let base_url = Self::normalize_base_url(&creds.host)?;
+        let mut last_err = None;
+        let mut succeeded_endpoint = None;
+
+        let mut candidate_paths = Vec::new();
+        if !target.serial.trim().is_empty() {
+            let s = target.serial.trim();
+            candidate_paths.push(format!("/jdev/sys/identify/{}", s));
+            candidate_paths.push(format!("/jdev/bus/identify/{}", s));
+            candidate_paths.push(format!("/dev/sys/identify/{}", s));
+        }
+        if !target.uuid.trim().is_empty() {
+            let u = target.uuid.trim();
+            candidate_paths.push(format!("/dev/sps/io/{}/identify", u));
+            candidate_paths.push(format!("/dev/sps/io/{}/Pulse", u));
+        }
+
+        for path in &candidate_paths {
+            let url = format!("{}{}", base_url, path);
+            match Self::http_get_bytes_fast(&url, creds) {
+                Ok(_) => {
+                    succeeded_endpoint = Some(path.clone());
+                    break;
+                }
+                Err(MiniserverError::AuthenticationFailed) => {
+                    return Err(MiniserverError::AuthenticationFailed);
+                }
+                Err(e) => {
+                    last_err = Some(e);
+                }
+            }
+        }
+
+        if let Some(fb_uuid) = &target.feedback_io_uuid {
+            let _ = Self::send_io_command(creds, fb_uuid, "Pulse");
+        }
+
+        if let Some(ep) = succeeded_endpoint {
+            Ok(format!(
+                "Identify signal sent to {} ({}) via {}",
+                target.title,
+                if target.serial.is_empty() {
+                    target.bus_kind.label()
+                } else {
+                    target.serial.as_str()
+                },
+                ep
+            ))
+        } else if let Some(err) = last_err {
+            Err(err)
+        } else {
+            Ok(format!("Identify signal queued for {}", target.title))
+        }
+    }
+
     fn http_post_bytes(
         url: &str,
         creds: &MiniserverCredentials,

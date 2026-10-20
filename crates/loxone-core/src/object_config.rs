@@ -50,6 +50,17 @@ pub struct ObjectConfigRow {
 /// Returns `true` if `block` supports the Loxone Config "Konfiguracja obiektu"
 /// ("Object Configuration") modal for assigning multi-object inputs and outputs.
 pub fn supports_object_config(block: &PageBlock) -> bool {
+    if matches!(
+        block.block_type.as_str(),
+        "HeatIRoomController"
+            | "HeatIRoomController2"
+            | "EFM"
+            | "LightController2"
+            | "LightControllerV2"
+            | "LightController"
+    ) {
+        return false;
+    }
     if block
         .raw_attributes
         .iter()
@@ -65,7 +76,6 @@ pub fn supports_object_config(block: &PageBlock) -> bool {
             | "WaterCentral"
             | "Doorcontroller"
             | "Intercom"
-            | "HeatIRoomController2"
             | "ClimateController"
             | "Central"
             | "CentralLightController"
@@ -84,7 +94,7 @@ pub fn format_room_type(p_type: Option<&str>) -> String {
         Some("2") => "Pobytowe".to_string(),
         Some("3") => "Komunikacyjne".to_string(),
         Some("4") => "Centralne".to_string(),
-        Some("5") => "Zewnętrzne".to_string(),
+        Some("5") => "Inne".to_string(),
         Some("6") => "Sanitarne".to_string(),
         Some("7") => "Kuchnia".to_string(),
         Some("8") => "Garaż".to_string(),
@@ -104,7 +114,7 @@ pub fn resolve_periphery_object_type(device_node: Option<&TreeNode>, leaf_node: 
             "TouchTree" => return "Touch Tree".to_string(),
             "TouchPureTree" => return "Touch Pure Tree".to_string(),
             "TouchStoneTree" => return "Touch Surface Tree".to_string(),
-            "TouchFlexTree" => return "Touch Flex Tree".to_string(),
+            "TouchFlexTree" => return "Touch Pure Flex Tree".to_string(),
             "NFCCodeTouchTree" => return "NFC Code Touch Tree".to_string(),
             "Nano2RelayTree" => return "Nano 2 Relay Tree".to_string(),
             "NoisemakerTree" => return "Syrena alarmowa Tree".to_string(),
@@ -121,7 +131,7 @@ pub fn resolve_periphery_object_type(device_node: Option<&TreeNode>, leaf_node: 
             "32771" => return "Touch Tree".to_string(),
             "32773" => return "Touch Pure Tree".to_string(),
             "32781" => return "Touch Surface Tree".to_string(),
-            "32799" => return "Touch Flex Tree".to_string(),
+            "32799" => return "Touch Pure Flex Tree".to_string(),
             "32796" => return "NFC Code Touch Tree".to_string(),
             "32793" => return "Nano 2 Relay Tree".to_string(),
             "32786" => return "Syrena alarmowa Tree".to_string(),
@@ -154,7 +164,7 @@ pub fn resolve_function_block_object_type(block_type: &str) -> String {
         "LightController2" | "LightControllerV2" | "LightController" => {
             "Sterownik oświetlenia".to_string()
         }
-        "AutoJalousie" | "Jalousie" => "Automatyczna roleta".to_string(),
+        "AutoJalousie" | "Jalousie" => "Automatyczne zacienianie".to_string(),
         "MusicPlayer" | "AudioZone" => "Odtwarzacz audio".to_string(),
         "HeatIRoomController2" | "IRoomControllerV2" | "IRoomController" => {
             "Sterownik pomieszczeniowy".to_string()
@@ -180,41 +190,116 @@ fn get_attr<'a>(attrs: &'a [(String, String)], key: &str) -> Option<&'a str> {
         .map(|(_, v)| v.as_str())
 }
 
-fn is_candidate_function_block_type(block_type: &str) -> bool {
-    matches!(
-        block_type,
-        "LightController2"
-            | "LightControllerV2"
-            | "LightController"
-            | "AutoJalousie"
-            | "Jalousie"
-            | "MusicPlayer"
-            | "AudioZone"
-            | "PresenceLight"
-            | "StairwellLight"
-            | "Switch"
-            | "Pushbutton"
-            | "PushButton"
-            | "Gate"
-            | "CentralGate"
-            | "HeatIRoomController2"
-            | "ClimateController"
-            | "SaunaController"
-            | "PoolController"
-            | "CeilingFan"
-            | "Dehumidifier"
-            | "Wallbox2"
-    )
+fn is_candidate_function_block_for_target(target_block_type: &str, block_type: &str) -> bool {
+    match target_block_type {
+        "Alarm" | "SmokeAlarm" | "FireEmergency" | "WaterCentral" => matches!(
+            block_type,
+            "LightController2"
+                | "LightControllerV2"
+                | "LightController"
+                | "AutoJalousie"
+                | "Jalousie"
+                | "MusicPlayer"
+                | "AudioZone"
+        ),
+        "CentralLightController" => matches!(
+            block_type,
+            "LightController2"
+                | "LightControllerV2"
+                | "LightController"
+                | "PresenceLight"
+                | "StairwellLight"
+                | "Switch"
+        ),
+        "CentralJalousie" => matches!(block_type, "AutoJalousie" | "Jalousie" | "RoofWindowShading"),
+        "CentralGate" => matches!(block_type, "Gate" | "Doorcontroller" | "WindowMonitor"),
+        _ => matches!(
+            block_type,
+            "LightController2"
+                | "LightControllerV2"
+                | "LightController"
+                | "AutoJalousie"
+                | "Jalousie"
+                | "MusicPlayer"
+                | "AudioZone"
+                | "PresenceLight"
+                | "StairwellLight"
+                | "Switch"
+                | "Pushbutton"
+                | "PushButton"
+                | "Gate"
+                | "CentralGate"
+                | "HeatIRoomController2"
+                | "ClimateController"
+                | "SaunaController"
+                | "PoolController"
+                | "CeilingFan"
+                | "Dehumidifier"
+                | "Wallbox2"
+        ),
+    }
 }
 
 fn classify_periphery_leaf_capabilities(control_type: &str) -> (bool, bool) {
     match control_type {
-        "TreeSensor" | "LoxAIRsensor" | "Sensor" | "DigitalInput" | "AnalogInput" | "Online"
+        "TreeSensor" | "LoxAIRsensor" | "Sensor" | "DigitalInput" | "AnalogInput"
         | "VirtualIn" | "VirtualInCmd" => (true, false),
         "TreeActor" | "LoxAIRactor" | "Actor" | "DigitalOutput" | "AnalogOutput"
         | "VirtualOut" | "VirtualOutCmd" => (false, true),
         "Merker" | "Memory" => (true, true),
         _ => (false, false),
+    }
+}
+
+fn classify_periphery_leaf_for_block(
+    target_block_type: &str,
+    parent_dev: Option<&TreeNode>,
+    leaf: &TreeNode,
+) -> (bool, bool) {
+    let sub_type = get_attr(&leaf.raw_attributes, "SubType").unwrap_or("");
+    let enocean_sub_type = get_attr(&leaf.raw_attributes, "EnoceanSubType").unwrap_or("");
+    let parent_tid = parent_dev
+        .and_then(|d| get_attr(&d.raw_attributes, "TId"))
+        .unwrap_or("");
+
+    match target_block_type {
+        "Alarm" => {
+            let can_in = matches!(
+                leaf.control_type.as_str(),
+                "TreeSensor" | "LoxAIRsensor" | "Sensor" | "DigitalInput"
+            ) && parent_tid != "NoisemakerTree"
+                && parent_tid != "FirealarmAir"
+                && matches!(enocean_sub_type, "4" | "67");
+            let can_out = matches!(
+                leaf.control_type.as_str(),
+                "TreeActor" | "LoxAIRactor" | "Actor" | "DigitalOutput"
+            ) && matches!(sub_type, "163" | "168" | "169");
+            (can_in, can_out)
+        }
+        "SmokeAlarm" | "FireEmergency" => {
+            let can_in = matches!(
+                leaf.control_type.as_str(),
+                "TreeSensor" | "LoxAIRsensor" | "Sensor" | "DigitalInput"
+            ) && (parent_tid == "FirealarmAir" || leaf.title.to_lowercase().contains("dym"));
+            let can_out = matches!(
+                leaf.control_type.as_str(),
+                "TreeActor" | "LoxAIRactor" | "Actor" | "DigitalOutput"
+            ) && matches!(sub_type, "163" | "168" | "169");
+            (can_in, can_out)
+        }
+        "WaterCentral" => {
+            let can_in = matches!(
+                leaf.control_type.as_str(),
+                "TreeSensor" | "LoxAIRsensor" | "Sensor" | "DigitalInput"
+            ) && (parent_tid == "WaterSensor" || leaf.title.to_lowercase().contains("wod"));
+            let can_out = matches!(
+                leaf.control_type.as_str(),
+                "TreeActor" | "LoxAIRactor" | "Actor" | "DigitalOutput"
+            ) && matches!(sub_type, "163" | "168" | "169");
+            (can_in, can_out)
+        }
+        "CentralLightController" | "CentralJalousie" | "CentralGate" => (false, false),
+        _ => classify_periphery_leaf_capabilities(&leaf.control_type),
     }
 }
 
@@ -243,7 +328,7 @@ fn collect_periphery_leaves<'a>(
             parent_device
         };
         let (can_in, can_out) = classify_periphery_leaf_capabilities(&node.control_type);
-        if can_in || can_out {
+        if can_in || can_out || node.control_type == "Online" {
             out.push((parent_device, node));
         }
         if !node.children.is_empty() {
@@ -308,7 +393,8 @@ pub fn build_object_config_rows(
                 .pins
                 .iter()
                 .any(|p| hi_source_pin_uuids.contains(p.uuid.as_str()));
-            let wired_from_target = !blk.has_position
+            let wired_from_target = object_uuid_set.is_empty()
+                && !blk.has_position
                 && blk.pins.iter().any(|p| {
                     p.incoming_links
                         .iter()
@@ -363,10 +449,8 @@ pub fn build_object_config_rows(
     collect_periphery_leaves(&project.system_tree, None, &mut leaves);
 
     for (parent_dev, leaf) in leaves {
-        if !seen_target_uuids.insert(leaf.uuid.clone()) {
-            continue;
-        }
-        let (mut can_in, mut can_out) = classify_periphery_leaf_capabilities(&leaf.control_type);
+        let (mut can_in, mut can_out) =
+            classify_periphery_leaf_for_block(&target_block.block_type, parent_dev, leaf);
         let (existing_ref_blocks, is_input, is_output) =
             if let Some((ref_blks, is_in, is_out)) = linked_periphery_map.get(&leaf.uuid) {
                 can_in |= *is_in;
@@ -375,30 +459,31 @@ pub fn build_object_config_rows(
             } else {
                 (Vec::new(), false, false)
             };
+        if !can_in && !can_out && !is_input && !is_output {
+            continue;
+        }
+        if !seen_target_uuids.insert(leaf.uuid.clone()) {
+            continue;
+        }
 
         let room_uuid = leaf
             .room_uuid
             .as_deref()
             .or_else(|| parent_dev.and_then(|d| d.room_uuid.as_deref()));
-        let cat_uuid = leaf
-            .category_uuid
-            .as_deref()
-            .or_else(|| parent_dev.and_then(|d| d.category_uuid.as_deref()));
+        let cat_uuid = if !is_input
+            && !is_output
+            && get_attr(&leaf.raw_attributes, "SubType") == Some("163")
+        {
+            parent_dev.and_then(|d| d.category_uuid.as_deref())
+        } else {
+            leaf.category_uuid
+                .as_deref()
+                .or_else(|| parent_dev.and_then(|d| d.category_uuid.as_deref()))
+        };
         let (room_name, room_type) = resolve_room(room_uuid);
         let category_name = resolve_category(cat_uuid);
 
-        let device_name = if let Some(dev) = parent_dev {
-            let inst = get_attr(&dev.raw_attributes, "Installation")
-                .unwrap_or("")
-                .trim();
-            if inst.is_empty() {
-                dev.title.clone()
-            } else {
-                format!("{} {}", dev.title, inst)
-            }
-        } else {
-            String::new()
-        };
+        let device_name = parent_dev.map(|d| d.title.clone()).unwrap_or_default();
 
         let display_name = get_attr(&leaf.raw_attributes, "DisplayTitle")
             .or_else(|| get_attr(&leaf.raw_attributes, "Desc"))
@@ -434,7 +519,12 @@ pub fn build_object_config_rows(
                 continue;
             }
             let is_selected = object_uuid_set.contains(blk.uuid.as_str());
-            if !is_selected && !is_candidate_function_block_type(&blk.block_type) {
+            if !is_selected
+                && !is_candidate_function_block_for_target(
+                    &target_block.block_type,
+                    &blk.block_type,
+                )
+            {
                 continue;
             }
             if !seen_target_uuids.insert(blk.uuid.clone()) {
@@ -477,9 +567,8 @@ pub fn build_object_config_rows(
     }
 
     // Sort matching Loxone Config's default ordering:
-    // 1. Selected Inputs first (ordered by Name ascending, Room descending like Wiatrołap -> Gabinet)
-    // 2. Selected Outputs next (ordered by Category/Object Type, then Room descending)
-    // 3. Unselected rows (ordered by Room, Name)
+    // 1. Selected Inputs first (0), Selected Outputs next (1), Unselected rows last (2)
+    // 2. Within each group: Name descending, then Device descending, then Room descending
     rows.sort_by(|a, b| {
         let rank = |r: &ObjectConfigRow| -> u8 {
             if r.is_input {
@@ -492,9 +581,9 @@ pub fn build_object_config_rows(
         };
         rank(a)
             .cmp(&rank(b))
-            .then_with(|| a.object_type.cmp(&b.object_type))
-            .then_with(|| b.room_name.cmp(&a.room_name))
-            .then_with(|| a.name.cmp(&b.name))
+            .then_with(|| b.name.to_lowercase().cmp(&a.name.to_lowercase()))
+            .then_with(|| b.device_name.to_lowercase().cmp(&a.device_name.to_lowercase()))
+            .then_with(|| b.room_name.to_lowercase().cmp(&a.room_name.to_lowercase()))
     });
 
     rows
@@ -803,4 +892,59 @@ mod tests {
             initial_output_count
         );
     }
+
+    #[test]
+    fn test_burglar_alarm_unselected_rows_match_bug01_exact_order() {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("Klimczaki.Loxone");
+        let proj = load_loxone_file(&path).expect("parse Klimczaki.Loxone");
+
+        let alarm_page_uuid = "19eb19ad-02ad-eae0-ffff51535bcccc04";
+        let alarm_block_uuid = "19eb19a9-024d-3a10-ffff51535bcccc04";
+
+        let rows = build_object_config_rows(&proj, alarm_page_uuid, alarm_block_uuid);
+        let unselected: Vec<&ObjectConfigRow> = rows
+            .iter()
+            .filter(|r| !r.is_input && !r.is_output)
+            .collect();
+
+        // Must have the exact 13 unselected rows from bug01.png in exact order
+        let actual: Vec<(&str, &str, &str, &str, &str, &str, &str)> = unselected
+            .iter()
+            .map(|r| {
+                (
+                    r.name.as_str(),
+                    r.display_name.as_str(),
+                    r.device_name.as_str(),
+                    r.room_name.as_str(),
+                    r.room_type.as_str(),
+                    r.category_name.as_str(),
+                    r.object_type.as_str(),
+                )
+            })
+            .collect();
+
+        let expected = vec![
+            ("Taras", "", "", "Taras", "Pobytowe", "Oświetlenie", "Sterownik oświetlenia"),
+            ("Strych", "", "", "Strych", "Pobytowe", "Oświetlenie", "Sterownik oświetlenia"),
+            ("Roleta mala", "", "", "Gabinet", "Pobytowe", "Zacienianie", "Automatyczne zacienianie"),
+            ("Roleta duża", "", "", "Gabinet", "Pobytowe", "Zacienianie", "Automatyczne zacienianie"),
+            ("Oświetlenie przed domem", "Na zewnątrz", "", "Na zewnątrz", "Inne", "Oświetlenie", "Sterownik oświetlenia"),
+            ("lewa strona", "", "", "Salon + jadalnia", "Pobytowe", "Zacienianie", "Automatyczne zacienianie"),
+            ("Akustyczny sygnał kliknięcia", "", "Touch Tree", "Przedpokój_schody", "Komunikacyjne", "", "Touch Tree"),
+            ("Akustyczny sygnał kliknięcia", "", "Touch Surface Tree", "Łazienka (piętro)", "Pobytowe", "", "Touch Surface Tree"),
+            ("Akustyczny sygnał kliknięcia", "", "Touch Pure Tree", "Wiatrołap", "Komunikacyjne", "", "Touch Pure Tree"),
+            ("Akustyczny sygnał kliknięcia", "", "Touch Pure Tree", "Pokój Agatki", "Sypialniane", "", "Touch Pure Tree"),
+            ("Akustyczny sygnał kliknięcia", "", "sypialnia: Drzwi", "Sypialnia", "Sypialniane", "", "Touch Pure Tree"),
+            ("Akustyczny sygnał kliknięcia", "", "Schody", "Salon + jadalnia", "Pobytowe", "", "Touch Pure Flex Tree"),
+            ("Akustyczny sygnał kliknięcia", "", "Drzwi", "Gabinet", "Pobytowe", "", "Touch Tree"),
+        ];
+
+        assert_eq!(actual, expected);
+    }
 }
+

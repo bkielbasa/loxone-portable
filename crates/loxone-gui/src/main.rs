@@ -1,15 +1,21 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod advanced_blocks_modal;
 mod app;
 mod canvas;
 mod command_palette;
+mod efm_modal;
 pub mod i18n;
 mod icons;
 mod insert_modal;
 mod inspector;
+mod light_controller_modal;
 mod miniserver_modal;
 mod object_config_modal;
+mod periphery_modal;
 mod project_launcher;
+mod room_controller_modal;
+mod state_alarm_modal;
 mod theme;
 mod top_bar;
 mod tree_panel;

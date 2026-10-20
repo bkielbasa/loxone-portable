@@ -153,6 +153,13 @@ impl PageBlock {
     pub fn is_note(&self) -> bool {
         matches!(self.block_type.as_str(), "Note" | "Text")
     }
+
+    pub fn attr(&self, name: &str) -> Option<&str> {
+        self.raw_attributes
+            .iter()
+            .find(|(k, _)| k == name)
+            .map(|(_, v)| v.as_str())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -182,6 +189,15 @@ pub struct TreeNode {
     pub raw_attributes: Vec<(String, String)>,
     pub extra_children: Vec<RawNode>,
     pub children: Vec<TreeNode>,
+}
+
+impl TreeNode {
+    pub fn attr(&self, name: &str) -> Option<&str> {
+        self.raw_attributes
+            .iter()
+            .find(|(k, _)| k == name)
+            .map(|(_, v)| v.as_str())
+    }
 }
 
 #[derive(Debug, Clone, Default)]

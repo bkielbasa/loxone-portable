@@ -9,7 +9,10 @@ use loxone_core::writer::ProjectEdit;
 use loxone_core::xref::{CrossRefKind, ObjectLocation};
 
 use crate::icons::{icon_for_block_type, icon_for_tree_node, ui_icon, LoxoneIcon};
-use crate::theme::{ACCENT_BLUE, BORDER_SUBTLE, CARD_BG, TEXT_MUTED, TEXT_PRIMARY};
+use crate::theme::{
+    ACCENT_BLUE, BORDER_SUBTLE, CARD_BG, ELEVATED_BG, LOXONE_GREEN, PANEL_BG, TEXT_MUTED,
+    TEXT_PRIMARY,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InspectorAction {
@@ -31,7 +34,20 @@ pub struct InspectorOutput {
     pub edits: Vec<ProjectEdit>,
     pub delete_uuid: Option<String>,
     pub place_on_page_uuid: Option<String>,
+    pub identify_device_uuid: Option<String>,
     pub live_commands: Vec<LiveCommand>,
+}
+
+fn render_inspector_section_card(ui: &mut Ui, add_contents: impl FnOnce(&mut Ui)) {
+    egui::Frame::new()
+        .fill(CARD_BG)
+        .stroke(Stroke::new(1.0_f32, BORDER_SUBTLE))
+        .corner_radius(egui::CornerRadius::same(6))
+        .inner_margin(egui::Margin::same(10))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            add_contents(ui);
+        });
 }
 
 pub fn render_right_inspector(
@@ -43,24 +59,97 @@ pub fn render_right_inspector(
     use crate::i18n::tr;
     let mut output = InspectorOutput::default();
 
-    ui.add_space(6.0);
-    ui.label(RichText::new(tr("INSPECTOR")).size(11.0).color(TEXT_MUTED).strong());
+    let resolved_summary = selected_uuid.and_then(|u| project.xref.objects_by_uuid.get(u));
+
     ui.add_space(4.0);
-    ui.separator();
+    egui::Frame::new()
+        .fill(CARD_BG)
+        .stroke(Stroke::new(1.0_f32, BORDER_SUBTLE))
+        .corner_radius(egui::CornerRadius::same(6))
+        .inner_margin(egui::Margin::symmetric(10, 7))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal(|ui| {
+                let (dot_rect, _) =
+                    ui.allocate_exact_size(egui::vec2(7.0, 7.0), egui::Sense::hover());
+                ui.painter()
+                    .circle_filled(dot_rect.center(), 3.2, LOXONE_GREEN);
+                ui.label(
+                    RichText::new(tr("INSPECTOR"))
+                        .size(11.0)
+                        .color(egui::Color32::WHITE)
+                        .strong(),
+                );
+                if let Some(summary) = resolved_summary {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        egui::Frame::new()
+                            .fill(ELEVATED_BG)
+                            .stroke(Stroke::new(1.0_f32, BORDER_SUBTLE))
+                            .corner_radius(egui::CornerRadius::same(4))
+                            .inner_margin(egui::Margin::symmetric(6, 2))
+                            .show(ui, |ui| {
+                                ui.label(
+                                    RichText::new(format!("[{}]", summary.object_type))
+                                        .monospace()
+                                        .size(10.0)
+                                        .color(LOXONE_GREEN)
+                                        .strong(),
+                                );
+                            });
+                    });
+                }
+            });
+        });
+    ui.add_space(8.0);
 
     let Some(uuid) = selected_uuid else {
-        ui.add_space(24.0);
-        ui.label(
-            RichText::new(tr(
-                "Select any function block, peripheral, or page item to inspect and edit properties.",
-            ))
-            .color(TEXT_MUTED),
-        );
+        egui::Frame::new()
+            .fill(CARD_BG)
+            .stroke(Stroke::new(1.0_f32, BORDER_SUBTLE))
+            .corner_radius(egui::CornerRadius::same(6))
+            .inner_margin(egui::Margin::same(14))
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.vertical_centered(|ui| {
+                    ui.add_space(6.0);
+                    egui::Frame::new()
+                        .fill(PANEL_BG)
+                        .stroke(Stroke::new(1.0_f32, BORDER_SUBTLE))
+                        .corner_radius(egui::CornerRadius::same(6))
+                        .inner_margin(egui::Margin::symmetric(10, 6))
+                        .show(ui, |ui| {
+                            ui.label(
+                                RichText::new("✦")
+                                    .size(14.0)
+                                    .color(LOXONE_GREEN)
+                                    .strong(),
+                            );
+                        });
+                    ui.add_space(8.0);
+                    ui.label(
+                        RichText::new(tr("No Item Selected"))
+                            .size(12.0)
+                            .color(egui::Color32::WHITE)
+                            .strong(),
+                    );
+                    ui.add_space(4.0);
+                    ui.label(
+                        RichText::new(tr(
+                            "Select any function block, peripheral, or page item to inspect and edit properties.",
+                        ))
+                        .size(11.0)
+                        .color(TEXT_MUTED),
+                    );
+                    ui.add_space(6.0);
+                });
+            });
         return output;
     };
 
-    let Some(summary) = project.xref.objects_by_uuid.get(uuid) else {
-        ui.label(RichText::new(format!("Object {} not found", uuid)).color(TEXT_MUTED));
+    let Some(summary) = resolved_summary else {
+        render_inspector_section_card(ui, |ui| {
+            ui.label(RichText::new(format!("Object {} not found", uuid)).color(TEXT_MUTED));
+        });
         return output;
     };
 
@@ -109,14 +198,16 @@ pub fn render_right_inspector(
             }
             ObjectLocation::Page { page_index } => {
                 if let Some(page) = project.pages.get(*page_index) {
-                    render_singleline_attr_row(
-                        ui,
-                        &page.uuid,
-                        "Title",
-                        "Page Title",
-                        &page.title,
-                        &mut output.edits,
-                    );
+                    render_inspector_section_card(ui, |ui| {
+                        render_singleline_attr_row(
+                            ui,
+                            &page.uuid,
+                            "Title",
+                            "Page Title",
+                            &page.title,
+                            &mut output.edits,
+                        );
+                    });
                 }
             }
             ObjectLocation::DocumentRoot => {}
@@ -297,7 +388,7 @@ fn render_kb_header_card(
     egui::Frame::new()
         .fill(CARD_BG)
         .stroke(Stroke::new(1.0_f32, BORDER_SUBTLE))
-        .corner_radius(6)
+        .corner_radius(egui::CornerRadius::same(6))
         .inner_margin(egui::Margin::same(10))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
@@ -309,29 +400,88 @@ fn render_kb_header_card(
             let icon = resolve_summary_icon(project, summary);
             ui.horizontal(|ui| {
                 ui_icon(ui, icon, 18.0);
-                ui.label(RichText::new(title).size(14.5).color(TEXT_PRIMARY).strong());
-            });
-
-            ui.horizontal_wrapped(|ui| {
                 ui.label(
-                    RichText::new(&summary.object_type)
-                        .monospace()
-                        .size(11.0)
-                        .color(ACCENT_BLUE)
+                    RichText::new(title)
+                        .size(14.5)
+                        .color(egui::Color32::WHITE)
                         .strong(),
                 );
+            });
+
+            ui.add_space(4.0);
+            ui.horizontal_wrapped(|ui| {
                 if let Some(s) = schema {
+                    egui::Frame::new()
+                        .fill(LOXONE_GREEN.gamma_multiply(0.18))
+                        .stroke(Stroke::new(1.0_f32, LOXONE_GREEN.gamma_multiply(0.55)))
+                        .corner_radius(egui::CornerRadius::same(4))
+                        .inner_margin(egui::Margin::symmetric(6, 2))
+                        .show(ui, |ui| {
+                            ui.label(
+                                RichText::new(category_group_label(s.category_group))
+                                    .size(10.0)
+                                    .color(LOXONE_GREEN)
+                                    .strong(),
+                            );
+                        });
+                }
+                egui::Frame::new()
+                    .fill(ELEVATED_BG)
+                    .stroke(Stroke::new(1.0_f32, BORDER_SUBTLE))
+                    .corner_radius(egui::CornerRadius::same(4))
+                    .inner_margin(egui::Margin::symmetric(6, 2))
+                    .show(ui, |ui| {
+                        ui.label(
+                            RichText::new(format!("[{}]", summary.object_type))
+                                .monospace()
+                                .size(10.5)
+                                .color(ACCENT_BLUE)
+                                .strong(),
+                        );
+                    });
+                if schema.is_some() {
                     ui.label(
-                        RichText::new(format!(
-                            "• {} ({})",
-                            block_display_name(&summary.object_type),
-                            category_group_label(s.category_group)
-                        ))
-                        .size(11.0)
-                        .color(TEXT_MUTED),
+                        RichText::new(block_display_name(&summary.object_type))
+                            .size(11.0)
+                            .color(TEXT_MUTED),
                     );
                 }
             });
+
+            if let ObjectLocation::PageBlock {
+                page_index,
+                block_index,
+                ..
+            } = &summary.location
+            {
+                if let Some(block) = project
+                    .pages
+                    .get(*page_index)
+                    .and_then(|p| p.blocks.get(*block_index))
+                {
+                    if crate::canvas::block_has_advanced_modal(block) {
+                        ui.add_space(6.0);
+                        let cfg_btn = egui::Button::new(
+                            RichText::new(tr("⚙ Open Block Configuration"))
+                                .size(12.0)
+                                .color(egui::Color32::from_rgb(0x0B, 0x16, 0x08))
+                                .strong(),
+                        )
+                        .fill(LOXONE_GREEN)
+                        .corner_radius(egui::CornerRadius::same(5));
+                        if ui
+                            .add_sized([ui.available_width(), 28.0], cfg_btn)
+                            .on_hover_text(tr(
+                                "Open the full configuration dialog for this block (double-click on canvas)",
+                            ))
+                            .clicked()
+                        {
+                            output.nav_action =
+                                Some(InspectorAction::OpenObjectConfig(block.uuid.clone()));
+                        }
+                    }
+                }
+            }
 
             if let Some(s) = schema {
                 ui.add_space(4.0);
@@ -387,6 +537,18 @@ fn render_kb_header_card(
                     }
                 }
                 ObjectLocation::TreeNode { .. } => {
+                    if loxone_core::resolve_device_identify_target(project, &summary.uuid).is_some()
+                        && ui
+                            .small_button(
+                                RichText::new(tr("🔦 Identify Device")).color(LOXONE_GREEN),
+                            )
+                            .on_hover_text(tr(
+                                "Flash hardware status LED and acoustic signal on this device",
+                            ))
+                            .clicked()
+                    {
+                        output.identify_device_uuid = Some(summary.uuid.clone());
+                    }
                     if crate::insert_modal::reference_kind_for_tree_node(&summary.object_type)
                         .is_some()
                         && ui
@@ -440,43 +602,45 @@ fn render_used_on_pages_section(
     if usages.is_empty() {
         return;
     }
-    egui::CollapsingHeader::new(
-        RichText::new(format!("{} ({})", tr("USED ON PAGES"), usages.len()))
-            .size(11.0)
-            .color(TEXT_MUTED)
-            .strong(),
-    )
-    .default_open(true)
-    .show(ui, |ui| {
-        for usage in usages {
-            let kind_desc = match &usage.kind {
-                CrossRefKind::DirectRef => "Direct Ref".to_string(),
-                CrossRefKind::ExtraDeviceRef => "Device Link".to_string(),
-                CrossRefKind::WireFromPin {
-                    source_pin_key,
-                    target_pin_key,
-                } => format!("Wire {} → {}", source_pin_key, target_pin_key),
-            };
-            let label = format!(
-                "↗ {} • {} ({})",
-                usage.page_title,
-                if usage.block_title.is_empty() {
-                    &usage.block_type
-                } else {
-                    &usage.block_title
-                },
-                kind_desc
-            );
-            if ui
-                .button(RichText::new(label).size(11.0).color(ACCENT_BLUE))
-                .clicked()
-            {
-                output.nav_action = Some(InspectorAction::NavigateToBlock {
-                    page_index: usage.page_index,
-                    block_uuid: usage.block_uuid.clone(),
-                });
+    render_inspector_section_card(ui, |ui| {
+        egui::CollapsingHeader::new(
+            RichText::new(format!("{} ({})", tr("USED ON PAGES"), usages.len()))
+                .size(11.0)
+                .color(egui::Color32::WHITE)
+                .strong(),
+        )
+        .default_open(true)
+        .show(ui, |ui| {
+            for usage in usages {
+                let kind_desc = match &usage.kind {
+                    CrossRefKind::DirectRef => "Direct Ref".to_string(),
+                    CrossRefKind::ExtraDeviceRef => "Device Link".to_string(),
+                    CrossRefKind::WireFromPin {
+                        source_pin_key,
+                        target_pin_key,
+                    } => format!("Wire {} → {}", source_pin_key, target_pin_key),
+                };
+                let label = format!(
+                    "↗ {} • {} ({})",
+                    usage.page_title,
+                    if usage.block_title.is_empty() {
+                        &usage.block_type
+                    } else {
+                        &usage.block_title
+                    },
+                    kind_desc
+                );
+                if ui
+                    .button(RichText::new(label).size(11.0).color(ACCENT_BLUE))
+                    .clicked()
+                {
+                    output.nav_action = Some(InspectorAction::NavigateToBlock {
+                        page_index: usage.page_index,
+                        block_uuid: usage.block_uuid.clone(),
+                    });
+                }
             }
-        }
+        });
     });
 }
 
@@ -500,191 +664,193 @@ fn render_general_and_visu_section(
     edits: &mut Vec<ProjectEdit>,
 ) {
     use crate::i18n::tr;
-    egui::CollapsingHeader::new(
-        RichText::new(tr("GENERAL & VISUALIZATION"))
-            .size(11.0)
-            .color(TEXT_MUTED)
-            .strong(),
-    )
-    .default_open(true)
-    .show(ui, |ui| {
-        render_singleline_attr_row(ui, control_uuid, "Title", "Title", title, edits);
-        let desc = get_raw_attr(raw_attributes, "Desc").unwrap_or("");
-        render_singleline_attr_row(ui, control_uuid, "Desc", "Description", desc, edits);
+    render_inspector_section_card(ui, |ui| {
+        egui::CollapsingHeader::new(
+            RichText::new(tr("GENERAL & VISUALIZATION"))
+                .size(11.0)
+                .color(egui::Color32::WHITE)
+                .strong(),
+        )
+        .default_open(true)
+        .show(ui, |ui| {
+            render_singleline_attr_row(ui, control_uuid, "Title", "Title", title, edits);
+            let desc = get_raw_attr(raw_attributes, "Desc").unwrap_or("");
+            render_singleline_attr_row(ui, control_uuid, "Desc", "Description", desc, edits);
 
-        if is_note_or_text {
-            let txt = get_raw_attr(raw_attributes, "Text").unwrap_or("");
-            ui.label(
-                RichText::new(tr("Note / Text Content"))
-                    .size(11.0)
-                    .color(TEXT_MUTED),
-            );
-            let mut val = txt.to_string();
-            if ui
-                .add(TextEdit::multiline(&mut val).desired_rows(3).desired_width(f32::INFINITY))
-                .changed()
-            {
-                edits.push(ProjectEdit::SetControlAttr {
-                    control_uuid: control_uuid.to_string(),
-                    attr_name: "Text".to_string(),
-                    value: Some(val),
-                });
+            if is_note_or_text {
+                let txt = get_raw_attr(raw_attributes, "Text").unwrap_or("");
+                ui.label(
+                    RichText::new(tr("Note / Text Content"))
+                        .size(11.0)
+                        .color(TEXT_MUTED),
+                );
+                let mut val = txt.to_string();
+                if ui
+                    .add(TextEdit::multiline(&mut val).desired_rows(3).desired_width(f32::INFINITY))
+                    .changed()
+                {
+                    edits.push(ProjectEdit::SetControlAttr {
+                        control_uuid: control_uuid.to_string(),
+                        attr_name: "Text".to_string(),
+                        value: Some(val),
+                    });
+                }
             }
-        }
 
-        // Room selector (<IoData Pr="..."/>)
-        let current_room_label = room_uuid
-            .and_then(|u| project.places.get(u))
-            .map(|p| p.title.as_str())
-            .unwrap_or(tr("— Unassigned —"));
-        ui.horizontal(|ui| {
-            ui.label(RichText::new(tr("Room:")).size(11.0).color(TEXT_MUTED));
-            ComboBox::from_id_salt((control_uuid, "room_combo"))
-                .selected_text(current_room_label)
-                .show_ui(ui, |ui| {
-                    if ui
-                        .selectable_label(room_uuid.is_none(), tr("— Unassigned —"))
-                        .clicked()
-                    {
-                        edits.push(ProjectEdit::SetChildTagAttr {
-                            control_uuid: control_uuid.to_string(),
-                            child_tag: "IoData".to_string(),
-                            attr_name: "Pr".to_string(),
-                            value: None,
-                        });
-                    }
-                    for (p_uuid, place) in &project.places {
+            // Room selector (<IoData Pr="..."/>)
+            let current_room_label = room_uuid
+                .and_then(|u| project.places.get(u))
+                .map(|p| p.title.as_str())
+                .unwrap_or(tr("— Unassigned —"));
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(tr("Room:")).size(11.0).color(TEXT_MUTED));
+                ComboBox::from_id_salt((control_uuid, "room_combo"))
+                    .selected_text(current_room_label)
+                    .show_ui(ui, |ui| {
                         if ui
-                            .selectable_label(room_uuid == Some(p_uuid.as_str()), &place.title)
+                            .selectable_label(room_uuid.is_none(), tr("— Unassigned —"))
                             .clicked()
                         {
                             edits.push(ProjectEdit::SetChildTagAttr {
                                 control_uuid: control_uuid.to_string(),
                                 child_tag: "IoData".to_string(),
                                 attr_name: "Pr".to_string(),
-                                value: Some(p_uuid.clone()),
+                                value: None,
                             });
                         }
-                    }
-                });
-        });
+                        for (p_uuid, place) in &project.places {
+                            if ui
+                                .selectable_label(room_uuid == Some(p_uuid.as_str()), &place.title)
+                                .clicked()
+                            {
+                                edits.push(ProjectEdit::SetChildTagAttr {
+                                    control_uuid: control_uuid.to_string(),
+                                    child_tag: "IoData".to_string(),
+                                    attr_name: "Pr".to_string(),
+                                    value: Some(p_uuid.clone()),
+                                });
+                            }
+                        }
+                    });
+            });
 
-        // Category selector (<IoData Cr="..."/>)
-        let current_cat_label = category_uuid
-            .and_then(|u| project.categories.get(u))
-            .map(|c| c.title.as_str())
-            .unwrap_or(tr("— Unassigned —"));
-        ui.horizontal(|ui| {
-            ui.label(RichText::new(tr("Category:")).size(11.0).color(TEXT_MUTED));
-            ComboBox::from_id_salt((control_uuid, "cat_combo"))
-                .selected_text(current_cat_label)
-                .show_ui(ui, |ui| {
-                    if ui
-                        .selectable_label(category_uuid.is_none(), tr("— Unassigned —"))
-                        .clicked()
-                    {
-                        edits.push(ProjectEdit::SetChildTagAttr {
-                            control_uuid: control_uuid.to_string(),
-                            child_tag: "IoData".to_string(),
-                            attr_name: "Cr".to_string(),
-                            value: None,
-                        });
-                    }
-                    for (c_uuid, cat) in &project.categories {
+            // Category selector (<IoData Cr="..."/>)
+            let current_cat_label = category_uuid
+                .and_then(|u| project.categories.get(u))
+                .map(|c| c.title.as_str())
+                .unwrap_or(tr("— Unassigned —"));
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(tr("Category:")).size(11.0).color(TEXT_MUTED));
+                ComboBox::from_id_salt((control_uuid, "cat_combo"))
+                    .selected_text(current_cat_label)
+                    .show_ui(ui, |ui| {
                         if ui
-                            .selectable_label(category_uuid == Some(c_uuid.as_str()), &cat.title)
+                            .selectable_label(category_uuid.is_none(), tr("— Unassigned —"))
                             .clicked()
                         {
                             edits.push(ProjectEdit::SetChildTagAttr {
                                 control_uuid: control_uuid.to_string(),
                                 child_tag: "IoData".to_string(),
                                 attr_name: "Cr".to_string(),
-                                value: Some(c_uuid.clone()),
+                                value: None,
                             });
                         }
-                    }
-                });
+                        for (c_uuid, cat) in &project.categories {
+                            if ui
+                                .selectable_label(category_uuid == Some(c_uuid.as_str()), &cat.title)
+                                .clicked()
+                            {
+                                edits.push(ProjectEdit::SetChildTagAttr {
+                                    control_uuid: control_uuid.to_string(),
+                                    child_tag: "IoData".to_string(),
+                                    attr_name: "Cr".to_string(),
+                                    value: Some(c_uuid.clone()),
+                                });
+                            }
+                        }
+                    });
+            });
+
+            // Visualization checkboxes & color picker
+            ui.horizontal_wrapped(|ui| {
+                let mut visu = matches!(
+                    get_raw_attr(raw_attributes, "Visu"),
+                    Some("true" | "1")
+                );
+                if ui.checkbox(&mut visu, tr("Use in UI (Visu)")).changed() {
+                    edits.push(ProjectEdit::SetControlAttr {
+                        control_uuid: control_uuid.to_string(),
+                        attr_name: "Visu".to_string(),
+                        value: if visu { Some("true".to_string()) } else { None },
+                    });
+                }
+
+                let mut fav = matches!(
+                    get_raw_attr(raw_attributes, "UseInFav"),
+                    Some("true" | "1")
+                );
+                if ui.checkbox(&mut fav, tr("Favorite")).changed() {
+                    edits.push(ProjectEdit::SetControlAttr {
+                        control_uuid: control_uuid.to_string(),
+                        attr_name: "UseInFav".to_string(),
+                        value: if fav { Some("true".to_string()) } else { None },
+                    });
+                }
+            });
+
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(tr("Color (Cl):")).size(11.0).color(TEXT_MUTED));
+                let mut rgb = get_raw_attr(raw_attributes, "Cl")
+                    .and_then(parse_rgb_color)
+                    .unwrap_or([0x5E, 0x81, 0xFF]);
+                if ui.color_edit_button_srgb(&mut rgb).changed() {
+                    edits.push(ProjectEdit::SetControlAttr {
+                        control_uuid: control_uuid.to_string(),
+                        attr_name: "Cl".to_string(),
+                        value: Some(format!("{},{},{}", rgb[0], rgb[1], rgb[2])),
+                    });
+                }
+
+                ui.label(RichText::new(tr("Rating:")).size(11.0).color(TEXT_MUTED));
+                let mut rating: i32 = get_raw_attr(raw_attributes, "Rating")
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(0);
+                if ui.add(DragValue::new(&mut rating).range(0..=5)).changed() {
+                    edits.push(ProjectEdit::SetControlAttr {
+                        control_uuid: control_uuid.to_string(),
+                        attr_name: "Rating".to_string(),
+                        value: if rating > 0 {
+                            Some(rating.to_string())
+                        } else {
+                            None
+                        },
+                    });
+                }
+            });
+
+            if let Some(disp) = extra_children.iter().find(|c| c.tag == "Display") {
+                let unit = disp.attr("Unit").unwrap_or("");
+                let format = disp.attr("Format").unwrap_or("");
+                render_child_tag_attr_row(
+                    ui,
+                    control_uuid,
+                    "Display",
+                    "Unit",
+                    "Display Unit",
+                    unit,
+                    edits,
+                );
+                render_child_tag_attr_row(
+                    ui,
+                    control_uuid,
+                    "Display",
+                    "Format",
+                    "Display Format",
+                    format,
+                    edits,
+                );
+            }
         });
-
-        // Visualization checkboxes & color picker
-        ui.horizontal_wrapped(|ui| {
-            let mut visu = matches!(
-                get_raw_attr(raw_attributes, "Visu"),
-                Some("true" | "1")
-            );
-            if ui.checkbox(&mut visu, tr("Use in UI (Visu)")).changed() {
-                edits.push(ProjectEdit::SetControlAttr {
-                    control_uuid: control_uuid.to_string(),
-                    attr_name: "Visu".to_string(),
-                    value: if visu { Some("true".to_string()) } else { None },
-                });
-            }
-
-            let mut fav = matches!(
-                get_raw_attr(raw_attributes, "UseInFav"),
-                Some("true" | "1")
-            );
-            if ui.checkbox(&mut fav, tr("Favorite")).changed() {
-                edits.push(ProjectEdit::SetControlAttr {
-                    control_uuid: control_uuid.to_string(),
-                    attr_name: "UseInFav".to_string(),
-                    value: if fav { Some("true".to_string()) } else { None },
-                });
-            }
-        });
-
-        ui.horizontal(|ui| {
-            ui.label(RichText::new(tr("Color (Cl):")).size(11.0).color(TEXT_MUTED));
-            let mut rgb = get_raw_attr(raw_attributes, "Cl")
-                .and_then(parse_rgb_color)
-                .unwrap_or([0x5E, 0x81, 0xFF]);
-            if ui.color_edit_button_srgb(&mut rgb).changed() {
-                edits.push(ProjectEdit::SetControlAttr {
-                    control_uuid: control_uuid.to_string(),
-                    attr_name: "Cl".to_string(),
-                    value: Some(format!("{},{},{}", rgb[0], rgb[1], rgb[2])),
-                });
-            }
-
-            ui.label(RichText::new(tr("Rating:")).size(11.0).color(TEXT_MUTED));
-            let mut rating: i32 = get_raw_attr(raw_attributes, "Rating")
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(0);
-            if ui.add(DragValue::new(&mut rating).range(0..=5)).changed() {
-                edits.push(ProjectEdit::SetControlAttr {
-                    control_uuid: control_uuid.to_string(),
-                    attr_name: "Rating".to_string(),
-                    value: if rating > 0 {
-                        Some(rating.to_string())
-                    } else {
-                        None
-                    },
-                });
-            }
-        });
-
-        if let Some(disp) = extra_children.iter().find(|c| c.tag == "Display") {
-            let unit = disp.attr("Unit").unwrap_or("");
-            let format = disp.attr("Format").unwrap_or("");
-            render_child_tag_attr_row(
-                ui,
-                control_uuid,
-                "Display",
-                "Unit",
-                "Display Unit",
-                unit,
-                edits,
-            );
-            render_child_tag_attr_row(
-                ui,
-                control_uuid,
-                "Display",
-                "Format",
-                "Display Format",
-                format,
-                edits,
-            );
-        }
     });
 }
 
@@ -722,6 +888,90 @@ fn render_page_block_inspector(
                 ),
             )
             .on_hover_text(hover_text)
+            .clicked()
+        {
+            output.nav_action = Some(InspectorAction::OpenObjectConfig(block.uuid.clone()));
+        }
+        ui.add_space(6.0);
+    } else if loxone_core::EfmConfig::is_efm_block(&block.block_type) {
+        if ui
+            .add_sized(
+                [ui.available_width(), 28.0],
+                egui::Button::new(
+                    RichText::new(crate::i18n::tr("⚙ Energy Flow Monitor Configuration…"))
+                        .size(12.0)
+                        .color(egui::Color32::from_rgb(0x69, 0xC8, 0x32))
+                        .strong(),
+                ),
+            )
+            .clicked()
+        {
+            output.nav_action = Some(InspectorAction::OpenObjectConfig(block.uuid.clone()));
+        }
+        ui.add_space(6.0);
+    } else if loxone_core::LightControllerConfig::is_light_controller_block(&block.block_type) {
+        if ui
+            .add_sized(
+                [ui.available_width(), 28.0],
+                egui::Button::new(
+                    RichText::new(crate::i18n::tr(
+                        "💡 Light Controller Configuration (Moods, Circuits, HCL)…",
+                    ))
+                    .size(12.0)
+                    .color(egui::Color32::from_rgb(0x69, 0xC8, 0x32))
+                    .strong(),
+                ),
+            )
+            .clicked()
+        {
+            output.nav_action = Some(InspectorAction::OpenObjectConfig(block.uuid.clone()));
+        }
+        ui.add_space(6.0);
+    } else if loxone_core::supports_room_controller_config(block) {
+        if ui
+            .add_sized(
+                [ui.available_width(), 28.0],
+                egui::Button::new(
+                    RichText::new(crate::i18n::tr(
+                        "🌡 Room Controller Configuration & Schedule…",
+                    ))
+                    .size(12.0)
+                    .color(egui::Color32::from_rgb(0x69, 0xC8, 0x32))
+                    .strong(),
+                ),
+            )
+            .clicked()
+        {
+            output.nav_action = Some(InspectorAction::OpenObjectConfig(block.uuid.clone()));
+        }
+        ui.add_space(6.0);
+    } else if loxone_core::StateBlockConfig::is_state_block(&block.block_type) {
+        if ui
+            .add_sized(
+                [ui.available_width(), 28.0],
+                egui::Button::new(
+                    RichText::new("📊 Konfiguracja warunków bloku Status…")
+                        .size(12.0)
+                        .color(egui::Color32::from_rgb(0x69, 0xC8, 0x32))
+                        .strong(),
+                ),
+            )
+            .clicked()
+        {
+            output.nav_action = Some(InspectorAction::OpenObjectConfig(block.uuid.clone()));
+        }
+        ui.add_space(6.0);
+    } else if loxone_core::AlarmClockConfig::is_alarm_clock_block(&block.block_type) {
+        if ui
+            .add_sized(
+                [ui.available_width(), 28.0],
+                egui::Button::new(
+                    RichText::new("⏰ Konfiguracja Budzika…")
+                        .size(12.0)
+                        .color(egui::Color32::from_rgb(0x69, 0xC8, 0x32))
+                        .strong(),
+                ),
+            )
             .clicked()
         {
             output.nav_action = Some(InspectorAction::OpenObjectConfig(block.uuid.clone()));
@@ -789,133 +1039,142 @@ fn render_specialized_block_editor(
 ) {
     match block.block_type.as_str() {
         "LightControllerV2" | "LightController2" | "LightController" => {
-            egui::CollapsingHeader::new(
-                RichText::new("💡 LIGHTING SCENES & MOOD EDITOR")
-                    .size(11.0)
-                    .color(ACCENT_BLUE)
-                    .strong(),
-            )
-            .default_open(true)
-            .show(ui, |ui| {
-                for (attr_key, label) in [
-                    ("DefMood", "Default Mood ID"),
-                    ("Tfade", "Fade Time (s)"),
-                    ("MoveTime", "Presence Timeout (s)"),
-                ] {
-                    let cur = get_raw_attr(&block.raw_attributes, attr_key).unwrap_or("");
-                    render_singleline_attr_row(ui, &block.uuid, attr_key, label, cur, edits);
-                }
-                ui.add_space(4.0);
-                ui.label(
-                    RichText::new("Mood / Scene Descriptions (<LightsceneDescription>):")
-                        .size(10.5)
-                        .color(TEXT_MUTED),
-                );
-                let lsd = block
-                    .extra_children
-                    .iter()
-                    .find(|c| c.tag == "LightsceneDescription" || c.tag == "Lightscene");
-                let tag_name = lsd.map(|n| n.tag.as_str()).unwrap_or("LightsceneDescription");
-                for idx in 1..=6 {
-                    let attr_name = format!("Scene{idx}");
-                    let label = format!("Mood #{idx} Name");
-                    let cur = lsd.and_then(|n| n.attr(&attr_name)).unwrap_or("");
-                    render_child_tag_attr_row(
-                        ui,
-                        &block.uuid,
-                        tag_name,
-                        &attr_name,
-                        &label,
-                        cur,
-                        edits,
+            render_inspector_section_card(ui, |ui| {
+                egui::CollapsingHeader::new(
+                    RichText::new("💡 LIGHTING SCENES & MOOD EDITOR")
+                        .size(11.0)
+                        .color(LOXONE_GREEN)
+                        .strong(),
+                )
+                .default_open(true)
+                .show(ui, |ui| {
+                    for (attr_key, label) in [
+                        ("DefMood", "Default Mood ID"),
+                        ("Tfade", "Fade Time (s)"),
+                        ("MoveTime", "Presence Timeout (s)"),
+                    ] {
+                        let cur = get_raw_attr(&block.raw_attributes, attr_key).unwrap_or("");
+                        render_singleline_attr_row(ui, &block.uuid, attr_key, label, cur, edits);
+                    }
+                    ui.add_space(4.0);
+                    ui.label(
+                        RichText::new("Mood / Scene Descriptions (<LightsceneDescription>):")
+                            .size(10.5)
+                            .color(TEXT_MUTED),
                     );
-                }
+                    let lsd = block
+                        .extra_children
+                        .iter()
+                        .find(|c| c.tag == "LightsceneDescription" || c.tag == "Lightscene");
+                    let tag_name =
+                        lsd.map(|n| n.tag.as_str()).unwrap_or("LightsceneDescription");
+                    for idx in 1..=6 {
+                        let attr_name = format!("Scene{idx}");
+                        let label = format!("Mood #{idx} Name");
+                        let cur = lsd.and_then(|n| n.attr(&attr_name)).unwrap_or("");
+                        render_child_tag_attr_row(
+                            ui,
+                            &block.uuid,
+                            tag_name,
+                            &attr_name,
+                            &label,
+                            cur,
+                            edits,
+                        );
+                    }
+                });
             });
         }
         "IRoomControllerV2" | "HeatIRoomController2" | "IRoomController" => {
-            egui::CollapsingHeader::new(
-                RichText::new("🌡 COMFORT & ECO TEMPERATURE PRESETS")
-                    .size(11.0)
-                    .color(ACCENT_BLUE)
-                    .strong(),
-            )
-            .default_open(true)
-            .show(ui, |ui| {
-                for (pin_key, label, fallback) in [
-                    ("Tc", "Comfort Heating (°C)", 21.0_f64),
-                    ("Tcc", "Comfort Cooling (°C)", 23.5_f64),
-                    ("Teh", "Eco Setback Heating (°C)", 18.0_f64),
-                    ("Tec", "Eco Setback Cooling (°C)", 26.0_f64),
-                    ("Tf", "Frost / Building Protection (°C)", 8.0_f64),
-                ] {
-                    let cur_str = block
-                        .pins
-                        .iter()
-                        .find(|p| p.key == pin_key)
-                        .and_then(|p| p.default_value.as_deref())
-                        .unwrap_or("");
-                    let mut val: f64 = cur_str.parse().unwrap_or(fallback);
-                    ui.horizontal(|ui| {
-                        ui.label(
-                            RichText::new(format!("{label} [{pin_key}]:"))
-                                .size(11.0)
-                                .color(TEXT_MUTED),
-                        );
-                        if ui
-                            .add(
-                                DragValue::new(&mut val)
-                                    .speed(0.1)
-                                    .range(4.0..=35.0)
-                                    .suffix(" °C"),
-                            )
-                            .changed()
-                        {
-                            edits.push(ProjectEdit::SetPinDefault {
-                                control_uuid: block.uuid.clone(),
-                                pin_key: pin_key.to_string(),
-                                default_value: Some(format_clean_f64(val)),
-                            });
-                        }
-                    });
-                }
+            render_inspector_section_card(ui, |ui| {
+                egui::CollapsingHeader::new(
+                    RichText::new("🌡 COMFORT & ECO TEMPERATURE PRESETS")
+                        .size(11.0)
+                        .color(LOXONE_GREEN)
+                        .strong(),
+                )
+                .default_open(true)
+                .show(ui, |ui| {
+                    for (pin_key, label, fallback) in [
+                        ("Tc", "Comfort Heating (°C)", 21.0_f64),
+                        ("Tcc", "Comfort Cooling (°C)", 23.5_f64),
+                        ("Teh", "Eco Setback Heating (°C)", 18.0_f64),
+                        ("Tec", "Eco Setback Cooling (°C)", 26.0_f64),
+                        ("Tf", "Frost / Building Protection (°C)", 8.0_f64),
+                    ] {
+                        let cur_str = block
+                            .pins
+                            .iter()
+                            .find(|p| p.key == pin_key)
+                            .and_then(|p| p.default_value.as_deref())
+                            .unwrap_or("");
+                        let mut val: f64 = cur_str.parse().unwrap_or(fallback);
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                RichText::new(format!("{label} [{pin_key}]:"))
+                                    .size(11.0)
+                                    .color(TEXT_MUTED),
+                            );
+                            if ui
+                                .add(
+                                    DragValue::new(&mut val)
+                                        .speed(0.1)
+                                        .range(4.0..=35.0)
+                                        .suffix(" °C"),
+                                )
+                                .changed()
+                            {
+                                edits.push(ProjectEdit::SetPinDefault {
+                                    control_uuid: block.uuid.clone(),
+                                    pin_key: pin_key.to_string(),
+                                    default_value: Some(format_clean_f64(val)),
+                                });
+                            }
+                        });
+                    }
+                });
             });
         }
         "Radio" | "ValueSelector" => {
-            egui::CollapsingHeader::new(
-                RichText::new("🔘 RADIO / SELECTOR OUTPUT TABLE (1..8)")
-                    .size(11.0)
-                    .color(ACCENT_BLUE)
-                    .strong(),
-            )
-            .default_open(true)
-            .show(ui, |ui| {
-                for idx in 1..=8 {
-                    let attr_name = format!("Text{idx}");
-                    let label = format!("Button #{idx} Label");
-                    let cur = get_raw_attr(&block.raw_attributes, &attr_name).unwrap_or("");
-                    render_singleline_attr_row(ui, &block.uuid, &attr_name, &label, cur, edits);
-                }
+            render_inspector_section_card(ui, |ui| {
+                egui::CollapsingHeader::new(
+                    RichText::new("🔘 RADIO / SELECTOR OUTPUT TABLE (1..8)")
+                        .size(11.0)
+                        .color(LOXONE_GREEN)
+                        .strong(),
+                )
+                .default_open(true)
+                .show(ui, |ui| {
+                    for idx in 1..=8 {
+                        let attr_name = format!("Text{idx}");
+                        let label = format!("Button #{idx} Label");
+                        let cur = get_raw_attr(&block.raw_attributes, &attr_name).unwrap_or("");
+                        render_singleline_attr_row(ui, &block.uuid, &attr_name, &label, cur, edits);
+                    }
+                });
             });
         }
         "Status" => {
-            egui::CollapsingHeader::new(
-                RichText::new("📊 STATUS CONDITION & TEXT TABLE")
-                    .size(11.0)
-                    .color(ACCENT_BLUE)
-                    .strong(),
-            )
-            .default_open(true)
-            .show(ui, |ui| {
-                for (attr_name, label) in [
-                    ("Text1", "Condition 1 Status Text"),
-                    ("Text2", "Condition 2 Status Text"),
-                    ("Text3", "Condition 3 Status Text"),
-                    ("Text4", "Condition 4 Status Text"),
-                    ("Text", "Default / Fallback Status Text"),
-                ] {
-                    let cur = get_raw_attr(&block.raw_attributes, attr_name).unwrap_or("");
-                    render_singleline_attr_row(ui, &block.uuid, attr_name, label, cur, edits);
-                }
+            render_inspector_section_card(ui, |ui| {
+                egui::CollapsingHeader::new(
+                    RichText::new("📊 STATUS CONDITION & TEXT TABLE")
+                        .size(11.0)
+                        .color(LOXONE_GREEN)
+                        .strong(),
+                )
+                .default_open(true)
+                .show(ui, |ui| {
+                    for (attr_name, label) in [
+                        ("Text1", "Condition 1 Status Text"),
+                        ("Text2", "Condition 2 Status Text"),
+                        ("Text3", "Condition 3 Status Text"),
+                        ("Text4", "Condition 4 Status Text"),
+                        ("Text", "Default / Fallback Status Text"),
+                    ] {
+                        let cur = get_raw_attr(&block.raw_attributes, attr_name).unwrap_or("");
+                        render_singleline_attr_row(ui, &block.uuid, attr_name, label, cur, edits);
+                    }
+                });
             });
         }
         _ => {}
@@ -979,23 +1238,25 @@ fn render_category_inspector(
     cat: &loxone_core::model::Category,
     output: &mut InspectorOutput,
 ) {
-    render_singleline_attr_row(
-        ui,
-        &cat.uuid,
-        "Title",
-        "Category Title",
-        &cat.title,
-        &mut output.edits,
-    );
-    let grp = cat.cat_group.as_deref().unwrap_or("");
-    render_singleline_attr_row(
-        ui,
-        &cat.uuid,
-        "CatGroup",
-        "Category Type",
-        grp,
-        &mut output.edits,
-    );
+    render_inspector_section_card(ui, |ui| {
+        render_singleline_attr_row(
+            ui,
+            &cat.uuid,
+            "Title",
+            "Category Title",
+            &cat.title,
+            &mut output.edits,
+        );
+        let grp = cat.cat_group.as_deref().unwrap_or("");
+        render_singleline_attr_row(
+            ui,
+            &cat.uuid,
+            "CatGroup",
+            "Category Type",
+            grp,
+            &mut output.edits,
+        );
+    });
 }
 
 fn render_place_inspector(
@@ -1003,23 +1264,25 @@ fn render_place_inspector(
     place: &loxone_core::model::Place,
     output: &mut InspectorOutput,
 ) {
-    render_singleline_attr_row(
-        ui,
-        &place.uuid,
-        "Title",
-        "Room Name",
-        &place.title,
-        &mut output.edits,
-    );
-    let sqm = place.sqm.as_deref().unwrap_or("");
-    render_singleline_attr_row(
-        ui,
-        &place.uuid,
-        "Sqm",
-        "Area (m²)",
-        sqm,
-        &mut output.edits,
-    );
+    render_inspector_section_card(ui, |ui| {
+        render_singleline_attr_row(
+            ui,
+            &place.uuid,
+            "Title",
+            "Room Name",
+            &place.title,
+            &mut output.edits,
+        );
+        let sqm = place.sqm.as_deref().unwrap_or("");
+        render_singleline_attr_row(
+            ui,
+            &place.uuid,
+            "Sqm",
+            "Area (m²)",
+            sqm,
+            &mut output.edits,
+        );
+    });
 }
 
 fn render_schema_parameters_section(
@@ -1041,98 +1304,100 @@ fn render_schema_parameters_section(
         return;
     }
 
-    egui::CollapsingHeader::new(
-        RichText::new(crate::i18n::tr("PARAMETERS & OPERATING MODES"))
-            .size(11.0)
-            .color(TEXT_MUTED)
-            .strong(),
-    )
-    .default_open(true)
-    .show(ui, |ui| {
-        for attr in schema_attrs {
-            let current = get_raw_attr(raw_attributes, attr.xml_attr)
-                .or(attr.default_value)
-                .unwrap_or("");
-            if let Some(new_val) = render_value_kind_widget(
-                ui,
-                (control_uuid, "attr", attr.xml_attr),
-                attr.label,
-                attr.xml_attr,
-                attr.unit,
-                attr.kind,
-                current,
-                attr.description,
-            ) {
-                edits.push(ProjectEdit::SetControlAttr {
-                    control_uuid: control_uuid.to_string(),
-                    attr_name: attr.xml_attr.to_string(),
-                    value: Some(new_val),
-                });
-            }
-        }
-
-        // Render schema-defined pin parameters + any pin with Def=...
-        let mut rendered_pin_keys = Vec::new();
-        for p_schema in schema_pin_params {
-            let existing_pin = pins.iter().find(|p| p.key == p_schema.pin_key);
-            if let Some(pin) = existing_pin {
-                if pin.has_visible_incoming_links() && pin.default_value.is_none() {
-                    continue;
-                }
-            }
-            let current = existing_pin
-                .and_then(|p| p.default_value.as_deref())
-                .unwrap_or(p_schema.default_value);
-            rendered_pin_keys.push(p_schema.pin_key.to_string());
-            if let Some(new_val) = render_value_kind_widget(
-                ui,
-                (control_uuid, "pin", p_schema.pin_key),
-                p_schema.label,
-                p_schema.pin_key,
-                p_schema.unit,
-                p_schema.kind,
-                current,
-                p_schema.description,
-            ) {
-                edits.push(ProjectEdit::SetPinDefault {
-                    control_uuid: control_uuid.to_string(),
-                    pin_key: p_schema.pin_key.to_string(),
-                    default_value: Some(new_val),
-                });
-            }
-        }
-
-        for pin in pins {
-            if rendered_pin_keys.iter().any(|k| k == &pin.key) {
-                continue;
-            }
-            if pin.pin_kind == PinKind::Parameter || pin.default_value.is_some() {
-                let p_meta = schema.and_then(|s| s.find_pin_param(&pin.key));
-                let label = p_meta.map(|m| m.label).unwrap_or(&pin.key);
-                let unit = p_meta.and_then(|m| m.unit);
-                let kind = p_meta.map(|m| m.kind).unwrap_or(ValueKind::Float);
-                let desc = p_meta
-                    .map(|m| m.description)
-                    .unwrap_or("Connector pin default parameter (<Co K=\"...\" Def=\"...\"/>)");
-                let current = pin.default_value.as_deref().unwrap_or("0");
+    render_inspector_section_card(ui, |ui| {
+        egui::CollapsingHeader::new(
+            RichText::new(crate::i18n::tr("PARAMETERS & OPERATING MODES"))
+                .size(11.0)
+                .color(egui::Color32::WHITE)
+                .strong(),
+        )
+        .default_open(true)
+        .show(ui, |ui| {
+            for attr in schema_attrs {
+                let current = get_raw_attr(raw_attributes, attr.xml_attr)
+                    .or(attr.default_value)
+                    .unwrap_or("");
                 if let Some(new_val) = render_value_kind_widget(
                     ui,
-                    (control_uuid, "pin_dyn", pin.key.as_str()),
-                    label,
-                    &pin.key,
-                    unit,
-                    kind,
+                    (control_uuid, "attr", attr.xml_attr),
+                    attr.label,
+                    attr.xml_attr,
+                    attr.unit,
+                    attr.kind,
                     current,
-                    desc,
+                    attr.description,
+                ) {
+                    edits.push(ProjectEdit::SetControlAttr {
+                        control_uuid: control_uuid.to_string(),
+                        attr_name: attr.xml_attr.to_string(),
+                        value: Some(new_val),
+                    });
+                }
+            }
+
+            // Render schema-defined pin parameters + any pin with Def=...
+            let mut rendered_pin_keys = Vec::new();
+            for p_schema in schema_pin_params {
+                let existing_pin = pins.iter().find(|p| p.key == p_schema.pin_key);
+                if let Some(pin) = existing_pin {
+                    if pin.has_visible_incoming_links() && pin.default_value.is_none() {
+                        continue;
+                    }
+                }
+                let current = existing_pin
+                    .and_then(|p| p.default_value.as_deref())
+                    .unwrap_or(p_schema.default_value);
+                rendered_pin_keys.push(p_schema.pin_key.to_string());
+                if let Some(new_val) = render_value_kind_widget(
+                    ui,
+                    (control_uuid, "pin", p_schema.pin_key),
+                    p_schema.label,
+                    p_schema.pin_key,
+                    p_schema.unit,
+                    p_schema.kind,
+                    current,
+                    p_schema.description,
                 ) {
                     edits.push(ProjectEdit::SetPinDefault {
                         control_uuid: control_uuid.to_string(),
-                        pin_key: pin.key.clone(),
+                        pin_key: p_schema.pin_key.to_string(),
                         default_value: Some(new_val),
                     });
                 }
             }
-        }
+
+            for pin in pins {
+                if rendered_pin_keys.iter().any(|k| k == &pin.key) {
+                    continue;
+                }
+                if pin.pin_kind == PinKind::Parameter || pin.default_value.is_some() {
+                    let p_meta = schema.and_then(|s| s.find_pin_param(&pin.key));
+                    let label = p_meta.map(|m| m.label).unwrap_or(&pin.key);
+                    let unit = p_meta.and_then(|m| m.unit);
+                    let kind = p_meta.map(|m| m.kind).unwrap_or(ValueKind::Float);
+                    let desc = p_meta
+                        .map(|m| m.description)
+                        .unwrap_or("Connector pin default parameter (<Co K=\"...\" Def=\"...\"/>)");
+                    let current = pin.default_value.as_deref().unwrap_or("0");
+                    if let Some(new_val) = render_value_kind_widget(
+                        ui,
+                        (control_uuid, "pin_dyn", pin.key.as_str()),
+                        label,
+                        &pin.key,
+                        unit,
+                        kind,
+                        current,
+                        desc,
+                    ) {
+                        edits.push(ProjectEdit::SetPinDefault {
+                            control_uuid: control_uuid.to_string(),
+                            pin_key: pin.key.clone(),
+                            default_value: Some(new_val),
+                        });
+                    }
+                }
+            }
+        });
     });
 }
 
@@ -1329,27 +1594,29 @@ fn render_child_configs_section(
             .iter()
             .find(|c| matches!(c.tag.as_str(), "LoggerMailer" | "Logger" | "Mailer"));
         let tag_name = lm_node.map(|n| n.tag.as_str()).unwrap_or("LoggerMailer");
-        egui::CollapsingHeader::new(
-            RichText::new(format!("LOGGER / MAILER / TRACKER (<{tag_name}>)"))
-                .size(11.0)
-                .color(TEXT_MUTED)
-                .strong(),
-        )
-        .default_open(true)
-        .show(ui, |ui| {
-            for (attr, label) in [
-                ("Type", "Mode / Type"),
-                ("Address", "Recipient / Address"),
-                ("Subject", "Subject"),
-                ("TextON", "Message ON (TextON)"),
-                ("TextOFF", "Message OFF (TextOFF)"),
-                ("Value", "Value Format"),
-                ("RefCaller", "Caller / Service Ref"),
-                ("RefNotification", "Notification Ref"),
-            ] {
-                let cur = lm_node.and_then(|n| n.attr(attr)).unwrap_or("");
-                render_child_tag_attr_row(ui, control_uuid, tag_name, attr, label, cur, edits);
-            }
+        render_inspector_section_card(ui, |ui| {
+            egui::CollapsingHeader::new(
+                RichText::new(format!("LOGGER / MAILER / TRACKER (<{tag_name}>)"))
+                    .size(11.0)
+                    .color(egui::Color32::WHITE)
+                    .strong(),
+            )
+            .default_open(true)
+            .show(ui, |ui| {
+                for (attr, label) in [
+                    ("Type", "Mode / Type"),
+                    ("Address", "Recipient / Address"),
+                    ("Subject", "Subject"),
+                    ("TextON", "Message ON (TextON)"),
+                    ("TextOFF", "Message OFF (TextOFF)"),
+                    ("Value", "Value Format"),
+                    ("RefCaller", "Caller / Service Ref"),
+                    ("RefNotification", "Notification Ref"),
+                ] {
+                    let cur = lm_node.and_then(|n| n.attr(attr)).unwrap_or("");
+                    render_child_tag_attr_row(ui, control_uuid, tag_name, attr, label, cur, edits);
+                }
+            });
         });
     }
 
@@ -1357,26 +1624,28 @@ fn render_child_configs_section(
         || extra_children.iter().any(|c| c.tag == "HCL");
     if has_hcl {
         let hcl_node = extra_children.iter().find(|c| c.tag == "HCL");
-        egui::CollapsingHeader::new(
-            RichText::new("HUMAN CENTRIC LIGHTING (<HCL>)")
-                .size(11.0)
-                .color(TEXT_MUTED)
-                .strong(),
-        )
-        .default_open(false)
-        .show(ui, |ui| {
-            for (attr, label) in [
-                ("Mode", "HCL Curve Mode"),
-                ("Min", "Min Color Temp (K)"),
-                ("Max", "Max Color Temp (K)"),
-                ("Offset", "Time Offset (min)"),
-                ("Hs", "Start Hour (Hs)"),
-                ("He", "End Hour (He)"),
-                ("Tfade", "Fade Time (s)"),
-            ] {
-                let cur = hcl_node.and_then(|n| n.attr(attr)).unwrap_or("");
-                render_child_tag_attr_row(ui, control_uuid, "HCL", attr, label, cur, edits);
-            }
+        render_inspector_section_card(ui, |ui| {
+            egui::CollapsingHeader::new(
+                RichText::new("HUMAN CENTRIC LIGHTING (<HCL>)")
+                    .size(11.0)
+                    .color(egui::Color32::WHITE)
+                    .strong(),
+            )
+            .default_open(false)
+            .show(ui, |ui| {
+                for (attr, label) in [
+                    ("Mode", "HCL Curve Mode"),
+                    ("Min", "Min Color Temp (K)"),
+                    ("Max", "Max Color Temp (K)"),
+                    ("Offset", "Time Offset (min)"),
+                    ("Hs", "Start Hour (Hs)"),
+                    ("He", "End Hour (He)"),
+                    ("Tfade", "Fade Time (s)"),
+                ] {
+                    let cur = hcl_node.and_then(|n| n.attr(attr)).unwrap_or("");
+                    render_child_tag_attr_row(ui, control_uuid, "HCL", attr, label, cur, edits);
+                }
+            });
         });
     }
 
@@ -1384,26 +1653,28 @@ fn render_child_configs_section(
         || extra_children.iter().any(|c| c.tag == "PSD");
     if has_psd {
         let psd_node = extra_children.iter().find(|c| c.tag == "PSD");
-        egui::CollapsingHeader::new(
-            RichText::new("SUN DIRECTION / SHADING (<PSD>)")
-                .size(11.0)
-                .color(TEXT_MUTED)
-                .strong(),
-        )
-        .default_open(false)
-        .show(ui, |ui| {
-            for (attr, label) in [
-                ("Type", "Polygon Type"),
-                ("Az", "Azimuth (Az °)"),
-                ("El", "Elevation (El °)"),
-                ("AzS", "Start Azimuth (°)"),
-                ("AzE", "End Azimuth (°)"),
-                ("ElMin", "Min Elevation (°)"),
-                ("ElMax", "Max Elevation (°)"),
-            ] {
-                let cur = psd_node.and_then(|n| n.attr(attr)).unwrap_or("");
-                render_child_tag_attr_row(ui, control_uuid, "PSD", attr, label, cur, edits);
-            }
+        render_inspector_section_card(ui, |ui| {
+            egui::CollapsingHeader::new(
+                RichText::new("SUN DIRECTION / SHADING (<PSD>)")
+                    .size(11.0)
+                    .color(egui::Color32::WHITE)
+                    .strong(),
+            )
+            .default_open(false)
+            .show(ui, |ui| {
+                for (attr, label) in [
+                    ("Type", "Polygon Type"),
+                    ("Az", "Azimuth (Az °)"),
+                    ("El", "Elevation (El °)"),
+                    ("AzS", "Start Azimuth (°)"),
+                    ("AzE", "End Azimuth (°)"),
+                    ("ElMin", "Min Elevation (°)"),
+                    ("ElMax", "Max Elevation (°)"),
+                ] {
+                    let cur = psd_node.and_then(|n| n.attr(attr)).unwrap_or("");
+                    render_child_tag_attr_row(ui, control_uuid, "PSD", attr, label, cur, edits);
+                }
+            });
         });
     }
 }
@@ -1420,86 +1691,88 @@ fn render_linked_target_section(
     };
     let target_schema = lookup_block_schema(&target.object_type);
 
-    egui::CollapsingHeader::new(
-        RichText::new(format!("{} ({})", tr("LINKED TARGET"), target.object_type))
-            .size(11.0)
-            .color(ACCENT_BLUE)
-            .strong(),
-    )
-    .default_open(true)
-    .show(ui, |ui| {
-        if ui
-            .button(
-                RichText::new(format!(
-                    "{}: {} ({})",
-                    tr("🎯 Select Target in Tree"),
-                    if target.title.is_empty() {
-                        &target.object_type
-                    } else {
-                        &target.title
-                    },
-                    target.object_type
-                ))
+    render_inspector_section_card(ui, |ui| {
+        egui::CollapsingHeader::new(
+            RichText::new(format!("{} ({})", tr("LINKED TARGET"), target.object_type))
                 .size(11.0)
-                .color(ACCENT_BLUE),
-            )
-            .clicked()
-        {
-            output.nav_action = Some(InspectorAction::SelectObject(ref_uuid.to_string()));
-        }
+                .color(LOXONE_GREEN)
+                .strong(),
+        )
+        .default_open(true)
+        .show(ui, |ui| {
+            if ui
+                .button(
+                    RichText::new(format!(
+                        "{}: {} ({})",
+                        tr("🎯 Select Target in Tree"),
+                        if target.title.is_empty() {
+                            &target.object_type
+                        } else {
+                            &target.title
+                        },
+                        target.object_type
+                    ))
+                    .size(11.0)
+                    .color(ACCENT_BLUE),
+                )
+                .clicked()
+            {
+                output.nav_action = Some(InspectorAction::SelectObject(ref_uuid.to_string()));
+            }
 
-        if let Some(ts) = target_schema {
-            ui.label(RichText::new(ts.summary).size(10.5).color(TEXT_MUTED));
-        }
+            if let Some(ts) = target_schema {
+                ui.label(RichText::new(ts.summary).size(10.5).color(TEXT_MUTED));
+            }
 
-        if let Some(tree_node) = find_tree_node(&project.periphery_tree, ref_uuid)
-            .or_else(|| find_tree_node(&project.system_tree, ref_uuid))
-        {
-            render_singleline_attr_row(
-                ui,
-                &tree_node.uuid,
-                "Title",
-                "Target Title",
-                &tree_node.title,
-                &mut output.edits,
-            );
-            render_schema_parameters_section(
-                ui,
-                &tree_node.uuid,
-                target_schema,
-                &tree_node.raw_attributes,
-                &tree_node.pins,
-                &mut output.edits,
-            );
-        } else if let ObjectLocation::PageBlock {
-            page_index,
-            block_index,
-            ..
-        } = &target.location
-        {
-            if let Some(target_block) = project
-                .pages
-                .get(*page_index)
-                .and_then(|p| p.blocks.get(*block_index))
+            if let Some(tree_node) = find_tree_node(&project.periphery_tree, ref_uuid)
+                .or_else(|| find_tree_node(&project.system_tree, ref_uuid))
             {
                 render_singleline_attr_row(
                     ui,
-                    &target_block.uuid,
+                    &tree_node.uuid,
                     "Title",
                     "Target Title",
-                    &target_block.title,
+                    &tree_node.title,
                     &mut output.edits,
                 );
                 render_schema_parameters_section(
                     ui,
-                    &target_block.uuid,
+                    &tree_node.uuid,
                     target_schema,
-                    &target_block.raw_attributes,
-                    &target_block.pins,
+                    &tree_node.raw_attributes,
+                    &tree_node.pins,
                     &mut output.edits,
                 );
+            } else if let ObjectLocation::PageBlock {
+                page_index,
+                block_index,
+                ..
+            } = &target.location
+            {
+                if let Some(target_block) = project
+                    .pages
+                    .get(*page_index)
+                    .and_then(|p| p.blocks.get(*block_index))
+                {
+                    render_singleline_attr_row(
+                        ui,
+                        &target_block.uuid,
+                        "Title",
+                        "Target Title",
+                        &target_block.title,
+                        &mut output.edits,
+                    );
+                    render_schema_parameters_section(
+                        ui,
+                        &target_block.uuid,
+                        target_schema,
+                        &target_block.raw_attributes,
+                        &target_block.pins,
+                        &mut output.edits,
+                    );
+                }
             }
-        }
+        });
     });
 }
 
@@ -1516,112 +1789,114 @@ fn render_documented_pins_section(
         return;
     }
 
-    egui::CollapsingHeader::new(
-        RichText::new(format!("{} ({})", tr("INPUTS & OUTPUTS"), pins.len()))
-            .size(11.0)
-            .color(TEXT_MUTED)
-            .strong(),
-    )
-    .default_open(true)
-    .show(ui, |ui| {
-        for pin in pins {
-            let doc = schema.and_then(|s| s.find_pin_doc(&pin.key));
-            let dir_badge = match pin.pin_kind {
-                PinKind::Output => "OUT",
-                PinKind::Parameter => "PAR",
-                PinKind::Input => "IN",
-            };
-            let title_str = match doc {
-                Some(d) => format!("[{dir_badge}] {} — {}", pin.key, d.label),
-                None => format!("[{dir_badge}] {}", pin.key),
-            };
-            let resp = ui.label(
-                RichText::new(title_str)
-                    .monospace()
-                    .size(11.0)
-                    .color(TEXT_PRIMARY),
-            );
-            if let Some(d) = doc {
-                resp.on_hover_text(d.description);
-                ui.label(RichText::new(d.description).size(10.0).color(TEXT_MUTED));
-            }
-
-            // Incoming wire navigation links + disconnect button
-            for link in &pin.incoming_links {
-                if link.is_hidden() {
-                    continue;
+    render_inspector_section_card(ui, |ui| {
+        egui::CollapsingHeader::new(
+            RichText::new(format!("{} ({})", tr("INPUTS & OUTPUTS"), pins.len()))
+                .size(11.0)
+                .color(egui::Color32::WHITE)
+                .strong(),
+        )
+        .default_open(true)
+        .show(ui, |ui| {
+            for pin in pins {
+                let doc = schema.and_then(|s| s.find_pin_doc(&pin.key));
+                let dir_badge = match pin.pin_kind {
+                    PinKind::Output => "OUT",
+                    PinKind::Parameter => "PAR",
+                    PinKind::Input => "IN",
+                };
+                let title_str = match doc {
+                    Some(d) => format!("[{dir_badge}] {} — {}", pin.key, d.label),
+                    None => format!("[{dir_badge}] {}", pin.key),
+                };
+                let resp = ui.label(
+                    RichText::new(title_str)
+                        .monospace()
+                        .size(11.0)
+                        .color(TEXT_PRIMARY),
+                );
+                if let Some(d) = doc {
+                    resp.on_hover_text(d.description);
+                    ui.label(RichText::new(d.description).size(10.0).color(TEXT_MUTED));
                 }
-                ui.horizontal(|ui| {
-                    if let Some(src) = project.xref.pins_by_uuid.get(&link.source_pin_uuid) {
-                        if let Some(p_idx) = src.page_index {
-                            let page_name = src.page_title.as_deref().unwrap_or("Page");
-                            let btn_label = format!(
-                                "  ⬅ {}.{}: {} ({})",
-                                src.owner_title, src.pin_key, src.owner_type, page_name
-                            );
-                            if ui
-                                .small_button(RichText::new(btn_label).color(ACCENT_BLUE))
-                                .clicked()
-                            {
-                                output.nav_action = Some(InspectorAction::NavigateToBlock {
-                                    page_index: p_idx,
-                                    block_uuid: src.owner_uuid.clone(),
-                                });
+
+                // Incoming wire navigation links + disconnect button
+                for link in &pin.incoming_links {
+                    if link.is_hidden() {
+                        continue;
+                    }
+                    ui.horizontal(|ui| {
+                        if let Some(src) = project.xref.pins_by_uuid.get(&link.source_pin_uuid) {
+                            if let Some(p_idx) = src.page_index {
+                                let page_name = src.page_title.as_deref().unwrap_or("Page");
+                                let btn_label = format!(
+                                    "  ⬅ {}.{}: {} ({})",
+                                    src.owner_title, src.pin_key, src.owner_type, page_name
+                                );
+                                if ui
+                                    .small_button(RichText::new(btn_label).color(ACCENT_BLUE))
+                                    .clicked()
+                                {
+                                    output.nav_action = Some(InspectorAction::NavigateToBlock {
+                                        page_index: p_idx,
+                                        block_uuid: src.owner_uuid.clone(),
+                                    });
+                                }
+                            } else {
+                                ui.label(
+                                    RichText::new(format!(
+                                        "  ⬅ {}.{} ({})",
+                                        src.owner_title, src.pin_key, src.owner_type
+                                    ))
+                                    .size(11.0)
+                                    .color(TEXT_MUTED),
+                                );
                             }
                         } else {
                             ui.label(
-                                RichText::new(format!(
-                                    "  ⬅ {}.{} ({})",
-                                    src.owner_title, src.pin_key, src.owner_type
-                                ))
-                                .size(11.0)
-                                .color(TEXT_MUTED),
+                                RichText::new(format!("  ⬅ {}", link.source_pin_uuid))
+                                    .size(10.5)
+                                    .monospace()
+                                    .color(TEXT_MUTED),
                             );
                         }
-                    } else {
-                        ui.label(
-                            RichText::new(format!("  ⬅ {}", link.source_pin_uuid))
-                                .size(10.5)
-                                .monospace()
-                                .color(TEXT_MUTED),
-                        );
-                    }
-                    if ui
-                        .small_button(RichText::new("✕").color(crate::theme::STATUS_ERROR))
-                        .on_hover_text(tr("Disconnect wire"))
-                        .clicked()
-                    {
-                        output.edits.push(ProjectEdit::RemoveWireLink {
-                            target_block_uuid: control_uuid.to_string(),
-                            target_pin_key: pin.key.clone(),
-                            source_pin_uuid: link.source_pin_uuid.clone(),
-                        });
-                    }
-                });
-            }
+                        if ui
+                            .small_button(RichText::new("✕").color(crate::theme::STATUS_ERROR))
+                            .on_hover_text(tr("Disconnect wire"))
+                            .clicked()
+                        {
+                            output.edits.push(ProjectEdit::RemoveWireLink {
+                                target_block_uuid: control_uuid.to_string(),
+                                target_pin_key: pin.key.clone(),
+                                source_pin_uuid: link.source_pin_uuid.clone(),
+                            });
+                        }
+                    });
+                }
 
-            // Outgoing wire navigation links
-            if let Some(targets) = project.xref.outgoing_wires_by_pin_uuid.get(&pin.uuid) {
-                for t in targets {
-                    if t.is_hidden {
-                        continue;
-                    }
-                    let btn_label = format!(
-                        "  ➡ {}.{} ({})",
-                        t.target_block_title, t.target_pin_key, t.target_page_title
-                    );
-                    if ui
-                        .small_button(RichText::new(btn_label).color(ACCENT_BLUE))
-                        .clicked()
-                    {
-                        output.nav_action = Some(InspectorAction::NavigateToBlock {
-                            page_index: t.target_page_index,
-                            block_uuid: t.target_block_uuid.clone(),
-                        });
+                // Outgoing wire navigation links
+                if let Some(targets) = project.xref.outgoing_wires_by_pin_uuid.get(&pin.uuid) {
+                    for t in targets {
+                        if t.is_hidden {
+                            continue;
+                        }
+                        let btn_label = format!(
+                            "  ➡ {}.{} ({})",
+                            t.target_block_title, t.target_pin_key, t.target_page_title
+                        );
+                        if ui
+                            .small_button(RichText::new(btn_label).color(ACCENT_BLUE))
+                            .clicked()
+                        {
+                            output.nav_action = Some(InspectorAction::NavigateToBlock {
+                                page_index: t.target_page_index,
+                                block_uuid: t.target_block_uuid.clone(),
+                            });
+                        }
                     }
                 }
             }
-        }
+        });
     });
 }
 
@@ -1633,47 +1908,50 @@ fn render_advanced_xml_section(
     edits: &mut Vec<ProjectEdit>,
 ) {
     use crate::i18n::tr;
-    egui::CollapsingHeader::new(
-        RichText::new(format!(
-            "{} ({})",
-            tr("ADVANCED / RAW XML ATTRIBUTES"),
-            raw_attributes.len()
-        ))
-        .size(11.0)
-        .color(TEXT_MUTED),
-    )
-    .default_open(false)
-    .show(ui, |ui| {
-        for (k, v) in raw_attributes {
-            if matches!(k.as_str(), "U" | "Type" | "V") {
-                ui.horizontal(|ui| {
-                    ui.label(
-                        RichText::new(format!("{k}:"))
-                            .monospace()
-                            .size(10.5)
-                            .color(TEXT_MUTED),
-                    );
-                    ui.label(RichText::new(v).monospace().size(10.5).color(TEXT_PRIMARY));
-                });
-            } else {
-                render_singleline_attr_row(ui, control_uuid, k, k, v, edits);
+    render_inspector_section_card(ui, |ui| {
+        egui::CollapsingHeader::new(
+            RichText::new(format!(
+                "{} ({})",
+                tr("ADVANCED / RAW XML ATTRIBUTES"),
+                raw_attributes.len()
+            ))
+            .size(11.0)
+            .color(TEXT_MUTED)
+            .strong(),
+        )
+        .default_open(false)
+        .show(ui, |ui| {
+            for (k, v) in raw_attributes {
+                if matches!(k.as_str(), "U" | "Type" | "V") {
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            RichText::new(format!("{k}:"))
+                                .monospace()
+                                .size(10.5)
+                                .color(TEXT_MUTED),
+                        );
+                        ui.label(RichText::new(v).monospace().size(10.5).color(TEXT_PRIMARY));
+                    });
+                } else {
+                    render_singleline_attr_row(ui, control_uuid, k, k, v, edits);
+                }
             }
-        }
 
-        if !extra_children.is_empty() {
-            ui.add_space(4.0);
-            ui.label(
-                RichText::new(format!(
-                    "{} ({})",
-                    tr("Child XML Elements"),
-                    extra_children.len()
-                ))
-                .size(10.5)
-                .color(TEXT_MUTED)
-                .strong(),
-            );
-            render_raw_nodes(ui, extra_children);
-        }
+            if !extra_children.is_empty() {
+                ui.add_space(4.0);
+                ui.label(
+                    RichText::new(format!(
+                        "{} ({})",
+                        tr("Child XML Elements"),
+                        extra_children.len()
+                    ))
+                    .size(10.5)
+                    .color(TEXT_MUTED)
+                    .strong(),
+                );
+                render_raw_nodes(ui, extra_children);
+            }
+        });
     });
 }
 
