@@ -84,6 +84,34 @@ pub enum PendingDirtyAction {
     CloseWindow,
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct AutoScreenshotConfig {
+    pub output_path: PathBuf,
+    pub tab: Option<LeftTab>,
+    pub page_query: Option<String>,
+    pub identify_uuid: Option<String>,
+    pub enable_live: bool,
+}
+
+pub fn save_color_image_png(image: &egui::ColorImage, path: &Path) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+    }
+    let file = std::fs::File::create(path).map_err(|e| e.to_string())?;
+    let w = std::io::BufWriter::new(file);
+    let mut encoder = png::Encoder::new(w, image.width() as u32, image.height() as u32);
+    encoder.set_color(png::ColorType::Rgba);
+    encoder.set_depth(png::BitDepth::Eight);
+    let mut writer = encoder.write_header().map_err(|e| e.to_string())?;
+    let mut bytes = Vec::with_capacity(image.pixels.len() * 4);
+    for c in &image.pixels {
+        bytes.extend_from_slice(&c.to_srgba_unmultiplied());
+    }
+    writer.write_image_data(&bytes).map_err(|e| e.to_string())
+}
+
 pub struct LoxonePortableApp {
     pub project: Option<LoxoneProject>,
     pub base_project: Option<LoxoneProject>,
@@ -135,6 +163,8 @@ pub struct LoxonePortableApp {
         ),
     >,
     pub language: crate::i18n::Language,
+    pub auto_screenshot: Option<AutoScreenshotConfig>,
+    pub auto_screenshot_frame_count: u32,
     pub worker_tx: Sender<MiniserverWorkerEvent>,
     pub worker_rx: Receiver<MiniserverWorkerEvent>,
 }
@@ -193,6 +223,8 @@ impl Default for LoxonePortableApp {
             live_poll_in_flight: false,
             identifying_devices: std::collections::HashMap::new(),
             language,
+            auto_screenshot: None,
+            auto_screenshot_frame_count: 0,
             worker_tx,
             worker_rx,
         }
@@ -200,11 +232,44 @@ impl Default for LoxonePortableApp {
 }
 
 impl LoxonePortableApp {
-    pub fn new(cc: &eframe::CreationContext<'_>, initial_path: Option<PathBuf>) -> Self {
+    pub fn new(
+        cc: &eframe::CreationContext<'_>,
+        initial_path: Option<PathBuf>,
+        auto_screenshot: Option<AutoScreenshotConfig>,
+    ) -> Self {
         apply_minimalist_theme(&cc.egui_ctx);
         let mut app = Self::default();
         if let Some(path) = initial_path {
             app.load_file(&path);
+        }
+        if let Some(cfg) = auto_screenshot {
+            if let Some(tab) = cfg.tab {
+                app.left_tab = tab;
+            }
+            if let Some(pq) = &cfg.page_query {
+                if let Some(proj) = &app.project {
+                    if let Ok(idx) = pq.parse::<usize>() {
+                        if idx < proj.pages.len() {
+                            app.active_page_index = idx;
+                            app.needs_initial_fit = true;
+                        }
+                    } else if let Some(idx) = proj
+                        .pages
+                        .iter()
+                        .position(|p| p.title.to_lowercase().contains(&pq.to_lowercase()))
+                    {
+                        app.active_page_index = idx;
+                        app.needs_initial_fit = true;
+                    }
+                }
+            }
+            if cfg.enable_live {
+                app.execute_top_bar_action(TopBarAction::ToggleLiveView);
+            }
+            if let Some(id_uuid) = &cfg.identify_uuid {
+                app.trigger_device_identification(id_uuid);
+            }
+            app.auto_screenshot = Some(cfg);
         }
         app
     }
@@ -2654,6 +2719,29 @@ impl eframe::App for LoxonePortableApp {
                 } else {
                     self.selected_uuid = Some(ctrl_uuid);
                 }
+            }
+        }
+
+        if let Some(cfg) = self.auto_screenshot.clone() {
+            let captured = ctx.input(|i| {
+                i.raw.events.iter().find_map(|ev| match ev {
+                    egui::Event::Screenshot { image, .. } => Some(std::sync::Arc::clone(image)),
+                    _ => None,
+                })
+            });
+            if let Some(image) = captured {
+                let _ = save_color_image_png(&image, &cfg.output_path);
+                self.auto_screenshot = None;
+                self.allow_close_after_discard = true;
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            } else {
+                self.auto_screenshot_frame_count += 1;
+                if self.auto_screenshot_frame_count == 5 {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(
+                        egui::UserData::default(),
+                    ));
+                }
+                ctx.request_repaint();
             }
         }
     }

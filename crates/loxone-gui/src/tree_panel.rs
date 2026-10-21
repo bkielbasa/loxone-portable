@@ -520,6 +520,17 @@ pub fn tree_node_subtitle(project: &LoxoneProject, node: &TreeNode) -> Option<St
     None
 }
 
+fn subtree_has_identifying(ctx: &egui::Context, node: &TreeNode) -> bool {
+    for child in &node.children {
+        if device_identify_elapsed(ctx, &child.uuid).is_some()
+            || subtree_has_identifying(ctx, child)
+        {
+            return true;
+        }
+    }
+    false
+}
+
 fn render_identifying_badge(ui: &mut Ui, node: &TreeNode, elapsed_secs: f32) {
     ui.ctx()
         .request_repaint_after(std::time::Duration::from_millis(120));
@@ -661,6 +672,9 @@ fn render_tree_node(
                 ui.label(RichText::new(format!("({})", sub)).size(11.5).color(TEXT_MUTED));
             }
             if let Some(elapsed) = identifying_elapsed {
+                if elapsed < 0.25 {
+                    resp.scroll_to_me(Some(egui::Align::Center));
+                }
                 render_identifying_badge(ui, node, elapsed);
             }
             if placeable {
@@ -692,8 +706,11 @@ fn render_tree_node(
             || node.control_type == "Miniserver"
             || icon == LoxoneIcon::AudioFolder
             || icon == LoxoneIcon::LoxoneLink;
-        let state =
+        let mut state =
             egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, default_open);
+        if subtree_has_identifying(ui.ctx(), node) {
+            state.set_open(true);
+        }
 
         let header_res = state.show_header(ui, |ui| {
             ui_icon(ui, icon, 16.0);
@@ -711,6 +728,9 @@ fn render_tree_node(
                 ui.label(RichText::new(format!("({})", sub)).size(11.5).color(TEXT_MUTED));
             }
             if let Some(elapsed) = identifying_elapsed {
+                if elapsed < 0.25 {
+                    resp.scroll_to_me(Some(egui::Align::Center));
+                }
                 render_identifying_badge(ui, node, elapsed);
             }
             if resp.clicked() && !node.uuid.is_empty() {

@@ -2166,6 +2166,7 @@ fn render_ribbon_row_2(
 }
 
 #[allow(clippy::too_many_arguments)]
+#[cfg(test)]
 pub fn render_top_bar(
     ctx: &Context,
     project: Option<&LoxoneProject>,

@@ -11,8 +11,8 @@ I often use non-windows OSs and it forced me to use a VM in order to edit anythi
 
 ## Screenshots
 
-### Schematic Canvas & Property Inspector
-![Schematic Page & Property Inspector](docs/sample-page.png)
+### Schematic Canvas, Live View & Property Inspector
+![Schematic Page, Live View & Property Inspector](docs/sample-page.png)
 
 ### Startup Project Selector
 ![Project Selector](docs/project-selector.png)
