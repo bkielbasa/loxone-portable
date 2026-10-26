@@ -903,8 +903,8 @@ mod tests {
 
     #[test]
     fn test_klimczaki_advanced_block_configs_roundtrip() {
-        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../Klimczaki.Loxone");
-        let mut proj = load_loxone_file(&path).expect("load Klimczaki.Loxone");
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../Sample.Loxone");
+        let mut proj = load_loxone_file(&path).expect("load Sample.Loxone");
 
         // 1. CentralLight (`19eb19aa-03b9-3ff5-ffff51535bcccc04`)
         let cl_uuid = "19eb19aa-03b9-3ff5-ffff51535bcccc04";

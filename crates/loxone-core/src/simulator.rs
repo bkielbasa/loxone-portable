@@ -650,8 +650,8 @@ mod tests {
 
     #[test]
     fn test_offline_simulator_evaluates_multi_hop_logic_and_cross_page_memory() {
-        let xml = std::fs::read_to_string("../../Klimczaki.Loxone")
-            .expect("Klimczaki.Loxone fixture should exist");
+        let xml = std::fs::read_to_string("../../Sample.Loxone")
+            .expect("Sample.Loxone fixture should exist");
         let mut project = crate::parser::parse_loxone_xml(&xml).expect("parse should succeed");
 
         let mut page1 = new_page("Sim Page 1");
@@ -752,8 +752,8 @@ mod tests {
 
     #[test]
     fn test_offline_simulator_step_tick_and_central_light_propagation() {
-        let xml = std::fs::read_to_string("../../Klimczaki.Loxone")
-            .expect("Klimczaki.Loxone fixture should exist");
+        let xml = std::fs::read_to_string("../../Sample.Loxone")
+            .expect("Sample.Loxone fixture should exist");
         let mut project = crate::parser::parse_loxone_xml(&xml).expect("parse should succeed");
 
         let mut page = new_page("Tick & Central Page");

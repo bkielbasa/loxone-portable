@@ -778,11 +778,11 @@ mod tests {
 
     #[test]
     fn test_klimczaki_periphery_icons_match_reference_screenshot() {
-        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../Klimczaki.Loxone");
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../Sample.Loxone");
         if !path.exists() {
             return;
         }
-        let project = load_loxone_file(&path).expect("Klimczaki.Loxone should parse");
+        let project = load_loxone_file(&path).expect("Sample.Loxone should parse");
         let loxlive = project
             .periphery_tree
             .iter()

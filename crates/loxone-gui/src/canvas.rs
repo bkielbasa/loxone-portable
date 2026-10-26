@@ -3243,8 +3243,8 @@ mod tests {
 
     #[test]
     fn test_canvas_coordinate_transforms_and_fit_to_page() {
-        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../Klimczaki.Loxone");
-        let project = load_loxone_file(&path).expect("Klimczaki.Loxone should parse");
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../Sample.Loxone");
+        let project = load_loxone_file(&path).expect("Sample.Loxone should parse");
         let page0 = &project.pages[0];
 
         let mut vp = CanvasViewport::default();
@@ -3259,8 +3259,8 @@ mod tests {
 
     #[test]
     fn test_pin_side_and_connection_classification() {
-        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../Klimczaki.Loxone");
-        let project = load_loxone_file(&path).expect("Klimczaki.Loxone should parse");
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../Sample.Loxone");
+        let project = load_loxone_file(&path).expect("Sample.Loxone should parse");
         let page0 = &project.pages[0];
 
         let input_ref = page0
@@ -3284,8 +3284,8 @@ mod tests {
 
     #[test]
     fn test_alarm2_layout_excludes_unpositioned_blocks_and_routes_around_obstacles() {
-        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../Klimczaki.Loxone");
-        let project = load_loxone_file(&path).expect("Klimczaki.Loxone should parse");
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../Sample.Loxone");
+        let project = load_loxone_file(&path).expect("Sample.Loxone should parse");
         let alarm2 = project
             .pages
             .iter()
@@ -3413,8 +3413,8 @@ mod tests {
 
     #[test]
     fn test_render_page_canvas_with_live_view_store_renders_energized_wires_and_badges() {
-        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../Klimczaki.Loxone");
-        let project = load_loxone_file(&path).expect("Klimczaki.Loxone should parse");
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../Sample.Loxone");
+        let project = load_loxone_file(&path).expect("Sample.Loxone should parse");
         let page_idx = project
             .pages
             .iter()
@@ -3437,8 +3437,8 @@ mod tests {
 
     #[test]
     fn test_ref_bar_chrome_layout_always_includes_unit_capsule_and_adds_live_control_when_live() {
-        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../Klimczaki.Loxone");
-        let project = load_loxone_file(&path).expect("Klimczaki.Loxone should parse");
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../Sample.Loxone");
+        let project = load_loxone_file(&path).expect("Sample.Loxone should parse");
         let agatka = project
             .pages
             .iter()
@@ -3501,8 +3501,8 @@ mod tests {
 
     #[test]
     fn test_two_clicks_on_block_with_advanced_modal_opens_config() {
-        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../Klimczaki.Loxone");
-        let project = load_loxone_file(&path).expect("Klimczaki.Loxone should parse");
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../Sample.Loxone");
+        let project = load_loxone_file(&path).expect("Sample.Loxone should parse");
         let page_idx = project
             .pages
             .iter()
@@ -3585,8 +3585,8 @@ mod tests {
 
     #[test]
     fn test_minimap_bounds_mapping_and_multiselect_alignment_math() {
-        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../Klimczaki.Loxone");
-        let project = load_loxone_file(&path).expect("Klimczaki.Loxone should parse");
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../Sample.Loxone");
+        let project = load_loxone_file(&path).expect("Sample.Loxone should parse");
         let page0 = &project.pages[0];
 
         let vp = CanvasViewport::default();

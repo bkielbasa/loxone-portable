@@ -1426,9 +1426,9 @@ mod tests {
         let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         path.pop();
         path.pop();
-        path.push("Klimczaki.Loxone");
-        let xml = std::fs::read_to_string(&path).expect("read Klimczaki.Loxone");
-        loxone_core::parser::parse_loxone_xml(&xml).expect("Klimczaki.Loxone should parse")
+        path.push("Sample.Loxone");
+        let xml = std::fs::read_to_string(&path).expect("read Sample.Loxone");
+        loxone_core::parser::parse_loxone_xml(&xml).expect("Sample.Loxone should parse")
     }
 
     #[test]
@@ -1439,7 +1439,7 @@ mod tests {
             .iter()
             .flat_map(|p| &p.blocks)
             .find(|b| b.block_type == "LightController2")
-            .expect("LightController2 block must exist in Klimczaki.Loxone")
+            .expect("LightController2 block must exist in Sample.Loxone")
             .uuid
             .clone();
 
@@ -1461,7 +1461,7 @@ mod tests {
             .iter()
             .flat_map(|p| &p.blocks)
             .find(|b| b.block_type == "LightController2")
-            .expect("LightController2 block must exist in Klimczaki.Loxone")
+            .expect("LightController2 block must exist in Sample.Loxone")
             .uuid
             .clone();
 

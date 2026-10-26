@@ -2307,8 +2307,8 @@ mod tests {
 
     #[test]
     fn test_live_value_store_formats_and_propagates_signals_on_pokoj_agatki() {
-        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../Klimczaki.Loxone");
-        let project = crate::parser::load_loxone_file(&path).expect("Klimczaki.Loxone should parse");
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../Sample.Loxone");
+        let project = crate::parser::load_loxone_file(&path).expect("Sample.Loxone should parse");
         let page = project
             .pages
             .iter()
@@ -2387,9 +2387,9 @@ mod tests {
     #[test]
     fn test_classify_ref_bar_live_control_and_manual_override_on_pokoj_agatki() {
         let path =
-            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../Klimczaki.Loxone");
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../Sample.Loxone");
         let project =
-            crate::parser::load_loxone_file(&path).expect("Klimczaki.Loxone should parse");
+            crate::parser::load_loxone_file(&path).expect("Sample.Loxone should parse");
         let page = project
             .pages
             .iter()
@@ -2614,9 +2614,9 @@ mod tests {
     #[test]
     fn test_live_light_toggle_propagates_and_syncs_wires_cleanly() {
         let path =
-            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../Klimczaki.Loxone");
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../Sample.Loxone");
         let project =
-            crate::parser::load_loxone_file(&path).expect("Klimczaki.Loxone should parse");
+            crate::parser::load_loxone_file(&path).expect("Sample.Loxone should parse");
         let page = project
             .pages
             .iter()

@@ -1739,8 +1739,8 @@ mod tests {
 
     #[test]
     fn test_apply_edits_and_roundtrip_serialize_klimczaki() {
-        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../Klimczaki.Loxone");
-        let mut project = load_loxone_file(&path).expect("Klimczaki.Loxone should load");
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../Sample.Loxone");
+        let mut project = load_loxone_file(&path).expect("Sample.Loxone should load");
 
         let target_block_uuid = project.pages[0].blocks[0].uuid.clone();
         let target_pin_key = project.pages[0].blocks[0].pins[0].key.clone();
@@ -1987,8 +1987,8 @@ mod tests {
 
     #[test]
     fn test_lossless_roundtrip_unmodified_klimczaki() {
-        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../Klimczaki.Loxone");
-        let project = load_loxone_file(&path).expect("Klimczaki.Loxone should load");
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../Sample.Loxone");
+        let project = load_loxone_file(&path).expect("Sample.Loxone should load");
         let xml = serialize_loxone_xml(&project).expect("should serialize unmodified project");
         let reparsed = parse_loxone_xml(&xml).expect("reparsed XML should be valid");
 
@@ -2009,8 +2009,8 @@ mod tests {
 
     #[test]
     fn test_add_move_remove_page_block_and_undo_roundtrip() {
-        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../Klimczaki.Loxone");
-        let mut project = load_loxone_file(&path).expect("Klimczaki.Loxone should load");
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../Sample.Loxone");
+        let mut project = load_loxone_file(&path).expect("Sample.Loxone should load");
 
         let page_uuid = project.pages[0].uuid.clone();
         let orig_block_count = project.pages[0].blocks.len();
@@ -2079,8 +2079,8 @@ mod tests {
 
     #[test]
     fn test_add_and_remove_wire_link_and_undo_roundtrip() {
-        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../Klimczaki.Loxone");
-        let mut project = load_loxone_file(&path).expect("Klimczaki.Loxone should load");
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../Sample.Loxone");
+        let mut project = load_loxone_file(&path).expect("Sample.Loxone should load");
 
         let page_uuid = project.pages[0].uuid.clone();
         let block_a = crate::factory::new_page_block("Pushbutton", "Button A", 100.0, 100.0);
@@ -2166,8 +2166,8 @@ mod tests {
 
     #[test]
     fn test_remove_block_cleans_up_dangling_wires_and_restores_on_undo() {
-        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../Klimczaki.Loxone");
-        let mut project = load_loxone_file(&path).expect("Klimczaki.Loxone should load");
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../Sample.Loxone");
+        let mut project = load_loxone_file(&path).expect("Sample.Loxone should load");
 
         let page_uuid = project.pages[0].uuid.clone();
         let block_a = crate::factory::new_page_block("Pushbutton", "Source Block A", 100.0, 100.0);
@@ -2257,8 +2257,8 @@ mod tests {
 
     #[test]
     fn test_add_and_remove_page_room_category_and_tree_node_roundtrip() {
-        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../Klimczaki.Loxone");
-        let mut project = load_loxone_file(&path).expect("Klimczaki.Loxone should load");
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../Sample.Loxone");
+        let mut project = load_loxone_file(&path).expect("Sample.Loxone should load");
 
         let orig_pages = project.pages.len();
         let orig_places = project.places.len();
@@ -2340,8 +2340,8 @@ mod tests {
 
     #[test]
     fn test_resize_paste_clone_and_cross_page_link_edits() {
-        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../Klimczaki.Loxone");
-        let mut project = load_loxone_file(&path).expect("Klimczaki.Loxone should load");
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../Sample.Loxone");
+        let mut project = load_loxone_file(&path).expect("Sample.Loxone should load");
 
         let page_0_uuid = project.pages[0].uuid.clone();
         let page_1_uuid = project.pages[1].uuid.clone();

@@ -2753,7 +2753,7 @@ mod tests {
 
     #[test]
     fn test_app_load_and_navigate_klimczaki() {
-        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../Klimczaki.Loxone");
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../Sample.Loxone");
         let mut app = LoxonePortableApp::default();
         app.load_file(&path);
 
@@ -2819,9 +2819,9 @@ mod tests {
         let mut app = LoxonePortableApp::default();
         app.miniserver_modal.host.clear();
 
-        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../Klimczaki.Loxone");
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../Sample.Loxone");
         app.load_file(&path);
-        assert_eq!(app.miniserver_modal.host, "192.168.1.100");
+        assert_eq!(app.miniserver_modal.host, "127.0.0.1");
         assert_eq!(app.connection_status, ConnectionStatus::Disconnected);
 
         // Open Miniserver modal via TopBarAction
@@ -2831,7 +2831,7 @@ mod tests {
         // Simulate worker completing ConnectionTested
         app.worker_tx
             .send(MiniserverWorkerEvent::ConnectionTested {
-                host: "192.168.1.100".to_string(),
+                host: "127.0.0.1".to_string(),
                 result: Ok(("2 backups available".to_string(), Vec::new())),
             })
             .unwrap();
@@ -2845,7 +2845,7 @@ mod tests {
             </ControlList>";
         app.worker_tx
             .send(MiniserverWorkerEvent::ProjectDownloaded {
-                host: "192.168.1.100".to_string(),
+                host: "127.0.0.1".to_string(),
                 result: Ok((
                     "sps_194_20260308182256.zip".to_string(),
                     downloaded_xml.to_string(),
@@ -2878,7 +2878,7 @@ mod tests {
     fn test_app_apply_project_edit_dirty_state_and_save_roundtrip() {
         use loxone_core::writer::ProjectEdit;
 
-        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../Klimczaki.Loxone");
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../Sample.Loxone");
         let mut app = LoxonePortableApp::default();
         assert!(!app.is_dirty);
 
@@ -2961,7 +2961,7 @@ mod tests {
         use loxone_core::factory::new_page_block;
         use loxone_core::writer::ProjectEdit;
 
-        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../Klimczaki.Loxone");
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../Sample.Loxone");
         let mut app = LoxonePortableApp::default();
         app.load_file(&path);
         assert!(!app.is_dirty);
@@ -3019,7 +3019,7 @@ mod tests {
 
     #[test]
     fn test_app_authoring_tree_canvas_insert_and_xml_roundtrip() {
-        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../Klimczaki.Loxone");
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../Sample.Loxone");
         let mut app = LoxonePortableApp::default();
         app.load_file(&path);
 
@@ -3166,7 +3166,7 @@ mod tests {
         let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         path.pop();
         path.pop();
-        path.push("Klimczaki.Loxone");
+        path.push("Sample.Loxone");
         if !path.exists() {
             return;
         }
@@ -3246,7 +3246,7 @@ mod tests {
 
     #[test]
     fn test_app_live_view_toggle_and_live_command_updates_store() {
-        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../Klimczaki.Loxone");
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../Sample.Loxone");
         let mut app = LoxonePortableApp::default();
         app.load_file(&path);
 
@@ -3359,7 +3359,7 @@ mod tests {
 
     #[test]
     fn test_app_copy_paste_duplicate_resize_rename_cross_page_and_verify() {
-        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../Klimczaki.Loxone");
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../Sample.Loxone");
         let mut app = LoxonePortableApp::default();
         app.load_file(&path);
 
@@ -3534,7 +3534,7 @@ mod tests {
     #[test]
     fn test_app_identify_link_and_tree_device_from_context_menu() {
         let mut app = LoxonePortableApp::default();
-        app.load_file(std::path::Path::new("../../Klimczaki.Loxone"));
+        app.load_file(std::path::Path::new("../../Sample.Loxone"));
         let proj = app.project.as_ref().expect("project loaded").clone();
 
         let inventory = loxone_core::collect_provisioned_hardware(&proj);

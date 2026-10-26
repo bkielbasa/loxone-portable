@@ -883,8 +883,8 @@ mod tests {
 
     #[test]
     fn test_advanced_blocks_modal_opens_renders_and_closes_on_outside_click() {
-        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../Klimczaki.Loxone");
-        let proj = load_loxone_file(&path).expect("load Klimczaki.Loxone");
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../Sample.Loxone");
+        let proj = load_loxone_file(&path).expect("load Sample.Loxone");
 
         let mut state = AdvancedBlocksModalState::default();
         assert!(state.open_for_block(&proj, "19eb19aa-03b9-3ff5-ffff51535bcccc04"));

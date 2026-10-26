@@ -2004,8 +2004,8 @@ mod tests {
 
     #[test]
     fn test_find_tree_node_in_klimczaki() {
-        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../Klimczaki.Loxone");
-        let project = load_loxone_file(&path).expect("Klimczaki.Loxone should parse");
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../Sample.Loxone");
+        let project = load_loxone_file(&path).expect("Sample.Loxone should parse");
         let root_uuid = &project.periphery_tree[0].uuid;
         let found = find_tree_node(&project.periphery_tree, root_uuid);
         assert!(found.is_some());
@@ -2014,8 +2014,8 @@ mod tests {
 
     #[test]
     fn test_inspector_renders_complex_blocks_and_refs_and_periphery() {
-        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../Klimczaki.Loxone");
-        let project = load_loxone_file(&path).expect("Klimczaki.Loxone should parse");
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../Sample.Loxone");
+        let project = load_loxone_file(&path).expect("Sample.Loxone should parse");
 
         let find_block_by_type = |ty: &str| -> String {
             project
@@ -2082,8 +2082,8 @@ mod tests {
 
     #[test]
     fn test_inspector_renders_every_block_on_all_28_pages_without_panic() {
-        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../Klimczaki.Loxone");
-        let project = load_loxone_file(&path).expect("Klimczaki.Loxone should parse");
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../Sample.Loxone");
+        let project = load_loxone_file(&path).expect("Sample.Loxone should parse");
         assert_eq!(project.pages.len(), 28);
 
         let ctx = egui::Context::default();

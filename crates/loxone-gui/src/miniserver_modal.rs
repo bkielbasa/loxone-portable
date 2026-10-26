@@ -673,14 +673,14 @@ mod tests {
 
     #[test]
     fn test_miniserver_modal_prefills_host_from_project_loxlive_and_renders() {
-        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../Klimczaki.Loxone");
-        let project = load_loxone_file(&path).expect("Klimczaki.Loxone should parse");
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../Sample.Loxone");
+        let project = load_loxone_file(&path).expect("Sample.Loxone should parse");
 
         let mut modal = MiniserverModalState::default();
         assert!(modal.host.is_empty());
 
         modal.apply_project_fallback_host(Some(&project));
-        assert_eq!(modal.host, "192.168.1.100");
+        assert_eq!(modal.host, "127.0.0.1");
 
         // Does not overwrite an explicitly entered host
         modal.host = "10.0.0.50".to_string();

@@ -548,8 +548,8 @@ mod tests {
             .unwrap()
             .parent()
             .unwrap()
-            .join("Klimczaki.Loxone");
-        let mut proj = load_loxone_file(&path).expect("parse Klimczaki.Loxone");
+            .join("Sample.Loxone");
+        let mut proj = load_loxone_file(&path).expect("parse Sample.Loxone");
 
         // 1. Verify State ("Ogrzewanie") block parsing & roundtrip
         let state_uuid = "1abec360-009a-9ee2-ffff62ed8a266bff";

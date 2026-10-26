@@ -458,19 +458,19 @@ mod tests {
 
     #[test]
     fn test_load_klimczaki_loxone_project() {
-        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../Klimczaki.Loxone");
-        let project = load_loxone_file(&path).expect("Klimczaki.Loxone should parse");
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../Sample.Loxone");
+        let project = load_loxone_file(&path).expect("Sample.Loxone should parse");
 
-        assert_eq!(project.metadata.title, "Klimczaki");
+        assert_eq!(project.metadata.title, "Sample");
         assert_eq!(project.metadata.config_version, "17020828");
         assert_eq!(project.metadata.control_list_version, "274");
         assert_eq!(
             project.metadata.miniserver_ip.as_deref(),
-            Some("192.168.1.100")
+            Some("127.0.0.1")
         );
         assert_eq!(
             project.metadata.miniserver_serial.as_deref(),
-            Some("504F94A0ECAD")
+            Some("00000000")
         );
         assert_eq!(
             project.metadata.miniserver_hostname.as_deref(),

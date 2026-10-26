@@ -760,8 +760,8 @@ mod tests {
 
     #[test]
     fn test_tree_node_matches_query_on_klimczaki() {
-        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../Klimczaki.Loxone");
-        let project = load_loxone_file(&path).expect("Klimczaki.Loxone should parse");
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../Sample.Loxone");
+        let project = load_loxone_file(&path).expect("Sample.Loxone should parse");
         assert!(!project.periphery_tree.is_empty());
         assert!(node_matches_query(&project.periphery_tree[0], ""));
         assert!(node_matches_query(&project.periphery_tree[0], "loxlive"));
@@ -770,8 +770,8 @@ mod tests {
 
     #[test]
     fn test_tree_node_subtitles_match_reference_screenshot() {
-        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../Klimczaki.Loxone");
-        let project = load_loxone_file(&path).expect("Klimczaki.Loxone should parse");
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../Sample.Loxone");
+        let project = load_loxone_file(&path).expect("Sample.Loxone should parse");
 
         fn find_by_title<'a>(nodes: &'a [TreeNode], title: &str) -> Option<&'a TreeNode> {
             for n in nodes {
@@ -785,7 +785,7 @@ mod tests {
             None
         }
 
-        let ms = find_by_title(&project.periphery_tree, "Klimczaki").unwrap();
+        let ms = find_by_title(&project.periphery_tree, "Sample").unwrap();
         assert_eq!(
             tree_node_subtitle(&project, ms),
             Some("Rozdzielnica R01 P1".to_string())

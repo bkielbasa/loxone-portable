@@ -651,9 +651,9 @@ mod tests {
             .unwrap()
             .parent()
             .unwrap()
-            .join("Klimczaki.Loxone");
-        let xml = std::fs::read_to_string(&path).expect("read Klimczaki.Loxone");
-        let project = loxone_core::parser::parse_loxone_xml(&xml).expect("parse Klimczaki.Loxone");
+            .join("Sample.Loxone");
+        let xml = std::fs::read_to_string(&path).expect("read Sample.Loxone");
+        let project = loxone_core::parser::parse_loxone_xml(&xml).expect("parse Sample.Loxone");
 
         let mut modal = EfmModalState::default();
         assert!(modal.open_for_block(&project, "1d04656b-0128-8d7a-ffff51535bcccc04"));

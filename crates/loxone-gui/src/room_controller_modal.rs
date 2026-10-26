@@ -1455,7 +1455,7 @@ mod tests {
             .unwrap()
             .parent()
             .unwrap()
-            .join("Klimczaki.Loxone");
+            .join("Sample.Loxone");
         let project = loxone_core::parser::load_loxone_file(&path).unwrap();
 
         let gabinet_uuid = "19eb19a9-001b-384c-ffff51535bcccc04";

@@ -385,8 +385,8 @@ mod tests {
 
     #[test]
     fn test_klimczaki_xref_counts_and_usages() {
-        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../Klimczaki.Loxone");
-        let project = load_loxone_file(&path).expect("Klimczaki.Loxone should parse");
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../Sample.Loxone");
+        let project = load_loxone_file(&path).expect("Sample.Loxone should parse");
 
         // All 5,433 <Co> pins across pages and periphery/system trees are indexed
         assert_eq!(project.xref.pins_by_uuid.len(), 5433);

@@ -718,14 +718,14 @@ mod tests {
             .unwrap()
             .parent()
             .unwrap()
-            .join("Klimczaki.Loxone");
+            .join("Sample.Loxone");
         let project = loxone_core::parser::load_loxone_file(&sample_path)
-            .expect("Failed to load Klimczaki.Loxone");
+            .expect("Failed to load Sample.Loxone");
 
         let all_candidates = matching_reference_candidates(&project, "");
         assert!(
             !all_candidates.is_empty(),
-            "Expected reference candidates in Klimczaki.Loxone"
+            "Expected reference candidates in Sample.Loxone"
         );
 
         // Should include InputRef, OutputRef, and Memory candidates

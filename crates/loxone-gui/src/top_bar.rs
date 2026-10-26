@@ -2573,14 +2573,14 @@ mod tests {
             RibbonTab::SelectedObject
         );
 
-        // 4. Contextual object context & toolbar items from Klimczaki.Loxone
+        // 4. Contextual object context & toolbar items from Sample.Loxone
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .parent()
             .unwrap()
             .parent()
             .unwrap()
-            .join("Klimczaki.Loxone");
-        let proj = loxone_core::parser::load_loxone_file(&path).expect("load Klimczaki.Loxone");
+            .join("Sample.Loxone");
+        let proj = loxone_core::parser::load_loxone_file(&path).expect("load Sample.Loxone");
         let first_block = &proj.pages[0].blocks[0];
         let obj_ctx = build_selected_object_context(Some(&proj), Some(&first_block.uuid))
             .expect("selected object context should resolve");

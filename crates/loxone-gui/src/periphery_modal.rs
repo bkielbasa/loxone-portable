@@ -738,9 +738,9 @@ mod tests {
             .unwrap()
             .parent()
             .unwrap()
-            .join("Klimczaki.Loxone");
+            .join("Sample.Loxone");
         let project =
-            loxone_core::parser::load_loxone_file(&path).expect("parse Klimczaki.Loxone");
+            loxone_core::parser::load_loxone_file(&path).expect("parse Sample.Loxone");
 
         let mut state = PeripheryModalState::default();
         state.open_provision(&project, None);

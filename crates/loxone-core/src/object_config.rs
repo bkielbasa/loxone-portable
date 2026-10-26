@@ -802,8 +802,8 @@ mod tests {
             .unwrap()
             .parent()
             .unwrap()
-            .join("Klimczaki.Loxone");
-        let proj = load_loxone_file(&path).expect("parse Klimczaki.Loxone");
+            .join("Sample.Loxone");
+        let proj = load_loxone_file(&path).expect("parse Sample.Loxone");
 
         let alarm_page_uuid = "19eb19ad-02ad-eae0-ffff51535bcccc04";
         let alarm_block_uuid = "19eb19a9-024d-3a10-ffff51535bcccc04";
@@ -844,8 +844,8 @@ mod tests {
             .unwrap()
             .parent()
             .unwrap()
-            .join("Klimczaki.Loxone");
-        let mut proj = load_loxone_file(&path).expect("parse Klimczaki.Loxone");
+            .join("Sample.Loxone");
+        let mut proj = load_loxone_file(&path).expect("parse Sample.Loxone");
 
         let alarm_page_uuid = "19eb19ad-02ad-eae0-ffff51535bcccc04";
         let alarm_block_uuid = "19eb19a9-024d-3a10-ffff51535bcccc04";
@@ -900,8 +900,8 @@ mod tests {
             .unwrap()
             .parent()
             .unwrap()
-            .join("Klimczaki.Loxone");
-        let proj = load_loxone_file(&path).expect("parse Klimczaki.Loxone");
+            .join("Sample.Loxone");
+        let proj = load_loxone_file(&path).expect("parse Sample.Loxone");
 
         let alarm_page_uuid = "19eb19ad-02ad-eae0-ffff51535bcccc04";
         let alarm_block_uuid = "19eb19a9-024d-3a10-ffff51535bcccc04";

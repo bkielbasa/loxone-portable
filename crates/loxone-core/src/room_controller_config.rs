@@ -915,8 +915,8 @@ mod tests {
             .unwrap()
             .parent()
             .unwrap()
-            .join("Klimczaki.Loxone");
-        let proj = load_loxone_file(&path).expect("parse Klimczaki.Loxone");
+            .join("Sample.Loxone");
+        let proj = load_loxone_file(&path).expect("parse Sample.Loxone");
 
         let gabinet_block = proj
             .pages
@@ -1009,8 +1009,8 @@ mod tests {
             .unwrap()
             .parent()
             .unwrap()
-            .join("Klimczaki.Loxone");
-        let mut proj = load_loxone_file(&path).expect("parse Klimczaki.Loxone");
+            .join("Sample.Loxone");
+        let mut proj = load_loxone_file(&path).expect("parse Sample.Loxone");
 
         let gabinet_uuid = "19eb19a9-001b-384c-ffff51535bcccc04";
         let block = proj

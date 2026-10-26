@@ -441,8 +441,8 @@ mod tests {
 
     #[test]
     fn test_command_palette_default_and_search_on_klimczaki() {
-        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../Klimczaki.Loxone");
-        let project = load_loxone_file(&path).expect("Klimczaki.Loxone should parse");
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../Sample.Loxone");
+        let project = load_loxone_file(&path).expect("Sample.Loxone should parse");
 
         // Empty query returns built-in actions + pages
         let initial = build_palette_entries(Some(&project), "");

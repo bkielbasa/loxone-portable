@@ -950,17 +950,17 @@ mod tests {
 
     #[test]
     fn test_klimczaki_hardware_inventory_and_provisioning_roundtrip() {
-        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../Klimczaki.Loxone");
-        let mut proj = load_loxone_file(&path).expect("load Klimczaki.Loxone");
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../Sample.Loxone");
+        let mut proj = load_loxone_file(&path).expect("load Sample.Loxone");
 
         // 1. Hardware discovery
         let inventory = collect_provisioned_hardware(&proj);
         assert!(
             inventory.len() >= 20,
-            "Expected >= 20 hardware devices in Klimczaki.Loxone, found {}",
+            "Expected >= 20 hardware devices in Sample.Loxone, found {}",
             inventory.len()
         );
-        assert!(inventory.iter().any(|d| d.node_type == "LoxLIVE" && d.serial == "504F94A0ECAD"));
+        assert!(inventory.iter().any(|d| d.node_type == "LoxLIVE" && d.serial == "00000000"));
         assert!(inventory.iter().any(|d| d.node_type == "TreeDevice"));
         assert!(inventory.iter().any(|d| d.node_type == "LoxAIRDevice"));
 
@@ -1007,13 +1007,13 @@ mod tests {
         apply_edit_with_inverse(&mut proj, &inv).unwrap();
         assert_eq!(collect_provisioned_hardware(&proj).len(), prev_count);
         let xml = serialize_loxone_xml(&proj).unwrap();
-        assert!(xml.contains("504F94A0ECAD"));
+        assert!(xml.contains("00000000"));
     }
 
     #[test]
     fn test_klimczaki_link_and_tree_device_identification_resolution() {
-        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../Klimczaki.Loxone");
-        let proj = load_loxone_file(&path).expect("load Klimczaki.Loxone");
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../Sample.Loxone");
+        let proj = load_loxone_file(&path).expect("load Sample.Loxone");
 
         let inventory = collect_provisioned_hardware(&proj);
         let link_tree_ext = inventory
@@ -1023,7 +1023,7 @@ mod tests {
         let link_target = resolve_device_identify_target(&proj, &link_tree_ext.uuid)
             .expect("LoxTree extension should resolve as identifiable");
         assert_eq!(link_target.bus_kind, DeviceBusKind::Link);
-        assert_eq!(link_target.serial, "13000003");
+        assert_eq!(link_target.serial, "00000000");
         assert_eq!(link_target.serial, link_tree_ext.serial);
 
         let tree_dev = inventory

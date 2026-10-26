@@ -206,8 +206,8 @@ mod tests {
 
     #[test]
     fn test_lint_project_detects_dangling_ref_missing_room_and_unconnected_block() {
-        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../Klimczaki.Loxone");
-        let mut project = load_loxone_file(&path).expect("Klimczaki.Loxone should load");
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../Sample.Loxone");
+        let mut project = load_loxone_file(&path).expect("Sample.Loxone should load");
         let page_0_uuid = project.pages[0].uuid.clone();
 
         // Add an unconnected Switch block without Room/Category

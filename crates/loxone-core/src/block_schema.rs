@@ -4741,8 +4741,8 @@ mod tests {
             .unwrap()
             .parent()
             .unwrap()
-            .join("Klimczaki.Loxone");
-        let project = load_loxone_file(&path).expect("parse Klimczaki.Loxone");
+            .join("Sample.Loxone");
+        let project = load_loxone_file(&path).expect("parse Sample.Loxone");
 
         let mut page_types = BTreeSet::new();
         for page in &project.pages {
@@ -4753,7 +4753,7 @@ mod tests {
         assert_eq!(
             page_types.len(),
             41,
-            "Klimczaki.Loxone has 41 unique page block types"
+            "Sample.Loxone has 41 unique page block types"
         );
 
         for ty in &page_types {
@@ -4850,8 +4850,8 @@ mod tests {
             .unwrap()
             .parent()
             .unwrap()
-            .join("Klimczaki.Loxone");
-        let project = load_loxone_file(&path).expect("parse Klimczaki.Loxone");
+            .join("Sample.Loxone");
+        let project = load_loxone_file(&path).expect("parse Sample.Loxone");
 
         let base_attrs = [
             "U", "Type", "V", "Title", "Desc", "Px", "Py", "Px2", "Py2", "Cl", "Visu", "VisuPwd",

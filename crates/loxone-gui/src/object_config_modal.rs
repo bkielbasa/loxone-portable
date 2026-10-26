@@ -680,9 +680,9 @@ mod tests {
         let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         path.pop();
         path.pop();
-        path.push("Klimczaki.Loxone");
+        path.push("Sample.Loxone");
         let project =
-            loxone_core::parser::load_loxone_file(&path).expect("parse Klimczaki.Loxone");
+            loxone_core::parser::load_loxone_file(&path).expect("parse Sample.Loxone");
 
         let mut modal = ObjectConfigModalState::default();
         assert!(modal.open_for_block(&project, "19eb19a9-024d-3a10-ffff51535bcccc04"));

@@ -710,9 +710,9 @@ mod tests {
 
     #[test]
     fn test_parse_light_controller_config_from_klimczaki() {
-        let xml = std::fs::read_to_string("../../Klimczaki.Loxone")
-            .expect("Failed to read Klimczaki.Loxone");
-        let project = parse_loxone_xml(&xml).expect("Failed to parse Klimczaki.Loxone");
+        let xml = std::fs::read_to_string("../../Sample.Loxone")
+            .expect("Failed to read Sample.Loxone");
+        let project = parse_loxone_xml(&xml).expect("Failed to parse Sample.Loxone");
         let lc_block = project
             .pages
             .iter()
@@ -791,9 +791,9 @@ mod tests {
 
     #[test]
     fn test_light_controller_edit_and_roundtrip() {
-        let xml = std::fs::read_to_string("../../Klimczaki.Loxone")
-            .expect("Failed to read Klimczaki.Loxone");
-        let mut project = parse_loxone_xml(&xml).expect("Failed to parse Klimczaki.Loxone");
+        let xml = std::fs::read_to_string("../../Sample.Loxone")
+            .expect("Failed to read Sample.Loxone");
+        let mut project = parse_loxone_xml(&xml).expect("Failed to parse Sample.Loxone");
         let lc_block = project
             .pages
             .iter()
