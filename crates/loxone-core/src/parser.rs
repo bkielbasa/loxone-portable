@@ -179,7 +179,11 @@ pub fn parse_loxone_xml(xml: &str) -> Result<LoxoneProject, LoxoneError> {
     Ok(project)
 }
 
-pub(crate) fn parse_raw_dom(xml: &str) -> Result<Vec<RawNode>, LoxoneError> {
+/// Parses an XML document into a lossless-enough [`RawNode`] DOM.
+///
+/// Used by the writer for round-trip serialization and by research tooling
+/// (see `loxone-format-lab`) that needs to inspect every tag and attribute.
+pub fn parse_raw_dom(xml: &str) -> Result<Vec<RawNode>, LoxoneError> {
     let mut reader = Reader::from_str(xml);
     reader.config_mut().trim_text(true);
     let mut stack: Vec<RawNode> = Vec::new();

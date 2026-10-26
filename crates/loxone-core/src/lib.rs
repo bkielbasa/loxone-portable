@@ -18,6 +18,7 @@ pub mod writer;
 pub mod xref;
 
 pub use advanced_blocks_config::*;
+pub use block_schema::all_block_schemas;
 pub use efm_config::{
     collect_efm_candidate_objects, resolve_efm_object_label, EfmConfig, EfmNode, EfmNodeType,
     EfmObjectCandidate, StatInterval,
@@ -37,6 +38,7 @@ pub use object_config::{
     resolve_function_block_object_type, resolve_periphery_object_type, supports_object_config,
     ObjectConfigRow, ObjectConfigTargetKind,
 };
+pub use parser::parse_raw_dom;
 pub use periphery_provisioning::*;
 pub use room_controller_config::{
     collect_energy_source_candidates, collect_user_operating_modes_for_timer,
@@ -47,5 +49,5 @@ pub use simulator::*;
 pub use state_alarm_config::*;
 pub use writer::{
     apply_edit, apply_edit_with_inverse, clone_blocks_for_paste, create_cross_page_link_edits,
-    ProjectEdit,
+    serialize_raw_node, serialize_raw_nodes, ProjectEdit,
 };

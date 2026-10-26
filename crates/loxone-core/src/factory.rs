@@ -507,8 +507,8 @@ mod tests {
     fn test_expanded_page_block_catalog_has_over_75_types() {
         let count = page_block_schemas().count();
         assert_eq!(
-            count, 83,
-            "Expected 83 page block schemas in catalog, got {count}"
+            count, 99,
+            "Expected 99 page block schemas in catalog, got {count}"
         );
         assert!(
             count >= 75,

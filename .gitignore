@@ -1,2 +1,12 @@
 /target
 .DS_Store
+
+# Local reverse-engineering corpus (real projects, Miniserver snapshots,
+# decompiled Loxone Config output). Never commit customer data or proprietary
+# decompiled code. Anonymised fixtures belong in a crate's `fixtures/` folder.
+/corpus/
+
+# Local proprietary installer, extracted app, and real project fixtures.
+/LoxoneConfig/
+/LoxoneConfigSetup.exe
+/Klimczaki.Loxone

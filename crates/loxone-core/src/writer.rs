@@ -1642,6 +1642,25 @@ fn tree_node_to_raw_node(tree_node: &TreeNode) -> RawNode {
 }
 
 
+/// Serializes a single raw DOM node (including its subtree) as indented XML.
+///
+/// The output intentionally omits the XML declaration/BOM; callers that need a
+/// full document should use [`serialize_loxone_xml`].
+pub fn serialize_raw_node(node: &RawNode) -> String {
+    let mut out = String::new();
+    write_raw_node(node, 0, &mut out);
+    out
+}
+
+/// Serializes a list of raw DOM roots as indented XML.
+pub fn serialize_raw_nodes(nodes: &[RawNode]) -> String {
+    let mut out = String::new();
+    for node in nodes {
+        write_raw_node(node, 0, &mut out);
+    }
+    out
+}
+
 fn write_raw_node(node: &RawNode, depth: usize, out: &mut String) {
     for _ in 0..depth {
         out.push('\t');

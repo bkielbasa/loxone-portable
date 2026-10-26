@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/loxone-core",
     "crates/loxone-gui",
+    "crates/loxone-format-lab",
 ]
 
 [workspace.package]

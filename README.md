@@ -34,7 +34,7 @@ I often use non-windows OSs and it forced me to use a VM in order to edit anythi
 <details>
 <summary><strong>2. Interactive Schematic Canvas & Authoring</strong></summary>
 
-- **Loxone Knowledge Base Block Catalog (83+ Schemas)**: Built-in catalog of function blocks and periphery items across Lighting, Shading, Climate, Audio, Security, Energy, Analog/Digital Logic, Counter/Timing, and System categories.
+- **Loxone Knowledge Base Block Catalog (220 Schemas)**: Built-in catalog of function blocks and periphery items across Lighting, Shading, Climate, Audio, Security, Energy, Analog/Digital Logic, Counter/Timing, and System categories.
 - **Full Schematic Editing**:
   - Add, move, resize (`Memo` boxes), and delete function blocks, I/O reference bars (`InputRef`, `OutputRef`, `OutputRefLM`), and memory flags (`Memory`).
   - Drag-to-connect pins with obstacle-avoiding orthogonal or Bezier wire routing.
@@ -142,6 +142,48 @@ I often use non-windows OSs and it forced me to use a VM in order to edit anythi
 | `Scroll` / `Pinch` | Pan / Zoom canvas |
 
 </details>
+
+---
+
+## Format Research Lab (`loxone-format-lab`)
+
+The `loxone-format-lab` crate is a corpus-driven reverse-engineering CLI used to
+extend the editor with evidence from real Loxone projects instead of guesswork.
+It depends only on `loxone-core` and never ships with the GUI.
+
+```bash
+# Survey type/attribute/pin coverage across a local corpus
+cargo run -p loxone-format-lab -- scan corpus/projects --out corpus/reports/scan.md
+
+# List block types, attributes, and pins that have no schema yet
+cargo run -p loxone-format-lab -- check corpus/projects
+
+# Structural diff between two saves (e.g. to learn what one Config edit changed)
+cargo run -p loxone-format-lab -- diff before.Loxone after.Loxone
+
+# Print the raw XML of matching nodes
+cargo run -p loxone-format-lab -- dump project.Loxone --type LightController2 --limit 5
+
+# Generate starter schema! entries for unknown block/periphery types
+cargo run -p loxone-format-lab -- gen corpus/projects --out corpus/reports/new-types.rs
+
+# Regenerate/compare snippets for types that already have a schema
+cargo run -p loxone-format-lab -- gen corpus/projects --include-known --out corpus/reports/known-types.rs
+```
+
+`check` and `gen` treat metadata, caption, and section XML types separately from
+real block/periphery types. Only types that carry connector pins or sit directly
+on a page are treated as actionable schema candidates; use `--include-non-block`
+to include the rest. `gen` emits only candidates by default.
+
+Put real projects, Miniserver snapshots, and decompiled metadata under the
+git-ignored `corpus/` directory (see `.gitignore`). Do **not** commit customer
+projects or decompiled Loxone Config source; only anonymised synthetic fixtures
+belong in the repository.
+
+See [`docs/reverse-engineering.md`](docs/reverse-engineering.md) for the full
+workflow: collecting a corpus, diffing edits, decompiling metadata, gathering
+Miniserver evidence, validating changes, and the suggested implementation order.
 
 ---
 

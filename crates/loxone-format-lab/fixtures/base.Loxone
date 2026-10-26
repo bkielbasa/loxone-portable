@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ControlList Version="274">
+	<C Type="Document" U="doc-1" Title="Lab House" ConfigVersion="17020828" CDate="2026-01-01 10:00:00" SL="1" Creator="Loxone Config" Street="Teststr" Town="Teststadt" PostCode="12345" Ctry="PL" Latitude="52.0" Longitude="21.0" Currency="PLN" APPID="AABBCCDD">
+		<C Type="CategoryCaption" U="cat-cap" Title="Categories">
+			<C Type="Category" U="cat-1" Title="Lighting" BkColor="164,112,255" CatGroup="Lighting"/>
+		</C>
+		<C Type="PlaceCaption" U="place-cap" Title="Rooms">
+			<C Type="Place" U="room-1" Title="Living Room" Sqm="30"/>
+			<C Type="Place" U="room-2" Title="Kitchen" Sqm="18"/>
+		</C>
+		<C Type="LoxLIVE" U="ms-1" Title="Miniserver" IntAddr="192.168.1.50" Serial="504F94A0ECAD" HoN="miniserver">
+			<C Type="DigitalIn" U="din-1" Title="Wall Switch" V="178">
+				<Co K="Q" U="pin-din-q"/>
+			</C>
+		</C>
+		<C Type="Program" U="prog-1" Title="Program">
+			<C Type="Page" U="page-1" Title="Lighting">
+				<IoData Cr="cat-1" Pr="room-1"/>
+				<C Type="InputRef" U="blk-ref" Title="Wall Switch" Px="0" Py="0" Px2="100" Py2="100" Ref="din-1">
+					<Co K="Q" U="pin-ref-q"/>
+				</C>
+				<C Type="LightController2" U="blk-light" Title="Main Light" Px="2000" Py="1000" Px2="4000" Py2="2000" Cl="255,200,0" V="1" WF="1" Nio="4">
+					<Co K="I1" U="pin-light-i1" Def="0">
+						<In Input="pin-ref-q"/>
+					</Co>
+					<Co K="Step" U="pin-light-step" Def="10"/>
+					<Co K="AQ1" U="pin-light-aq1"/>
+					<IoData Cr="cat-1" Pr="room-1"/>
+					<HCL Min="2000" Max="6500"/>
+				</C>
+				<C Type="MyCustomBlock" U="blk-custom" Title="Mystery" Px="5000" Py="1000" Px2="6000" Py2="1800" Mode="3" Threshold="12.5">
+					<Co K="I1" U="pin-custom-i1">
+						<In Input="pin-light-aq1"/>
+					</Co>
+					<Co K="Q1" U="pin-custom-q1"/>
+					<Display Text="Hello"/>
+				</C>
+			</C>
+		</C>
+	</C>
+</ControlList>
