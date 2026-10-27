@@ -4688,6 +4688,149 @@ static PAGE_SCHEMAS_5: &[BlockSchema] = &[
         &[]
     ),
 ];
+static TREE_SCHEMAS_3: &[BlockSchema] = &[
+    tree_schema!(
+        "BACnetAactor",
+        "BACnetAactor",
+        "Periphery",
+        "https://www.loxone.com/enen/kb/",
+        "Auto-generated candidate from LoxoneConfig.exe string table; verify against corpus and Loxone KB."
+    ),
+    tree_schema!(
+        "BACnetActor",
+        "BACnetActor",
+        "Periphery",
+        "https://www.loxone.com/enen/kb/",
+        "Auto-generated candidate from LoxoneConfig.exe string table; verify against corpus and Loxone KB."
+    ),
+    tree_schema!(
+        "BACnetAsensor",
+        "BACnetAsensor",
+        "Periphery",
+        "https://www.loxone.com/enen/kb/",
+        "Auto-generated candidate from LoxoneConfig.exe string table; verify against corpus and Loxone KB."
+    ),
+    tree_schema!(
+        "BACnetSensor",
+        "BACnetSensor",
+        "Periphery",
+        "https://www.loxone.com/enen/kb/",
+        "Auto-generated candidate from LoxoneConfig.exe string table; verify against corpus and Loxone KB."
+    ),
+    tree_schema!(
+        "BelimoAactor",
+        "BelimoAactor",
+        "Periphery",
+        "https://www.loxone.com/enen/kb/",
+        "Auto-generated candidate from LoxoneConfig.exe string table; verify against corpus and Loxone KB."
+    ),
+    tree_schema!(
+        "BelimoAsensor",
+        "BelimoAsensor",
+        "Periphery",
+        "https://www.loxone.com/enen/kb/",
+        "Auto-generated candidate from LoxoneConfig.exe string table; verify against corpus and Loxone KB."
+    ),
+    tree_schema!(
+        "BelimoSensor",
+        "BelimoSensor",
+        "Periphery",
+        "https://www.loxone.com/enen/kb/",
+        "Auto-generated candidate from LoxoneConfig.exe string table; verify against corpus and Loxone KB."
+    ),
+    tree_schema!(
+        "AmbientLight",
+        "AmbientLight",
+        "Periphery",
+        "https://www.loxone.com/enen/kb/",
+        "Auto-generated candidate from LoxoneConfig.exe string table; verify against corpus and Loxone KB."
+    ),
+    tree_schema!(
+        "AnalogInExtension",
+        "AnalogInExtension",
+        "Periphery",
+        "https://www.loxone.com/enen/kb/",
+        "Auto-generated candidate from LoxoneConfig.exe string table; verify against corpus and Loxone KB."
+    ),
+    tree_schema!(
+        "AnalogOutExtension",
+        "AnalogOutExtension",
+        "Periphery",
+        "https://www.loxone.com/enen/kb/",
+        "Auto-generated candidate from LoxoneConfig.exe string table; verify against corpus and Loxone KB."
+    ),
+    tree_schema!(
+        "BenchSensor",
+        "BenchSensor",
+        "Periphery",
+        "https://www.loxone.com/enen/kb/",
+        "Auto-generated candidate from LoxoneConfig.exe string table; verify against corpus and Loxone KB."
+    ),
+    tree_schema!(
+        "BackwashValve",
+        "BackwashValve",
+        "Periphery",
+        "https://www.loxone.com/enen/kb/",
+        "Auto-generated candidate from LoxoneConfig.exe string table; verify against corpus and Loxone KB."
+    ),
+    tree_schema!(
+        "AirTextActor",
+        "AirTextActor",
+        "Periphery",
+        "https://www.loxone.com/enen/kb/",
+        "Auto-generated candidate from LoxoneConfig.exe string table; verify against corpus and Loxone KB."
+    ),
+    tree_schema!(
+        "AirTextSensor",
+        "AirTextSensor",
+        "Periphery",
+        "https://www.loxone.com/enen/kb/",
+        "Auto-generated candidate from LoxoneConfig.exe string table; verify against corpus and Loxone KB."
+    ),
+    tree_schema!(
+        "ACControlAir",
+        "ACControlAir",
+        "Periphery",
+        "https://www.loxone.com/enen/kb/",
+        "Auto-generated candidate from LoxoneConfig.exe string table; verify against corpus and Loxone KB."
+    ),
+    tree_schema!(
+        "ACControlTree",
+        "ACControlTree",
+        "Periphery",
+        "https://www.loxone.com/enen/kb/",
+        "Auto-generated candidate from LoxoneConfig.exe string table; verify against corpus and Loxone KB."
+    ),
+    tree_schema!(
+        "Airmotor",
+        "Airmotor",
+        "Periphery",
+        "https://www.loxone.com/enen/kb/",
+        "Auto-generated candidate from LoxoneConfig.exe string table; verify against corpus and Loxone KB."
+    ),
+    tree_schema!(
+        "ArmedAlarm",
+        "ArmedAlarm",
+        "Periphery",
+        "https://www.loxone.com/enen/kb/",
+        "Auto-generated candidate from LoxoneConfig.exe string table; verify against corpus and Loxone KB."
+    ),
+    tree_schema!(
+        "CeilinglightAir",
+        "CeilinglightAir",
+        "Periphery",
+        "https://www.loxone.com/enen/kb/",
+        "Auto-generated candidate from LoxoneConfig.exe string table; verify against corpus and Loxone KB."
+    ),
+    tree_schema!(
+        "CeilinglightTree",
+        "CeilinglightTree",
+        "Periphery",
+        "https://www.loxone.com/enen/kb/",
+        "Auto-generated candidate from LoxoneConfig.exe string table; verify against corpus and Loxone KB."
+    ),
+];
+
 
 
 pub fn page_block_schemas() -> impl Iterator<Item = &'static BlockSchema> {
@@ -4708,6 +4851,7 @@ pub fn all_block_schemas() -> impl Iterator<Item = &'static BlockSchema> {
         .chain(PAGE_SCHEMAS_5.iter())
         .chain(TREE_SCHEMAS_1.iter())
         .chain(TREE_SCHEMAS_2.iter())
+        .chain(TREE_SCHEMAS_3.iter())
 }
 
 pub fn lookup_block_schema(type_name: &str) -> Option<&'static BlockSchema> {
@@ -4717,6 +4861,7 @@ pub fn lookup_block_schema(type_name: &str) -> Option<&'static BlockSchema> {
         PAGE_SCHEMAS_3,
         PAGE_SCHEMAS_4,
         PAGE_SCHEMAS_5,
+        TREE_SCHEMAS_3,
         TREE_SCHEMAS_1,
         TREE_SCHEMAS_2,
     ] {
