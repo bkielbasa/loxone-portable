@@ -195,6 +195,7 @@ static BLOCK_SCHEMAS: &[BlockSchema] = &[
         "Assisted living emergency button alarm with acoustic warning, escalation delay, and reset control.",
         &[
             attr!("V", "Version", None, ValueKind::Int, Some("11"), "Block version"),
+            attr!("Nio", "Connected Pins Count", None, ValueKind::Int, None, "Number of connector pins on block"),
             attr!("WF", "Visu Flags", None, ValueKind::Int, Some("1"), "Visualization flags"),
 
             attr!("TE", "Emergency Timeout", Some("s"), ValueKind::DurationSeconds, Some("20"), "Emergency escalation timeout"),
