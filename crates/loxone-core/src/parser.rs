@@ -69,6 +69,7 @@ pub fn parse_loxone_xml(xml: &str) -> Result<LoxoneProject, LoxoneError> {
         miniserver_ip: None,
         miniserver_serial: None,
         miniserver_hostname: None,
+        document_attrs: doc_node.attributes.clone(),
     };
 
     // First collect all wire source pin UUIDs across the entire document

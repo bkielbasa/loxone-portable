@@ -153,6 +153,12 @@ pub enum TopBarAction {
     ToggleSimulation,
     StepSimulation,
     ResetSimulation,
+    OpenProjectProperties,
+    OpenUserManagement,
+    OpenOperatingModes,
+    OpenNetworkSearch,
+    ExportPageSvg,
+    ExportDocumentation,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1789,6 +1795,60 @@ fn render_ribbon_row_2(
                         action = Some(act);
                     }
                 }
+
+                Frame::new()
+                    .fill(CAPSULE_BG)
+                    .stroke(Stroke::new(1.0_f32, BORDER_SUBTLE))
+                    .corner_radius(CornerRadius::same(7))
+                    .inner_margin(Margin::symmetric(4, 2))
+                    .show(ui, |ui| {
+                        ui.spacing_mut().item_spacing.x = 4.0;
+                        let admin_tiles: &[(&str, &str, &str, Color32, TopBarAction)] = &[
+                            (
+                                "🏠",
+                                "Properties",
+                                "Project properties: name, address, location, time zone, currency",
+                                LOXONE_GREEN,
+                                TopBarAction::OpenProjectProperties,
+                            ),
+                            (
+                                "👤",
+                                "Users & Rights",
+                                "Manage users, user groups and group permissions",
+                                ACCENT_BLUE,
+                                TopBarAction::OpenUserManagement,
+                            ),
+                            (
+                                "📅",
+                                "Operating Modes",
+                                "Operating modes and calendar entries (holidays, seasons)",
+                                Color32::from_rgb(0xE4, 0xB3, 0x3B),
+                                TopBarAction::OpenOperatingModes,
+                            ),
+                            (
+                                "🖼",
+                                "Export Page",
+                                "Export the active schematic page as an SVG drawing",
+                                Color32::from_rgb(0x9B, 0x72, 0xCF),
+                                TopBarAction::ExportPageSvg,
+                            ),
+                            (
+                                "📄",
+                                "Documentation",
+                                "Export a printable HTML project documentation (pages, blocks, rooms, users)",
+                                Color32::from_rgb(0x52, 0xB7, 0x88),
+                                TopBarAction::ExportDocumentation,
+                            ),
+                        ];
+                        for (icon, label, tip, tint, act) in admin_tiles {
+                            if render_ribbon_chip(ui, icon, label, tip, has_project, *tint)
+                                .clicked()
+                                && has_project
+                            {
+                                action = Some(act.clone());
+                            }
+                        }
+                    });
             }
             RibbonTab::Miniserver => {
                 let ms_border = match connection_status {
@@ -1846,6 +1906,18 @@ fn render_ribbon_row_2(
                     .inner_margin(Margin::symmetric(4, 2))
                     .show(ui, |ui| {
                         ui.spacing_mut().item_spacing.x = 4.0;
+                        if render_ribbon_chip(
+                            ui,
+                            "📡",
+                            "Search Network",
+                            "Search the local network for Miniservers (UDP broadcast)",
+                            true,
+                            ACCENT_BLUE,
+                        )
+                        .clicked()
+                        {
+                            action = Some(TopBarAction::OpenNetworkSearch);
+                        }
                         if render_ribbon_chip(
                             ui,
                             "▶",
@@ -2039,6 +2111,18 @@ fn render_ribbon_row_2(
                     .inner_margin(Margin::symmetric(4, 2))
                     .show(ui, |ui| {
                         ui.spacing_mut().item_spacing.x = 4.0;
+                        if render_ribbon_chip(
+                            ui,
+                            "📡",
+                            "Search Network",
+                            "Search the local network for Miniservers (UDP broadcast)",
+                            true,
+                            ACCENT_BLUE,
+                        )
+                        .clicked()
+                        {
+                            action = Some(TopBarAction::OpenNetworkSearch);
+                        }
                         if render_ribbon_chip(
                             ui,
                             "▶",

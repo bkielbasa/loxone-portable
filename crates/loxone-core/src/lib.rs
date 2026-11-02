@@ -1,6 +1,8 @@
 pub mod advanced_blocks_config;
 pub mod block_schema;
+pub mod discovery;
 pub mod efm_config;
+pub mod export;
 pub mod factory;
 pub mod light_config;
 pub mod linter;
@@ -11,6 +13,7 @@ pub mod model;
 pub mod object_config;
 pub mod parser;
 pub mod periphery_provisioning;
+pub mod project_admin;
 pub mod room_controller_config;
 pub mod simulator;
 pub mod state_alarm_config;

@@ -12,6 +12,7 @@ use loxone_core::simulator::OfflineSimulator;
 use loxone_core::writer::ProjectEdit;
 use loxone_core::xref::ObjectLocation;
 
+use crate::admin_modals::{render_admin_modals, AdminAction, AdminModalsState};
 use crate::advanced_blocks_modal::{render_advanced_blocks_modal, AdvancedBlocksModalState};
 use crate::canvas::{render_page_canvas, CanvasAction, CanvasViewport};
 use crate::command_palette::{CommandPaletteState, PaletteAction};
@@ -91,6 +92,9 @@ pub struct AutoScreenshotConfig {
     pub page_query: Option<String>,
     pub identify_uuid: Option<String>,
     pub enable_live: bool,
+    /// Opens one of the administration dialogs before capturing
+    /// (`properties`, `users`, `modes`, `network`).
+    pub dialog: Option<String>,
 }
 
 pub fn save_color_image_png(image: &egui::ColorImage, path: &Path) -> Result<(), String> {
@@ -135,6 +139,7 @@ pub struct LoxonePortableApp {
     pub alarm_clock_modal: AlarmClockModalState,
     pub advanced_blocks_modal: AdvancedBlocksModalState,
     pub periphery_modal: PeripheryModalState,
+    pub admin_modals: AdminModalsState,
     pub simulator: OfflineSimulator,
     pub next_created_counter: usize,
     pub error_banner: Option<String>,
@@ -202,6 +207,7 @@ impl Default for LoxonePortableApp {
             alarm_clock_modal: AlarmClockModalState::default(),
             advanced_blocks_modal: AdvancedBlocksModalState::default(),
             periphery_modal: PeripheryModalState::default(),
+            admin_modals: AdminModalsState::default(),
             simulator: OfflineSimulator::default(),
             next_created_counter: 1,
             error_banner: None,
@@ -269,6 +275,13 @@ impl LoxonePortableApp {
             if let Some(id_uuid) = &cfg.identify_uuid {
                 app.trigger_device_identification(id_uuid);
             }
+            match cfg.dialog.as_deref() {
+                Some("properties") => app.execute_top_bar_action(TopBarAction::OpenProjectProperties),
+                Some("users") => app.execute_top_bar_action(TopBarAction::OpenUserManagement),
+                Some("modes") => app.execute_top_bar_action(TopBarAction::OpenOperatingModes),
+                Some("network") => app.execute_top_bar_action(TopBarAction::OpenNetworkSearch),
+                _ => {}
+            }
             app.auto_screenshot = Some(cfg);
         }
         app
@@ -302,6 +315,7 @@ impl LoxonePortableApp {
                 self.room_controller_modal.is_schedule_open = false;
                 self.advanced_blocks_modal.is_open = false;
                 self.periphery_modal.close();
+        self.admin_modals.close();
                 self.identifying_devices.clear();
                 self.simulator = OfflineSimulator::default();
                 self.viewport.interaction = Default::default();
@@ -346,6 +360,7 @@ impl LoxonePortableApp {
         self.room_controller_modal.is_schedule_open = false;
         self.advanced_blocks_modal.is_open = false;
         self.periphery_modal.close();
+        self.admin_modals.close();
         self.simulator = OfflineSimulator::default();
         self.viewport.interaction = Default::default();
         self.error_banner = None;
@@ -483,6 +498,7 @@ impl LoxonePortableApp {
         self.insert_modal.close();
         self.advanced_blocks_modal.is_open = false;
         self.periphery_modal.close();
+        self.admin_modals.close();
         self.simulator = OfflineSimulator::default();
         self.viewport.interaction = Default::default();
         self.project_launcher.refresh();
@@ -1122,6 +1138,30 @@ impl LoxonePortableApp {
                 crate::i18n::save_language(self.language);
             }
             TopBarAction::SelectRibbonTab(_) => {}
+            TopBarAction::OpenProjectProperties => {
+                if let Some(proj) = &self.project {
+                    self.admin_modals.open_properties(proj);
+                }
+            }
+            TopBarAction::OpenUserManagement => {
+                if self.project.is_some() {
+                    self.admin_modals.open_users();
+                }
+            }
+            TopBarAction::OpenOperatingModes => {
+                if self.project.is_some() {
+                    self.admin_modals.open_modes();
+                }
+            }
+            TopBarAction::OpenNetworkSearch => {
+                self.admin_modals.open_network();
+            }
+            TopBarAction::ExportPageSvg => {
+                self.export_active_page_svg();
+            }
+            TopBarAction::ExportDocumentation => {
+                self.export_documentation_html();
+            }
             TopBarAction::ConfigureSelectedObject => {
                 if let Some(uuid) = self.selected_uuid.clone() {
                     self.show_right_panel = true;
@@ -1620,6 +1660,7 @@ impl LoxonePortableApp {
             self.alarm_clock_modal.is_open = false;
             self.advanced_blocks_modal.is_open = false;
             self.periphery_modal.close();
+        self.admin_modals.close();
 
             let opened = self.efm_modal.open_for_block(proj, block_uuid)
                 || self.light_controller_modal.open_for_block(proj, block_uuid)
@@ -1783,6 +1824,55 @@ impl LoxonePortableApp {
             if let Some(idx) = target_idx {
                 self.active_page_index = idx;
                 self.needs_initial_fit = true;
+            }
+        }
+    }
+
+    fn export_file_stem(&self) -> String {
+        self.loaded_path
+            .as_ref()
+            .and_then(|p| p.file_stem())
+            .map(|s| s.to_string_lossy().to_string())
+            .or_else(|| self.project.as_ref().map(|p| p.metadata.title.clone()))
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or_else(|| "Project".to_string())
+    }
+
+    pub fn export_active_page_svg(&mut self) {
+        let Some(proj) = &self.project else { return };
+        let Some(page) = proj.pages.get(self.active_page_index) else {
+            self.error_banner = Some("No page is open to export.".to_string());
+            return;
+        };
+        let safe: String = page
+            .title
+            .chars()
+            .map(|c| if c.is_alphanumeric() || c == ' ' || c == '-' { c } else { '_' })
+            .collect();
+        let default_name = format!("{} - {}.svg", self.export_file_stem(), safe.trim());
+        let svg = loxone_core::export::page_to_svg(proj, page);
+        if let Some(path) = rfd::FileDialog::new()
+            .set_file_name(&default_name)
+            .add_filter("SVG drawing", &["svg"])
+            .save_file()
+        {
+            if let Err(e) = std::fs::write(&path, svg) {
+                self.error_banner = Some(format!("Failed to write {}: {}", path.display(), e));
+            }
+        }
+    }
+
+    pub fn export_documentation_html(&mut self) {
+        let Some(proj) = &self.project else { return };
+        let default_name = format!("{} - Documentation.html", self.export_file_stem());
+        let html = loxone_core::export::project_documentation_html(proj);
+        if let Some(path) = rfd::FileDialog::new()
+            .set_file_name(&default_name)
+            .add_filter("HTML document", &["html", "htm"])
+            .save_file()
+        {
+            if let Err(e) = std::fs::write(&path, html) {
+                self.error_banner = Some(format!("Failed to write {}: {}", path.display(), e));
             }
         }
     }
@@ -2432,6 +2522,17 @@ impl eframe::App for LoxonePortableApp {
             self.execute_edit(edit);
         }
 
+        // Project administration dialogs (properties, users, modes, network search)
+        for act in render_admin_modals(ctx, &mut self.admin_modals, self.project.as_ref()) {
+            match act {
+                AdminAction::Edit(edit) => self.execute_edit(edit),
+                AdminAction::UseMiniserver(address) => {
+                    self.miniserver_modal.host = address;
+                    self.open_miniserver_modal();
+                }
+            }
+        }
+
         // Miniserver Connection & Backup Browser Modal Overlay
         if let Some(modal_act) = render_miniserver_modal(
             ctx,
@@ -2730,13 +2831,14 @@ impl eframe::App for LoxonePortableApp {
                 })
             });
             if let Some(image) = captured {
+                if std::env::var("LOXONE_DEBUG_SHOT").is_ok() { eprintln!("screen_rect={:?} ppp={} image={:?}", ctx.screen_rect(), ctx.pixels_per_point(), image.size); }
                 let _ = save_color_image_png(&image, &cfg.output_path);
                 self.auto_screenshot = None;
                 self.allow_close_after_discard = true;
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             } else {
                 self.auto_screenshot_frame_count += 1;
-                if self.auto_screenshot_frame_count == 5 {
+                if self.auto_screenshot_frame_count == 120 {
                     ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(
                         egui::UserData::default(),
                     ));

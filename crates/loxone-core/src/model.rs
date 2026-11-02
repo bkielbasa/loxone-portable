@@ -55,6 +55,19 @@ pub struct ProjectMetadata {
     pub miniserver_ip: Option<String>,
     pub miniserver_serial: Option<String>,
     pub miniserver_hostname: Option<String>,
+    /// Every attribute of the root `<C Type="Document">` node, in file order.
+    /// Edited through `ProjectEdit::SetControlAttr` with the document UUID and
+    /// written back verbatim on save (Project Properties editor).
+    pub document_attrs: Vec<(String, String)>,
+}
+
+impl ProjectMetadata {
+    pub fn doc_attr(&self, key: &str) -> Option<&str> {
+        self.document_attrs
+            .iter()
+            .find(|(k, _)| k == key)
+            .map(|(_, v)| v.as_str())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]

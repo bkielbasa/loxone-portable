@@ -1401,7 +1401,7 @@ static PAGE_SCHEMAS_3: &[BlockSchema] = &[
 
             pin_in!("Input", "Input", "Input pin Input"),
         ],
-        &[ChildConfigKind::IoData]
+        &[ChildConfigKind::IoData, ChildConfigKind::Display]
     ),
     schema!(
         "MeterAbsBi",
@@ -2028,7 +2028,7 @@ static PAGE_SCHEMAS_3: &[BlockSchema] = &[
             pin_in!("I1", "I1", "Input pin I1"),
             pin_out!("OutputAPI", "OutputAPI", "Output pin OutputAPI"),
         ],
-        &[ChildConfigKind::IoData, ChildConfigKind::CoHist]
+        &[ChildConfigKind::IoData, ChildConfigKind::Display, ChildConfigKind::CoHist]
     ),
     schema!(
         "StateV",
@@ -2051,7 +2051,7 @@ static PAGE_SCHEMAS_3: &[BlockSchema] = &[
             pin_out!("AQ", "AQ", "Output pin AQ"),
             pin_in!("I", "I", "Input pin I"),
         ],
-        &[ChildConfigKind::IoData]
+        &[ChildConfigKind::IoData, ChildConfigKind::Display]
     ),
     schema!(
         "Text",
@@ -2875,7 +2875,7 @@ macro_rules! tree_schema {
             attributes: &[],
             pin_params: &[],
             pin_docs: &[],
-            child_configs: &[ChildConfigKind::IoData],
+            child_configs: &[ChildConfigKind::IoData, ChildConfigKind::Display],
         }
     };
     ($ty:expr, $name:expr, $cat:expr, $url:expr, $sum:expr, $attrs:expr, $pins:expr) => {
@@ -2888,7 +2888,7 @@ macro_rules! tree_schema {
             attributes: $attrs,
             pin_params: &[],
             pin_docs: $pins,
-            child_configs: &[ChildConfigKind::IoData],
+            child_configs: &[ChildConfigKind::IoData, ChildConfigKind::Display],
         }
     };
 }

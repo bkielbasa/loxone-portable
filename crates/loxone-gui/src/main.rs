@@ -1,5 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod admin_modals;
 mod advanced_blocks_modal;
 mod app;
 mod canvas;
@@ -32,6 +33,7 @@ fn parse_cli_args() -> (Option<PathBuf>, Option<AutoScreenshotConfig>) {
     let mut page_query: Option<String> = None;
     let mut identify_uuid: Option<String> = None;
     let mut enable_live = false;
+    let mut dialog: Option<String> = None;
 
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -62,6 +64,9 @@ fn parse_cli_args() -> (Option<PathBuf>, Option<AutoScreenshotConfig>) {
                     identify_uuid = Some(val);
                 }
             }
+            "--dialog" => {
+                dialog = args.next().map(|v| v.to_lowercase());
+            }
             "--live" => {
                 enable_live = true;
             }
@@ -81,6 +86,7 @@ fn parse_cli_args() -> (Option<PathBuf>, Option<AutoScreenshotConfig>) {
         page_query,
         identify_uuid,
         enable_live,
+        dialog,
     });
 
     (initial_path, auto_screenshot)

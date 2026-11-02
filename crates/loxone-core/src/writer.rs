@@ -190,6 +190,23 @@ fn apply_edit_inner(
                     }
                     _ => {}
                 }
+            } else if !control_uuid.is_empty() && *control_uuid == project.metadata.uuid {
+                let meta = &mut project.metadata;
+                old_value = meta.doc_attr(attr_name).map(str::to_string);
+                set_vec_attr(&mut meta.document_attrs, attr_name, value.as_deref());
+                let v = value.clone().unwrap_or_default();
+                match attr_name.as_str() {
+                    "Title" => meta.title = v,
+                    "Creator" => meta.creator = v,
+                    "Street" => meta.street = v,
+                    "Town" => meta.town = v,
+                    "PostCode" => meta.postcode = v,
+                    "Ctry" => meta.country = v,
+                    "Latitude" => meta.latitude = v,
+                    "Longitude" => meta.longitude = v,
+                    "Currency" => meta.currency = v,
+                    _ => {}
+                }
             } else if let Some(page) = project.pages.iter_mut().find(|p| p.uuid == *control_uuid) {
                 if attr_name == "Title" {
                     old_value = Some(page.title.clone());
@@ -1150,6 +1167,14 @@ fn sync_raw_node(
         let node_type = node.attr("Type").unwrap_or_default().to_string();
         match node_type.as_str() {
             "Document" => {
+                for (k, v) in &project.metadata.document_attrs {
+                    if matches!(k.as_str(), "Type" | "U" | "V") {
+                        continue;
+                    }
+                    if node.attr(k) != Some(v.as_str()) {
+                        node.set_attr(k, Some(v));
+                    }
+                }
                 if !project.metadata.c_date.is_empty() {
                     node.set_attr("CDate", Some(&project.metadata.c_date));
                 }
