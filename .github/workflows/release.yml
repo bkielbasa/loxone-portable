@@ -2,21 +2,163 @@ name: Release Binaries (Windows, Linux, macOS)
 
 on:
   release:
-    types: [published]
-  push:
-    tags:
-      - "v*"
+    types: [created, published]
   workflow_dispatch:
 
 permissions:
   contents: write
 
+concurrency:
+  group: release-${{ github.event.release.tag_name || github.ref_name }}
+  cancel-in-progress: false
+
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  release-notes:
+    name: Generate Release Notes
+    if: github.event_name == 'release'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository with full history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Generate and update GitHub Release notes
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          set -euo pipefail
+
+          git fetch --tags --force
+          PREV_TAG="$(git describe --tags --abbrev=0 "${TAG}^" 2>/dev/null || true)"
+
+          if [ -n "$PREV_TAG" ]; then
+            RANGE="${PREV_TAG}..${TAG}"
+          else
+            RANGE="${TAG}"
+          fi
+
+          FEATURES=""
+          FIXES=""
+          REFACTORS=""
+          DOCS=""
+          OTHERS=""
+          FEAT_RE="^feat(\(([^)]+)\))?!?:[[:space:]]*(.+)$"
+          FIX_RE="^fix(\(([^)]+)\))?!?:[[:space:]]*(.+)$"
+          REF_RE="^(perf|refactor)(\(([^)]+)\))?!?:[[:space:]]*(.+)$"
+          DOCS_RE="^docs(\(([^)]+)\))?!?:[[:space:]]*(.+)$"
+          FULL_CHANGELOG_RE="^\*\*Full Changelog\*\*:"
+
+          while IFS='|' read -r HASH SUBJECT; do
+            [ -z "$HASH" ] && continue
+            LINK="([\`${HASH}\`](https://github.com/${GITHUB_REPOSITORY}/commit/${HASH}))"
+
+            if [[ "$SUBJECT" =~ $FEAT_RE ]]; then
+              SCOPE="${BASH_REMATCH[2]}"
+              MSG="${BASH_REMATCH[3]}"
+              if [ -n "$SCOPE" ]; then
+                FEATURES+="- **${SCOPE}**: ${MSG} ${LINK}"$'\n'
+              else
+                FEATURES+="- ${MSG} ${LINK}"$'\n'
+              fi
+            elif [[ "$SUBJECT" =~ $FIX_RE ]]; then
+              SCOPE="${BASH_REMATCH[2]}"
+              MSG="${BASH_REMATCH[3]}"
+              if [ -n "$SCOPE" ]; then
+                FIXES+="- **${SCOPE}**: ${MSG} ${LINK}"$'\n'
+              else
+                FIXES+="- ${MSG} ${LINK}"$'\n'
+              fi
+            elif [[ "$SUBJECT" =~ $REF_RE ]]; then
+              SCOPE="${BASH_REMATCH[3]}"
+              MSG="${BASH_REMATCH[4]}"
+              if [ -n "$SCOPE" ]; then
+                REFACTORS+="- **${SCOPE}**: ${MSG} ${LINK}"$'\n'
+              else
+                REFACTORS+="- ${MSG} ${LINK}"$'\n'
+              fi
+            elif [[ "$SUBJECT" =~ $DOCS_RE ]]; then
+              SCOPE="${BASH_REMATCH[2]}"
+              MSG="${BASH_REMATCH[3]}"
+              if [ -n "$SCOPE" ]; then
+                DOCS+="- **${SCOPE}**: ${MSG} ${LINK}"$'\n'
+              else
+                DOCS+="- ${MSG} ${LINK}"$'\n'
+              fi
+            else
+              OTHERS+="- ${SUBJECT} ${LINK}"$'\n'
+            fi
+          done < <(git log "$RANGE" --no-merges --pretty=format:"%h|%s")
+
+          {
+            echo "<!-- auto-release-notes -->"
+            echo "## What's Changed in ${TAG}"
+            echo ""
+            if [ -n "$FEATURES" ]; then
+              echo "### ✨ Features"
+              printf "%s\n" "$FEATURES"
+            fi
+            if [ -n "$FIXES" ]; then
+              echo "### 🐛 Bug Fixes"
+              printf "%s\n" "$FIXES"
+            fi
+            if [ -n "$REFACTORS" ]; then
+              echo "### ⚡ Refactoring & Performance"
+              printf "%s\n" "$REFACTORS"
+            fi
+            if [ -n "$DOCS" ]; then
+              echo "### 📚 Documentation"
+              printf "%s\n" "$DOCS"
+            fi
+            if [ -n "$OTHERS" ]; then
+              echo "### 🔧 Other Changes"
+              printf "%s\n" "$OTHERS"
+            fi
+
+            echo "### 📦 Prebuilt Binaries"
+            echo ""
+            echo "| Platform | Archive / Bundle |"
+            echo "| :--- | :--- |"
+            echo "| **macOS (Apple Silicon)** | \`loxone-portable-macos-aarch64-app.zip\` (\`.app\` bundle) / \`.tar.gz\` |"
+            echo "| **macOS (Intel)** | \`loxone-portable-macos-x86_64-app.zip\` (\`.app\` bundle) / \`.tar.gz\` |"
+            echo "| **Windows (x86_64)** | \`loxone-portable-windows-x86_64.zip\` |"
+            echo "| **Linux (x86_64)** | \`loxone-portable-linux-x86_64.tar.gz\` |"
+            echo ""
+
+            if [ -n "$PREV_TAG" ]; then
+              echo "**Full Changelog**: https://github.com/${GITHUB_REPOSITORY}/compare/${PREV_TAG}...${TAG}"
+            else
+              echo "**Full Changelog**: https://github.com/${GITHUB_REPOSITORY}/commits/${TAG}"
+            fi
+          } > generated_notes.md
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            EXISTING_BODY="$(gh release view "$TAG" --json body -q .body || true)"
+            TRIMMED="$(printf "%s" "$EXISTING_BODY" | tr -d '[:space:]')"
+            if [ -z "$TRIMMED" ] || [[ "$EXISTING_BODY" == *"<!-- auto-release-notes -->"* ]] || [[ "$EXISTING_BODY" =~ $FULL_CHANGELOG_RE ]]; then
+              cp generated_notes.md release_notes.md
+            else
+              {
+                printf "%s\n\n---\n\n" "$EXISTING_BODY"
+                cat generated_notes.md
+              } > release_notes.md
+            fi
+            gh release edit "$TAG" --notes-file release_notes.md
+          else
+            gh release create "$TAG" --title "$TAG" --notes-file generated_notes.md
+          fi
+
   build-release:
     name: Build (${{ matrix.artifact_name }})
+    needs: [release-notes]
+    if: >-
+      always() &&
+      (needs.release-notes.result == 'success' || needs.release-notes.result == 'skipped') &&
+      (github.event_name != 'release' || github.event.action == 'published')
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -137,8 +279,8 @@ jobs:
           path: dist/*
 
       - name: Attach binaries to GitHub Release
-        if: github.event_name == 'release' || startsWith(github.ref, 'refs/tags/v')
+        if: github.event_name == 'release'
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ github.event.release.tag_name }}
           files: dist/*
-          generate_release_notes: true
