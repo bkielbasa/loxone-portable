@@ -1093,7 +1093,7 @@ pub fn parse_ll_io_response(xml: &str) -> Option<LiveControlSnapshot> {
     let primary_value = root
         .attr("value")
         .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty());
+        .filter(|s| !s.is_empty() && s != "?" && !(s.starts_with('<') && s.ends_with('>')));
     let code = root
         .attr("Code")
         .or_else(|| root.attr("code"))
@@ -1101,7 +1101,23 @@ pub fn parse_ll_io_response(xml: &str) -> Option<LiveControlSnapshot> {
         .unwrap_or(200);
 
     let mut outputs = std::collections::BTreeMap::new();
-    for child in &root.children {
+    for state_attr in &[
+        "StateUp",
+        "StateDown",
+        "StatePos",
+        "StateShade",
+        "StateAutoShade",
+        "StateSafety",
+        "StateLock",
+    ] {
+        if let Some(v) = root.attr(state_attr) {
+            let v_clean = v.trim();
+            if !v_clean.is_empty() {
+                outputs.insert((*state_attr).to_string(), v_clean.to_string());
+            }
+        }
+    }
+    for (idx, child) in root.children.iter().enumerate() {
         let key = child
             .attr("name")
             .or_else(|| child.attr("id"))
@@ -1110,8 +1126,19 @@ pub fn parse_ll_io_response(xml: &str) -> Option<LiveControlSnapshot> {
         if let (Some(k), Some(v)) = (key, val) {
             let k_clean = k.trim();
             let v_clean = v.trim();
+            // Firmware 17.x LightController2 /dev/sps/io/<uuid>/all returns Type="RGB|Switch" value="383"
+            // (0x17F static capability mask) on all 18 channels regardless of active state.
+            if child.attr("Type").is_some() && v_clean == "383" {
+                continue;
+            }
             if !k_clean.is_empty() {
                 outputs.insert(k_clean.to_string(), v_clean.to_string());
+                let nr = child
+                    .attr("nr")
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or_else(|| (idx + 1).to_string());
+                outputs.insert(format!("#{}", nr), v_clean.to_string());
             }
         }
     }
@@ -1180,7 +1207,7 @@ pub fn format_live_signal(
     }
 
     // 2. Smart Actuator / LightController2 OutputAPI / SMA ("WW(0%)" / "WW(1%)")
-    let is_sma = hint_pin_key == "OutputAPI"
+    let is_sma = (hint_pin_key == "OutputAPI" && !matches!(hint_block_type, "State" | "TextState"))
         || hint_pin_key == "SMA"
         || trimmed.starts_with("WW(")
         || trimmed.starts_with("RGB(")
@@ -1315,9 +1342,10 @@ pub fn format_live_signal(
     let is_analog_pin = !is_light_controller_aq
         && (matches!(
             key_upper.as_str(),
-            "I1" | "I2" | "I3" | "I4" | "HC1" | "HC2" | "V1" | "V2" | "H1" | "H2" | "C1" | "C2" | "AQ" | "AI" | "VQ" | "VAL" | "POS"
+            "I1" | "I2" | "I3" | "I4" | "HC1" | "HC2" | "V1" | "V2" | "H1" | "H2" | "C1" | "C2" | "AQ" | "AI" | "VQ" | "VAL" | "POS" | "OUTPUTONTIME"
         ) || key_upper.starts_with("AI")
             || key_upper.starts_with("AQ")
+            || key_upper.ends_with("POS")
             || title_lower.contains("zawór"));
 
     if let Some(num) = parse_numeric_prefix(trimmed) {
@@ -2401,6 +2429,16 @@ impl LiveValueStore {
             }
         }
 
+        // If this block was actively polled from the live Miniserver and no manual overrides exist,
+        // prefer the real hardware output snapshot over local heuristic simulation.
+        if self.polled_ids.contains(&block.uuid) && self.pin_overrides.is_empty() {
+            if let Some(snap) = self.controls.get(&block.uuid) {
+                if let Some(v) = Self::lookup_live_output(snap, &block.block_type, &pin.key) {
+                    return format_live_signal(v, &block.title, &pin.key, &block.block_type);
+                }
+            }
+        }
+
         // For output pins on lighting, switch, pushbutton, and logic blocks, evaluate
         // live output state from connected upstream input pins when any input is active or overridden.
         if depth < 4 && pin.incoming_links.is_empty() {
@@ -2461,6 +2499,57 @@ impl LiveValueStore {
                 if let Some(v) = snap.outputs.get(k) {
                     return Some(v.as_str());
                 }
+            }
+        }
+        let mapped_key = match (block_type, pin_key) {
+            ("HeatIRoomController2", "AQh") => Some("H"),
+            ("HeatIRoomController2", "AQc") => Some("C"),
+            ("HeatIRoomController2", "AQhc") => Some("HC"),
+            ("HeatIRoomController2", "AQh1") => Some("H1"),
+            ("HeatIRoomController2", "AQc1") => Some("C1"),
+            ("HeatIRoomController2", "AQhc1") => Some("HC1"),
+            ("HeatIRoomController2", "AQh2") => Some("H2"),
+            ("HeatIRoomController2", "AQc2") => Some("C2"),
+            ("HeatIRoomController2", "AQhc2") => Some("HC2"),
+            ("HeatIRoomController2", "AQh3") => Some("H3"),
+            ("HeatIRoomController2", "AQc3") => Some("C3"),
+            ("HeatIRoomController2", "AQhc3") => Some("HC3"),
+            ("HeatIRoomController2", "Qs") => Some("Shd"),
+            ("HeatIRoomController2", "AQs") => Some("HCm"),
+            ("HeatIRoomController2", "Qe") => Some("Error"),
+            ("HeatIRoomController2", "Qa") => Some("TxErr"),
+            ("HeatIRoomController2", "AQt") => Some("ϑt"),
+            ("HeatIRoomController2", "AQhm") => Some("Om"),
+            ("HeatIRoomController2", "AQtm") => Some("Os"),
+            ("HeatIRoomController2", "Qb") => Some("Boost"),
+            ("HeatIRoomController2", "OutputAPI") => Some("API"),
+            ("AutoJalousie", "OutputUp") => Some("StateUp"),
+            ("AutoJalousie", "OutputDown") => Some("StateDown"),
+            ("AutoJalousie", "OutputPos") => Some("StatePos"),
+            ("AutoJalousie", "OutputLPos") => Some("StateShade"),
+            ("AutoJalousie", "OutputAutoShade") => Some("StateAutoShade"),
+            ("AutoJalousie", "OutputSafety") => Some("StateSafety"),
+            ("AutoJalousie", "OutputLock") => Some("StateLock"),
+            ("State" | "TextState", "TQ" | "OutputAPI") => Some("#1"),
+            ("PresenceDetector", "OutputPresence") => Some("P"),
+            ("PresenceDetector", "OutputActive") => Some("Pc"),
+            ("PresenceDetector", "OutputOn") => Some("Pon"),
+            ("PresenceDetector", "OutputOff") => Some("Poff"),
+            ("PresenceDetector", "OutputOnTime") => Some("Pd"),
+            ("PresenceDetector", "OutputWarn") => Some("Warn"),
+            ("PresenceDetector", "OutputAPI") => Some("API"),
+            ("LongClick" | "MultiClick", "Q1") => Some("O1"),
+            ("LongClick" | "MultiClick", "Q2") => Some("O2"),
+            ("LongClick" | "MultiClick", "Q3") => Some("O3"),
+            ("LongClick" | "MultiClick", "Q4") => Some("O4"),
+            ("LongClick" | "MultiClick", "AQ") => Some("V"),
+            ("And" | "Or" | "Not", "Q") => Some("O"),
+            ("Equal", "Q") => Some("E"),
+            _ => None,
+        };
+        if let Some(k) = mapped_key {
+            if let Some(v) = snap.outputs.get(k) {
+                return Some(v.as_str());
             }
         }
         None
@@ -3617,5 +3706,218 @@ mod tests {
             }
         }
         assert!(store.poll_count >= 3, "should have polled at least 3 live controls on Ogrzewanie");
+
+        if let Some(agatka) = project.pages.iter().find(|p| p.title == "Pokój Agatki") {
+            let agatka_ids = LiveValueStore::collect_poll_ids_for_page(agatka, &project);
+            let agatka_batch = MiniserverClient::fetch_batch_io_states(&creds, &agatka_ids);
+            for (id, res) in agatka_batch {
+                if let Ok(snap) = res {
+                    store.apply_polled_snapshot(id, snap);
+                }
+            }
+            for blk in &agatka.blocks {
+                if blk.is_ref_bar() {
+                    let sig = store.resolve_ref_bar_signal(blk, agatka, &project);
+                    assert!(
+                        !sig.formatted.starts_with('<') && sig.formatted != "?",
+                        "ref bar {} formatted signal should not contain raw format placeholder: {}",
+                        blk.title,
+                        sig.formatted
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_pokoj_agatki_live_responses_map_sensors_irc2_state_and_jalousie() {
+        let sample_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("Sample.Loxone");
+        let xml = std::fs::read_to_string(&sample_path).expect("Sample.Loxone should be readable");
+        let project = crate::parser::parse_loxone_xml(&xml).expect("Sample.Loxone should parse");
+        let page = project
+            .pages
+            .iter()
+            .find(|p| p.title == "Pokój Agatki")
+            .expect("Pokój Agatki page should exist");
+
+        let mut store = LiveValueStore::new();
+        store.seed_project_defaults(&project);
+
+        // 1. T5 (Touch Pure Tree) with unexpanded `<v.i>` format string in `<LL value="...">`
+        let t5_snap = parse_ll_io_response(
+            r#"<LL control="dev/sps/io/1a4f5379-0236-dde7-ffff51535bcccc04/all" value="&lt;v.i&gt;" Code="200">
+                <output name="AQ" nr="1" value="0.000"/>
+                <output name="Q" nr="2" value="0"/>
+            </LL>"#,
+        )
+        .expect("T5 response should parse");
+        assert_eq!(t5_snap.primary_value, None);
+        store.apply_polled_snapshot(
+            "1a4f5379-0236-dde7-ffff51535bcccc04".to_string(),
+            t5_snap,
+        );
+
+        let t5_ref = page
+            .blocks
+            .iter()
+            .find(|b| b.is_input_ref_bar() && b.title == "T5")
+            .expect("T5 InputRef should exist on Pokój Agatki");
+        let t5_sig = store.resolve_ref_bar_signal(t5_ref, page, &project);
+        assert_eq!(t5_sig.formatted, "0/0/0/0");
+        assert!(!t5_sig.is_active);
+
+        // 2. Smart Actor RGBW OutputRef with unexpanded `<v.col>` format string
+        let sma_snap = parse_ll_io_response(
+            r#"<LL control="dev/sps/io/194636e1-0205-828d-ffff51535bcccc04/all" value="&lt;v.col&gt;" Code="200"/>"#,
+        )
+        .expect("Smart Actor response should parse");
+        assert_eq!(sma_snap.primary_value, None);
+        store.apply_polled_snapshot(
+            "194636e1-0205-828d-ffff51535bcccc04".to_string(),
+            sma_snap,
+        );
+
+        // 3. LightController2 with `value="?"` and static `value="383"` on `<output Type="RGB|Switch">`
+        let lc_snap = parse_ll_io_response(
+            r#"<LL control="dev/sps/io/19eb19a7-024f-307d-ffff51535bcccc04/all" value="?" Code="200">
+                <output name="Oświetlenie " nr="1" Type="RGB" value="383"/>
+                <output name="Obwód 2" nr="2" Type="Switch" value="383"/>
+            </LL>"#,
+        )
+        .expect("LightController2 response should parse");
+        assert_eq!(lc_snap.primary_value, None);
+        assert!(
+            lc_snap.outputs.is_empty(),
+            "static 383 channel placeholders should not be treated as active brightness values"
+        );
+        store.apply_polled_snapshot(
+            "19eb19a7-024f-307d-ffff51535bcccc04".to_string(),
+            lc_snap,
+        );
+
+        // 4. HeatIRoomController2 (`Inteligentny regulator pomieszczeniowy V2`)
+        let irc_snap = parse_ll_io_response(
+            r#"<LL control="dev/sps/io/19eb19a7-02cf-3155-ffff51535bcccc04/all" value="0" Code="200">
+                <output name="H" nr="1" value="1"/>
+                <output name="C" nr="2" value="0"/>
+                <output name="HC" nr="3" value="1"/>
+                <output name="H1" nr="4" value="10.000"/>
+                <output name="C1" nr="5" value="0.000"/>
+                <output name="HC1" nr="6" value="10.000"/>
+                <output name="H2" nr="7" value="10.000"/>
+                <output name="C2" nr="8" value="0.000"/>
+                <output name="HC2" nr="9" value="10.000"/>
+                <output name="H3" nr="10" value="0.000"/>
+                <output name="C3" nr="11" value="0.000"/>
+                <output name="HC3" nr="12" value="0.000"/>
+                <output name="Shd" nr="13" value="0"/>
+                <output name="HCm" nr="14" value="1.000"/>
+                <output name="Error" nr="15" value="0"/>
+                <output name="TxErr" nr="16" value=""/>
+                <output name="ϑt" nr="17" value="21.500"/>
+                <output name="Om" nr="18" value="8.000"/>
+                <output name="Os" nr="19" value="3.000"/>
+                <output name="Boost" nr="20" value="1"/>
+                <output name="API" nr="21" value=""/>
+            </LL>"#,
+        )
+        .expect("HeatIRoomController2 response should parse");
+        store.apply_polled_snapshot(
+            "19eb19a7-02cf-3155-ffff51535bcccc04".to_string(),
+            irc_snap,
+        );
+
+        let irc_blk = page
+            .blocks
+            .iter()
+            .find(|b| b.uuid == "19eb19a7-02cf-3155-ffff51535bcccc04")
+            .expect("HeatIRoomController2 block should exist");
+        let aqh_pin = irc_blk.pins.iter().find(|p| p.key == "AQh").unwrap();
+        let aqh1_pin = irc_blk.pins.iter().find(|p| p.key == "AQh1").unwrap();
+        let aqt_pin = irc_blk.pins.iter().find(|p| p.key == "AQt").unwrap();
+        let qb_pin = irc_blk.pins.iter().find(|p| p.key == "Qb").unwrap();
+
+        let aqh_sig = store.resolve_pin_signal(irc_blk, aqh_pin, page, &project);
+        assert!(aqh_sig.is_active, "AQh (H=1) should be active");
+        assert_eq!(
+            store.resolve_pin_signal(irc_blk, aqh1_pin, page, &project).formatted,
+            "10"
+        );
+        assert_eq!(
+            store.resolve_pin_signal(irc_blk, aqt_pin, page, &project).formatted,
+            "21.5°"
+        );
+        assert_eq!(
+            store.resolve_pin_signal(irc_blk, qb_pin, page, &project).formatted,
+            "Wł."
+        );
+
+        // Downstream OutputRef `agatka: ogrzewanie` wired to `AQh`
+        let valve_ref = page
+            .blocks
+            .iter()
+            .find(|b| b.is_output_ref_bar() && b.title.contains("ogrzewanie"))
+            .expect("agatka: ogrzewanie OutputRef should exist");
+        let valve_sig = store.resolve_ref_bar_signal(valve_ref, page, &project);
+        assert!(valve_sig.is_active);
+        assert_eq!(valve_sig.formatted, "1");
+
+        // 5. State block (`Ogrzewanie`) with signed hash in `value` and text in `<output value="Ogrzewam"/>`
+        let state_snap = parse_ll_io_response(
+            r#"<LL control="dev/sps/io/1abec55f-0344-67bc-ffff44678585aa40/all" value="-1913943296" Code="200">
+                <output name="Ogrzewanie" icon="00000240-00ff-0000-0000000000000000" color="7405453" value="Ogrzewam"/>
+            </LL>"#,
+        )
+        .expect("State response should parse");
+        store.apply_polled_snapshot(
+            "1abec55f-0344-67bc-ffff44678585aa40".to_string(),
+            state_snap,
+        );
+
+        let state_blk = page
+            .blocks
+            .iter()
+            .find(|b| b.uuid == "1abec55f-0344-67bc-ffff44678585aa40")
+            .expect("State block Ogrzewanie should exist");
+        let tq_pin = state_blk.pins.iter().find(|p| p.key == "TQ").unwrap();
+        let tq_sig = store.resolve_pin_signal(state_blk, tq_pin, page, &project);
+        assert_eq!(tq_sig.formatted, "Ogrzewam");
+        assert!(tq_sig.is_active);
+
+        // 6. AutoJalousie (`Agatka: roleta`) with `State*` attributes on `<LL>`
+        let jal_snap = parse_ll_io_response(
+            r#"<LL control="dev/sps/io/19eb19a7-0303-31a5-ffff51535bcccc04/all" StateUp="0" StateDown="0" StatePos="0.800" StateShade="1.000" StateAutoShade="0.000" StateSafety="0.000" value="0" Code="200"/>"#,
+        )
+        .expect("AutoJalousie response should parse");
+        store.apply_polled_snapshot(
+            "19eb19a7-0303-31a5-ffff51535bcccc04".to_string(),
+            jal_snap,
+        );
+
+        let jal_blk = page
+            .blocks
+            .iter()
+            .find(|b| b.uuid == "19eb19a7-0303-31a5-ffff51535bcccc04")
+            .expect("AutoJalousie block should exist");
+        let up_pin = jal_blk.pins.iter().find(|p| p.key == "OutputUp").unwrap();
+        let pos_pin = jal_blk.pins.iter().find(|p| p.key == "OutputPos").unwrap();
+        let lpos_pin = jal_blk.pins.iter().find(|p| p.key == "OutputLPos").unwrap();
+        assert_eq!(
+            store.resolve_pin_signal(jal_blk, up_pin, page, &project).formatted,
+            "Wył."
+        );
+        assert_eq!(
+            store.resolve_pin_signal(jal_blk, pos_pin, page, &project).formatted,
+            "0.8"
+        );
+        assert_eq!(
+            store.resolve_pin_signal(jal_blk, lpos_pin, page, &project).formatted,
+            "1"
+        );
     }
 }
