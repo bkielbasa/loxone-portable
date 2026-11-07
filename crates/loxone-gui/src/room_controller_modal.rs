@@ -308,7 +308,7 @@ fn render_energy_sources_tab(
                                     render_cell_text(
                                         ui,
                                         col_type,
-                                        &group.object_type_label,
+                                        tr(&group.object_type_label),
                                         TEXT_MUTED,
                                         false,
                                     );
@@ -395,7 +395,7 @@ fn render_energy_sources_tab(
         } else {
             let c = &state.candidates
                 [state.selected_candidate_idx.min(state.candidates.len() - 1)];
-            format!("{} — {}", c.display_name, c.object_type_label)
+            format!("{} — {}", c.display_name, tr(&c.object_type_label))
         };
 
         ui.add_enabled_ui(!state.candidates.is_empty(), |ui| {
@@ -404,7 +404,8 @@ fn render_energy_sources_tab(
                 .selected_text(selected_label)
                 .show_ui(ui, |ui| {
                     for (idx, cand) in state.candidates.iter().enumerate() {
-                        let lbl = format!("{} — {}", cand.display_name, cand.object_type_label);
+                        let lbl =
+                            format!("{} — {}", cand.display_name, tr(&cand.object_type_label));
                         ui.selectable_value(&mut state.selected_candidate_idx, idx, lbl);
                     }
                 });
@@ -580,10 +581,17 @@ fn render_priority_tab(
                                             }
                                         },
                                     );
+                                    let prio_label = format!(
+                                        "{} {}:{} - {}",
+                                        tr("Grupa"),
+                                        group_idx + 1,
+                                        group.display_name,
+                                        tr(&group.object_type_label)
+                                    );
                                     render_cell_text(
                                         ui,
                                         col_name,
-                                        &group.priority_row_label(group_idx + 1),
+                                        &prio_label,
                                         TEXT_PRIMARY,
                                         false,
                                     );
@@ -928,7 +936,7 @@ fn render_schedule_submodal(ctx: &Context, state: &mut RoomControllerModalState)
                 painter.text(
                     Pos2::new(label_rect.min.x + 6.0, label_rect.center().y),
                     egui::Align2::LEFT_CENTER,
-                    &row_label,
+                    tr(&row_label),
                     egui::FontId::proportional(12.0),
                     if is_selected {
                         LOXONE_GREEN
@@ -1072,7 +1080,7 @@ fn render_schedule_submodal(ctx: &Context, state: &mut RoomControllerModalState)
                 .map(|r| r.label.as_str())
                 .unwrap_or("—");
             ui.label(
-                RichText::new(format!("{} — {}", tr("Wybrany rząd"), selected_row_name))
+                RichText::new(format!("{} — {}", tr("Wybrany rząd"), tr(selected_row_name)))
                     .size(12.0)
                     .strong()
                     .color(TEXT_PRIMARY),

@@ -2633,7 +2633,7 @@ pub fn render_page_canvas(
                         live_wire_labels.push((
                             Pos2::new(anchor.x - 7.5 * viewport.zoom, anchor.y),
                             Align2::RIGHT_CENTER,
-                            val_str,
+                            crate::i18n::tr(&val_str).to_string(),
                             pin_active,
                         ));
                     }
@@ -2712,7 +2712,7 @@ pub fn render_page_canvas(
                         live_wire_labels.push((
                             Pos2::new(anchor.x + 7.5 * viewport.zoom, anchor.y),
                             Align2::LEFT_CENTER,
-                            val_str,
+                            crate::i18n::tr(&val_str).to_string(),
                             pin_active,
                         ));
                     }
@@ -4139,16 +4139,21 @@ pub fn render_page_canvas(
                                                     Color32::from_rgb(0xB4, 0xBF, 0xD0)
                                                 };
                                                 ui.label(
-                                                    egui::RichText::new(format!("{:<6}", val_str))
-                                                        .monospace()
-                                                        .size(11.0)
-                                                        .color(val_col),
+                                                    egui::RichText::new(format!(
+                                                        "{:<6}",
+                                                        crate::i18n::tr(&val_str)
+                                                    ))
+                                                    .monospace()
+                                                    .size(11.0)
+                                                    .color(val_col),
                                                 );
                                             }
                                             ui.label(
-                                                egui::RichText::new(meta.full_name)
-                                                    .size(11.5)
-                                                    .color(TEXT_MUTED),
+                                                egui::RichText::new(crate::i18n::tr(
+                                                    meta.full_name,
+                                                ))
+                                                .size(11.5)
+                                                .color(TEXT_MUTED),
                                             );
                                         });
                                         let kind_lbl = if meta.is_analog {
@@ -4160,15 +4165,19 @@ pub fn render_page_canvas(
                                             ui.label(
                                                 egui::RichText::new(format!(
                                                     "{} - {} [{}]",
-                                                    short_lbl, meta.full_name, kind_lbl
+                                                    short_lbl,
+                                                    crate::i18n::tr(meta.full_name),
+                                                    kind_lbl
                                                 ))
                                                 .strong()
                                                 .color(TEXT_PRIMARY),
                                             );
                                             ui.label(
-                                                egui::RichText::new(meta.description)
-                                                    .size(11.0)
-                                                    .color(TEXT_MUTED),
+                                                egui::RichText::new(crate::i18n::tr(
+                                                    meta.description,
+                                                ))
+                                                .size(11.0)
+                                                .color(TEXT_MUTED),
                                             );
                                         });
                                     }
@@ -4224,14 +4233,16 @@ pub fn render_page_canvas(
                                     ui.label(
                                         egui::RichText::new(format!(
                                             "{} - {} [{}]",
-                                            short_lbl, meta.full_name, kind_lbl
+                                            short_lbl,
+                                            crate::i18n::tr(meta.full_name),
+                                            kind_lbl
                                         ))
                                         .strong()
                                         .size(11.5)
                                         .color(TEXT_PRIMARY),
                                     );
                                     ui.label(
-                                        egui::RichText::new(meta.description)
+                                        egui::RichText::new(crate::i18n::tr(meta.description))
                                             .size(11.0)
                                             .color(TEXT_MUTED),
                                     );

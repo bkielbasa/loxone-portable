@@ -267,14 +267,30 @@ pub fn available_languages() -> Vec<Language> {
     reg.order.clone()
 }
 
+#[cfg(test)]
+thread_local! {
+    static TEST_ACTIVE_LANG: std::cell::Cell<Language> = const { std::cell::Cell::new(Language::Pl) };
+}
+
 /// Returns the currently active UI [`Language`].
 pub fn current_language() -> Language {
-    let reg = registry().read().unwrap();
-    reg.active
+    #[cfg(test)]
+    {
+        TEST_ACTIVE_LANG.with(|c| c.get())
+    }
+    #[cfg(not(test))]
+    {
+        let reg = registry().read().unwrap();
+        reg.active
+    }
 }
 
 /// Sets the active UI [`Language`].
 pub fn set_language(lang: Language) {
+    #[cfg(test)]
+    {
+        TEST_ACTIVE_LANG.with(|c| c.set(lang));
+    }
     let mut reg = registry().write().unwrap();
     reg.active = lang;
 }
@@ -488,5 +504,95 @@ mod tests {
         assert_eq!(category_group_label_lang(cs, "Lighting"), "Osvětlení");
         assert!(block_matches_query("Alarm", "zabezpečovací"));
         assert!(category_matches_query("Lighting", "osvětlení"));
+    }
+
+    #[test]
+    fn test_all_tr_keys_and_block_schemas_translated_in_pl_en_de() {
+        let reg = registry().read().unwrap();
+        let pl_pack = reg.packs.get(Language::Pl.0).expect("PL pack loaded");
+        let en_pack = reg.packs.get(Language::En.0).expect("EN pack loaded");
+        let de_pack = reg.packs.get(Language::De.0).expect("DE pack loaded");
+
+        // 1. Every block schema in loxone-core must have a localized name in PL, EN, and DE
+        let mut missing_blocks = Vec::new();
+        for schema in loxone_core::block_schema::all_block_schemas() {
+            for (code, pack) in [("PL", pl_pack), ("EN", en_pack), ("DE", de_pack)] {
+                if !pack.block_names.contains_key(schema.type_name) {
+                    missing_blocks.push(format!("{}:{}", code, schema.type_name));
+                }
+            }
+        }
+        assert!(
+            missing_blocks.is_empty(),
+            "Missing block_names in locales: {:?}",
+            missing_blocks
+        );
+
+        // 2. Representative keys across all UI modules (Inspector, Miniserver, RoomController,
+        //    State/Alarm, EFM, Periphery, AdvancedBlocks, AdminModals, Canvas, TopBar, Launcher)
+        let required_keys = [
+            // Inspector
+            "INSPECTOR",
+            "No Item Selected",
+            "● LIVE VIEW MONITOR & CONTROL",
+            "⚙ Open Block Configuration",
+            "GENERAL & VISUALIZATION",
+            "PARAMETERS & OPERATING MODES",
+            "INPUTS & OUTPUTS",
+            "USED ON PAGES",
+            "ADVANCED / RAW XML ATTRIBUTES",
+            // Miniserver modal
+            "Miniserver Connection & Project Download",
+            "⬇ Download Latest Project",
+            "⬆ Save to Miniserver…",
+            "🛡 Safe Hardware Deployment (Save to Miniserver)",
+            "⚠ Newer Version Detected on Miniserver — Upload Blocked",
+            // Project Launcher & App
+            "Select a Loxone Project to Load",
+            "Unsaved Changes",
+            "✓ Project Verification & Diagnostics",
+            // Room Controller (Polish keys must translate to EN and DE!)
+            "Harmonogram",
+            "Edytuj harmonogram",
+            "Tryby użytkownika",
+            "Źródło energii",
+            "Temperatura komfortowa",
+            "Temperatura ekonomiczna",
+            "Ochrona budynku",
+            "Stała wartość",
+            // State & Alarm Clock modals
+            "📊 Konfiguracja bloku Status: {title}",
+            "⏰ Konfiguracja Budzika: {title}",
+            // EFM modal
+            "Oblicz niezmierzone zużycie",
+            "Niezmierzone zużycie",
+            // Periphery, Advanced Blocks, Admin modals
+            "🔌 Periphery Hardware & Device Provisioning",
+            "🔢 Hardware Serial Inventory & Swap",
+            "🏠 Project Properties",
+            "👤 Users & Rights",
+            "📅 Operating Modes & Calendar",
+            "📡 Search Network for Miniservers",
+        ];
+
+        let mut missing_strings = Vec::new();
+        for key in required_keys {
+            for (code, pack) in [("PL", pl_pack), ("EN", en_pack), ("DE", de_pack)] {
+                if !pack.strings.contains_key(key) {
+                    missing_strings.push(format!("{}:{}", code, key));
+                }
+            }
+        }
+        assert!(
+            missing_strings.is_empty(),
+            "Missing UI string translations: {:?}",
+            missing_strings
+        );
+
+        // Polish keys must translate to English in EN and German in DE
+        assert_eq!(tr_lang(Language::En, "Harmonogram"), "Schedule");
+        assert_eq!(tr_lang(Language::De, "Harmonogram"), "Zeitplan");
+        assert_eq!(tr_lang(Language::En, "Źródło energii"), "Energy Source");
+        assert_eq!(tr_lang(Language::De, "Źródło energii"), "Energiequelle");
     }
 }

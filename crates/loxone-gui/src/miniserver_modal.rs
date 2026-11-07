@@ -488,9 +488,9 @@ pub fn render_miniserver_modal(
                                 );
                                 ui.add_space(4.0);
                                 ui.label(
-                                    RichText::new(
+                                    RichText::new(crate::i18n::tr(
                                         "1. Checks if the Miniserver already has a newer version and safeguards against accidental overwrite.\n2. Automatically saves a local safety backup of the running Miniserver program to ~/.config/loxone-portable/backups/.\n3. Compresses the active project into .LoxCC and uploads sps_new.zip to /prog/.",
-                                    )
+                                    ))
                                     .size(11.0)
                                     .color(TEXT_MUTED),
                                 );

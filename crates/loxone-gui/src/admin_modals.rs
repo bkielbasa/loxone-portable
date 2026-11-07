@@ -16,6 +16,7 @@ use loxone_core::project_admin::{
 };
 use loxone_core::writer::ProjectEdit;
 
+use crate::i18n::{tr, tr_fmt};
 use crate::theme;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -213,7 +214,7 @@ fn button(ui: &mut egui::Ui, text: &str, accent: bool) -> egui::Response {
         (theme::BG_WIDGET, theme::TEXT_PRIMARY)
     };
     ui.add(
-        egui::Button::new(RichText::new(text).size(12.0).color(color))
+        egui::Button::new(RichText::new(tr(text)).size(12.0).color(color))
             .fill(fill)
             .stroke(Stroke::new(
                 1.0_f32,
@@ -230,7 +231,7 @@ fn button(ui: &mut egui::Ui, text: &str, accent: bool) -> egui::Response {
 fn section_label(ui: &mut egui::Ui, text: &str) {
     ui.add_space(6.0);
     ui.label(
-        RichText::new(text)
+        RichText::new(tr(text))
             .size(12.5)
             .strong()
             .color(theme::ACCENT_PRIMARY),
@@ -289,7 +290,7 @@ fn modal_window(
         .show(ctx, |ui| {
             ui.horizontal(|ui| {
                 ui.label(
-                    RichText::new(title)
+                    RichText::new(tr(title))
                         .size(16.0)
                         .strong()
                         .color(theme::TEXT_PRIMARY),
@@ -413,14 +414,14 @@ fn render_properties(
                             ui.add_sized(
                                 [120.0, 20.0],
                                 egui::Label::new(
-                                    RichText::new(*label).size(12.0).color(theme::TEXT_SECONDARY),
+                                    RichText::new(tr(label)).size(12.0).color(theme::TEXT_SECONDARY),
                                 ),
                             );
                             let value = &mut state.props_draft[i].1;
                             ui.add(egui::TextEdit::singleline(value).desired_width(300.0));
                             if *key == "Timezone" {
                                 egui::ComboBox::from_id_salt("tz_pick")
-                                    .selected_text("Pick…")
+                                    .selected_text(tr("Pick…"))
                                     .width(110.0)
                                     .show_ui(ui, |ui| {
                                         for tz in TIME_ZONES {
@@ -438,7 +439,7 @@ fn render_properties(
                             ui.add_sized(
                                 [120.0, 20.0],
                                 egui::Label::new(
-                                    RichText::new(*label).size(12.0).color(theme::TEXT_SECONDARY),
+                                    RichText::new(tr(label)).size(12.0).color(theme::TEXT_SECONDARY),
                                 ),
                             );
                             ui.label(
@@ -458,9 +459,12 @@ fn render_properties(
                     .cloned()
                     .collect();
                 let label = if changed.is_empty() {
-                    "No changes".to_string()
+                    tr("No changes").to_string()
                 } else {
-                    format!("✔ Apply {} change(s)", changed.len())
+                    tr_fmt(
+                        "✔ Apply {count} change(s)",
+                        &[("count", &changed.len().to_string())],
+                    )
                 };
                 if button(ui, &label, !changed.is_empty()).clicked() && !changed.is_empty() {
                     let edits = changed
@@ -515,8 +519,14 @@ fn render_users(
         |ui| {
             ui.horizontal(|ui| {
                 for (tab, label) in [
-                    (UsersTab::Users, format!("Users ({})", users.len())),
-                    (UsersTab::Groups, format!("User groups ({})", groups.len())),
+                    (
+                        UsersTab::Users,
+                        format!("{} ({})", tr("Users"), users.len()),
+                    ),
+                    (
+                        UsersTab::Groups,
+                        format!("{} ({})", tr("User groups"), groups.len()),
+                    ),
                 ] {
                     if button(ui, &label, state.users_tab == tab).clicked() {
                         state.users_tab = tab;
@@ -545,7 +555,7 @@ fn render_users(
                                 ui.set_width(228.0);
                                 if list.is_empty() {
                                     ui.label(
-                                        RichText::new("None in this project")
+                                        RichText::new(tr("None in this project"))
                                             .color(theme::TEXT_SECONDARY),
                                     );
                                 }
@@ -574,8 +584,8 @@ fn render_users(
                         ui.add(
                             egui::TextEdit::singleline(&mut state.new_name)
                                 .hint_text(match state.users_tab {
-                                    UsersTab::Users => "New user name",
-                                    UsersTab::Groups => "New group name",
+                                    UsersTab::Users => tr("New user name"),
+                                    UsersTab::Groups => tr("New group name"),
                                 })
                                 .desired_width(170.0),
                         );
@@ -637,7 +647,7 @@ fn user_detail(
         .as_deref()
         .and_then(|u| find_node_by_uuid(project, u))
     else {
-        ui.label(RichText::new("Select a user on the left.").color(theme::TEXT_SECONDARY));
+        ui.label(RichText::new(tr("Select a user on the left.")).color(theme::TEXT_SECONDARY));
         return;
     };
     if state.user_draft_for.as_deref() != Some(user.uuid.as_str()) {
@@ -652,7 +662,11 @@ fn user_detail(
         ui.horizontal(|ui| {
             ui.add_sized(
                 [110.0, 20.0],
-                egui::Label::new(RichText::new(*label).size(12.0).color(theme::TEXT_SECONDARY)),
+                egui::Label::new(
+                    RichText::new(tr(label))
+                        .size(12.0)
+                        .color(theme::TEXT_SECONDARY),
+                ),
             );
             ui.add(egui::TextEdit::singleline(&mut state.user_draft[i].1).desired_width(280.0));
         });
@@ -687,7 +701,7 @@ fn user_detail(
 
     section_label(ui, "Member of groups");
     if groups.is_empty() {
-        ui.label(RichText::new("No user groups").color(theme::TEXT_SECONDARY));
+        ui.label(RichText::new(tr("No user groups")).color(theme::TEXT_SECONDARY));
     }
     for g in groups {
         let mut member = group_member_uuids(g).iter().any(|u| u == &user.uuid);
@@ -716,10 +730,12 @@ fn user_detail(
         );
     }
     ui.label(
-        RichText::new("Rights come from the user's groups; edit them on the User groups tab.")
-            .size(11.0)
-            .italics()
-            .color(theme::TEXT_SECONDARY),
+        RichText::new(tr(
+            "Rights come from the user's groups; edit them on the User groups tab.",
+        ))
+        .size(11.0)
+        .italics()
+        .color(theme::TEXT_SECONDARY),
     );
 }
 
@@ -736,7 +752,9 @@ fn group_detail(
         .as_deref()
         .and_then(|u| find_node_by_uuid(project, u))
     else {
-        ui.label(RichText::new("Select a user group on the left.").color(theme::TEXT_SECONDARY));
+        ui.label(
+            RichText::new(tr("Select a user group on the left.")).color(theme::TEXT_SECONDARY),
+        );
         return;
     };
     ui.horizontal(|ui| {
@@ -755,9 +773,9 @@ fn group_detail(
         }
     });
     let members = group_member_uuids(group);
-    section_label(ui, &format!("Members ({})", members.len()));
+    section_label(ui, &format!("{} ({})", tr("Members"), members.len()));
     if users.is_empty() {
-        ui.label(RichText::new("No users").color(theme::TEXT_SECONDARY));
+        ui.label(RichText::new(tr("No users")).color(theme::TEXT_SECONDARY));
     }
     for u in users {
         let mut member = members.contains(&u.uuid);
@@ -766,9 +784,17 @@ fn group_detail(
         }
     }
     let granted = granted_permission_refs(group);
-    section_label(ui, &format!("Rights ({} granted)", granted.len()));
+    section_label(
+        ui,
+        &tr_fmt(
+            "Rights ({count} granted)",
+            &[("count", &granted.len().to_string())],
+        ),
+    );
     if permissions.is_empty() {
-        ui.label(RichText::new("This project defines no rights").color(theme::TEXT_SECONDARY));
+        ui.label(
+            RichText::new(tr("This project defines no rights")).color(theme::TEXT_SECONDARY),
+        );
     }
     egui::Grid::new("perm_grid")
         .num_columns(2)
@@ -852,7 +878,10 @@ fn render_modes(
                 // ---- operating modes
                 ui.vertical(|ui| {
                     ui.set_width(330.0);
-                    section_label(ui, &format!("Operating modes ({})", modes.len()));
+                    section_label(
+                        ui,
+                        &format!("{} ({})", tr("Operating modes"), modes.len()),
+                    );
                     card(ui, |ui| {
                         egui::ScrollArea::vertical()
                             .id_salt("modes_list")
@@ -876,7 +905,9 @@ fn render_modes(
                                             if m.user_defined {
                                                 if ui
                                                     .small_button("🗑")
-                                                    .on_hover_text("Delete this user-defined mode")
+                                                    .on_hover_text(tr(
+                                                        "Delete this user-defined mode",
+                                                    ))
                                                     .clicked()
                                                 {
                                                     out.push(AdminAction::Edit(
@@ -889,7 +920,7 @@ fn render_modes(
                                                 }
                                             } else {
                                                 ui.label(
-                                                    RichText::new("built-in")
+                                                    RichText::new(tr("built-in"))
                                                         .size(10.5)
                                                         .color(theme::TEXT_SECONDARY),
                                                 );
@@ -903,7 +934,7 @@ fn render_modes(
                     ui.horizontal(|ui| {
                         ui.add(
                             egui::TextEdit::singleline(&mut state.new_name)
-                                .hint_text("New operating mode")
+                                .hint_text(tr("New operating mode"))
                                 .desired_width(200.0),
                         );
                         let name = state.new_name.trim().to_string();
@@ -925,7 +956,10 @@ fn render_modes(
                 ui.add_space(10.0);
                 // ---- calendar
                 ui.vertical(|ui| {
-                    section_label(ui, &format!("Calendar entries ({})", entries.len()));
+                    section_label(
+                        ui,
+                        &format!("{} ({})", tr("Calendar entries"), entries.len()),
+                    );
                     card(ui, |ui| {
                         egui::ScrollArea::vertical()
                             .id_salt("cal_list")
@@ -933,7 +967,7 @@ fn render_modes(
                             .show(ui, |ui| {
                                 if entries.is_empty() {
                                     ui.label(
-                                        RichText::new("No calendar entries")
+                                        RichText::new(tr("No calendar entries"))
                                             .color(theme::TEXT_SECONDARY),
                                     );
                                 }
@@ -944,7 +978,7 @@ fn render_modes(
                                     .show(ui, |ui| {
                                         for h in ["Entry", "Activates", "From", "To", ""] {
                                             ui.label(
-                                                RichText::new(h)
+                                                RichText::new(tr(h))
                                                     .size(11.0)
                                                     .strong()
                                                     .color(theme::TEXT_SECONDARY),
@@ -953,7 +987,7 @@ fn render_modes(
                                         ui.end_row();
                                         for e in &entries {
                                             ui.label(RichText::new(&e.title).color(theme::TEXT_PRIMARY))
-                                                .on_hover_text(recurrence_label(e.recurrence));
+                                                .on_hover_text(tr(&recurrence_label(e.recurrence)));
                                             egui::ComboBox::from_id_salt(format!("cal_mode_{}", e.uuid))
                                                 .selected_text(mode_name(e.mode_number))
                                                 .width(140.0)
@@ -993,7 +1027,11 @@ fn render_modes(
                                                     out.push(set_md(&e.uuid, "Month2", "Day2", m, d));
                                                 }
                                             });
-                                            if ui.small_button("🗑").on_hover_text("Delete entry").clicked() {
+                                            if ui
+                                                .small_button("🗑")
+                                                .on_hover_text(tr("Delete entry"))
+                                                .clicked()
+                                            {
                                                 out.push(AdminAction::Edit(ProjectEdit::RemoveTreeNode {
                                                     node_uuid: e.uuid.clone(),
                                                 }));
@@ -1008,7 +1046,7 @@ fn render_modes(
                     ui.horizontal(|ui| {
                         ui.add(
                             egui::TextEdit::singleline(&mut state.new_cal_title)
-                                .hint_text("New entry, e.g. Summer holidays")
+                                .hint_text(tr("New entry, e.g. Summer holidays"))
                                 .desired_width(200.0),
                         );
                         if !modes.iter().any(|m| m.number == state.new_cal_mode) {
@@ -1052,10 +1090,10 @@ fn render_modes(
                         }
                         let wd = weekday_mon0(year, pm, pd);
                         ui.label(
-                            RichText::new(format!("{} {}", WEEKDAYS[wd as usize], year))
+                            RichText::new(format!("{} {}", tr(WEEKDAYS[wd as usize]), year))
                                 .color(theme::TEXT_SECONDARY),
                         );
-                        if ui.small_button("Today").clicked() {
+                        if ui.small_button(tr("Today")).clicked() {
                             let (_, m, d) = today();
                             state.preview = Some((m, d));
                         }
@@ -1064,7 +1102,9 @@ fn render_modes(
                     let active = active_modes_on(project, pm, pd, wd);
                     ui.horizontal_wrapped(|ui| {
                         if active.is_empty() {
-                            ui.label(RichText::new("No mode active").color(theme::TEXT_SECONDARY));
+                            ui.label(
+                                RichText::new(tr("No mode active")).color(theme::TEXT_SECONDARY),
+                            );
                         }
                         for a in active {
                             egui::Frame::NONE
@@ -1121,16 +1161,18 @@ fn render_network(
                     ui.spinner();
                 }
                 if ui
-                    .add_enabled(!busy, egui::Button::new("🔄 Search again"))
+                    .add_enabled(!busy, egui::Button::new(tr("🔄 Search again")))
                     .clicked()
                 {
                     state.net_results.clear();
                     state.start_search();
                 }
                 ui.label(
-                    RichText::new("Sends a broadcast on the local network and lists every Miniserver that answers.")
-                        .size(11.0)
-                        .color(theme::TEXT_SECONDARY),
+                    RichText::new(tr(
+                        "Sends a broadcast on the local network and lists every Miniserver that answers.",
+                    ))
+                    .size(11.0)
+                    .color(theme::TEXT_SECONDARY),
                 );
             });
             ui.add_space(8.0);
@@ -1143,7 +1185,12 @@ fn render_network(
                     .spacing([16.0, 6.0])
                     .show(ui, |ui| {
                         for h in ["Name", "Address", "Serial number", ""] {
-                            ui.label(RichText::new(h).size(11.0).strong().color(theme::TEXT_SECONDARY));
+                            ui.label(
+                                RichText::new(tr(h))
+                                    .size(11.0)
+                                    .strong()
+                                    .color(theme::TEXT_SECONDARY),
+                            );
                         }
                         ui.end_row();
                         for r in &state.net_results {

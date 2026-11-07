@@ -9,6 +9,7 @@ use loxone_core::advanced_blocks_config::{
 use loxone_core::model::LoxoneProject;
 use loxone_core::writer::ProjectEdit;
 
+use crate::i18n::{tr, tr_fmt};
 use crate::theme::{
     draw_modal_backdrop, should_close_modal_on_outside_click, BORDER_SUBTLE, CARD_BG, ELEVATED_BG,
     LOXONE_GREEN, PANEL_BG, TEXT_MUTED, TEXT_PRIMARY,
@@ -118,17 +119,17 @@ pub fn render_advanced_blocks_modal(
     let mut modal_rect = None;
 
     let subtitle = match &state.active {
-        Some(ActiveAdvancedModal::Central(cfg)) => cfg.kind.label(),
-        Some(ActiveAdvancedModal::AudioZone(_)) => "Audio Zone & Speaker Routing",
+        Some(ActiveAdvancedModal::Central(cfg)) => tr(cfg.kind.label()),
+        Some(ActiveAdvancedModal::AudioZone(_)) => tr("Audio Zone & Speaker Routing"),
         Some(ActiveAdvancedModal::Climate(cfg)) => {
             if cfg.is_heatmixer {
-                "Intelligent Temperature Controller (Heatmixer2)"
+                tr("Intelligent Temperature Controller (Heatmixer2)")
             } else {
-                "HVAC Climate Controller"
+                tr("HVAC Climate Controller")
             }
         }
-        Some(ActiveAdvancedModal::Sequence(_)) => "Sequence Controller Step Table",
-        None => "Advanced Block Configuration",
+        Some(ActiveAdvancedModal::Sequence(_)) => tr("Sequence Controller Step Table"),
+        None => tr("Advanced Block Configuration"),
     };
 
     if let Some(inner) = egui::Window::new("advanced_blocks_config_window")
@@ -221,15 +222,17 @@ pub fn render_advanced_blocks_modal(
             // Footer
             ui.horizontal(|ui| {
                 ui.label(
-                    RichText::new("Changes support full Undo/Redo (Cmd+Z) and XML roundtrip.")
-                        .size(11.0)
-                        .color(TEXT_MUTED),
+                    RichText::new(tr(
+                        "Changes support full Undo/Redo (Cmd+Z) and XML roundtrip.",
+                    ))
+                    .size(11.0)
+                    .color(TEXT_MUTED),
                 );
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     if ui
                         .add(
                             egui::Button::new(
-                                RichText::new("✔ Apply & Save")
+                                RichText::new(tr("✔ Apply & Save"))
                                     .size(12.5)
                                     .strong()
                                     .color(Color32::from_rgb(0x0B, 0x12, 0x09)),
@@ -267,7 +270,7 @@ pub fn render_advanced_blocks_modal(
                     if ui
                         .add(
                             egui::Button::new(
-                                RichText::new("Cancel").size(12.0).color(TEXT_PRIMARY),
+                                RichText::new(tr("Cancel")).size(12.0).color(TEXT_PRIMARY),
                             )
                             .fill(CARD_BG)
                             .stroke(Stroke::new(1.0_f32, BORDER_SUBTLE))
@@ -312,10 +315,12 @@ fn render_central_body(
     let candidates = collect_central_candidates(project, block_type);
     ui.horizontal(|ui| {
         ui.label(
-            RichText::new(format!(
-                "Assigned member blocks: {} / {}",
-                cfg.selected_uuids.len(),
-                candidates.len()
+            RichText::new(tr_fmt(
+                "Assigned member blocks: {selected} / {total}",
+                &[
+                    ("selected", &cfg.selected_uuids.len().to_string()),
+                    ("total", &candidates.len().to_string()),
+                ],
             ))
             .size(12.0)
             .strong()
@@ -324,13 +329,13 @@ fn render_central_body(
         ui.add_space(12.0);
         ui.add(
             TextEdit::singleline(search_filter)
-                .hint_text("🔍 Filter by block title, room, or page...")
+                .hint_text(tr("🔍 Filter by block title, room, or page..."))
                 .desired_width(280.0),
         );
-        if ui.button("Select All").clicked() {
+        if ui.button(tr("Select All")).clicked() {
             cfg.select_all(&candidates);
         }
-        if ui.button("Clear All").clicked() {
+        if ui.button(tr("Clear All")).clicked() {
             cfg.clear_all();
         }
     });
@@ -407,41 +412,41 @@ fn render_audio_zone_body(
             .inner_margin(egui::Margin::same(12))
             .show(&mut cols[0], |ui| {
                 ui.label(
-                    RichText::new("ZONE & STREAMING SERVICES")
+                    RichText::new(tr("ZONE & STREAMING SERVICES"))
                         .size(11.0)
                         .strong()
                         .color(LOXONE_GREEN),
                 );
                 ui.add_space(6.0);
                 ui.horizontal(|ui| {
-                    ui.label("Speaker Mode (SpCfg):");
+                    ui.label(tr("Speaker Mode (SpCfg):"));
                     ComboBox::from_id_salt("audio_spcfg_combo")
                         .selected_text(match cfg.speaker_cfg {
-                            1 => "1 — Mono",
-                            2 => "2 — Stereo",
-                            4 => "4 — Quad / Multi-Channel",
-                            _ => "Custom",
+                            1 => tr("1 — Mono"),
+                            2 => tr("2 — Stereo"),
+                            4 => tr("4 — Quad / Multi-Channel"),
+                            _ => tr("Custom"),
                         })
                         .show_ui(ui, |ui| {
-                            ui.selectable_value(&mut cfg.speaker_cfg, 1, "1 — Mono");
-                            ui.selectable_value(&mut cfg.speaker_cfg, 2, "2 — Stereo");
+                            ui.selectable_value(&mut cfg.speaker_cfg, 1, tr("1 — Mono"));
+                            ui.selectable_value(&mut cfg.speaker_cfg, 2, tr("2 — Stereo"));
                             ui.selectable_value(
                                 &mut cfg.speaker_cfg,
                                 4,
-                                "4 — Quad / Multi-Channel",
+                                tr("4 — Quad / Multi-Channel"),
                             );
                         });
                 });
-                ui.checkbox(&mut cfg.presence_enabled, "Presence Auto-Activation (PR)");
-                ui.checkbox(&mut cfg.airplay_enabled, "Apple AirPlay 2 Receiver (APL)");
-                ui.checkbox(&mut cfg.spotify_enabled, "Spotify Connect Receiver (SPC)");
-                ui.checkbox(&mut cfg.high_pass_filter, "Speaker High-Pass Filter (HPF)");
+                ui.checkbox(&mut cfg.presence_enabled, tr("Presence Auto-Activation (PR)"));
+                ui.checkbox(&mut cfg.airplay_enabled, tr("Apple AirPlay 2 Receiver (APL)"));
+                ui.checkbox(&mut cfg.spotify_enabled, tr("Spotify Connect Receiver (SPC)"));
+                ui.checkbox(&mut cfg.high_pass_filter, tr("Speaker High-Pass Filter (HPF)"));
 
                 ui.add_space(10.0);
                 ui.separator();
                 ui.add_space(8.0);
                 ui.label(
-                    RichText::new("VOLUME PRESETS (%)")
+                    RichText::new(tr("VOLUME PRESETS (%)"))
                         .size(11.0)
                         .strong()
                         .color(LOXONE_GREEN),
@@ -452,31 +457,31 @@ fn render_audio_zone_body(
                     .num_columns(2)
                     .spacing([16.0, 6.0])
                     .show(ui, |ui| {
-                        ui.label("Default Volume (DefVol):");
+                        ui.label(tr("Default Volume (DefVol):"));
                         ui.add(DragValue::new(&mut cfg.default_vol).range(0..=100).suffix("%"));
                         ui.end_row();
 
-                        ui.label("Max Volume Limit (MaxVol):");
+                        ui.label(tr("Max Volume Limit (MaxVol):"));
                         ui.add(DragValue::new(&mut cfg.max_vol).range(1..=100).suffix("%"));
                         ui.end_row();
 
-                        ui.label("Volume Step (Step):");
+                        ui.label(tr("Volume Step (Step):"));
                         ui.add(DragValue::new(&mut cfg.step_vol).range(1..=20).suffix("%"));
                         ui.end_row();
 
-                        ui.label("Alarm Volume (AlarmVol):");
+                        ui.label(tr("Alarm Volume (AlarmVol):"));
                         ui.add(DragValue::new(&mut cfg.alarm_vol).range(0..=100).suffix("%"));
                         ui.end_row();
 
-                        ui.label("Doorbell Volume (BellVol):");
+                        ui.label(tr("Doorbell Volume (BellVol):"));
                         ui.add(DragValue::new(&mut cfg.bell_vol).range(0..=100).suffix("%"));
                         ui.end_row();
 
-                        ui.label("Buzzer Volume (BuzzVol):");
+                        ui.label(tr("Buzzer Volume (BuzzVol):"));
                         ui.add(DragValue::new(&mut cfg.buzzer_vol).range(0..=100).suffix("%"));
                         ui.end_row();
 
-                        ui.label("Text-To-Speech (TTSVol):");
+                        ui.label(tr("Text-To-Speech (TTSVol):"));
                         ui.add(DragValue::new(&mut cfg.tts_vol).range(0..=100).suffix("%"));
                         ui.end_row();
                     });
@@ -491,7 +496,8 @@ fn render_audio_zone_body(
             .show(&mut cols[1], |ui| {
                 ui.label(
                     RichText::new(format!(
-                        "ASSIGNED AUDIO OUTPUT CHANNELS ({})",
+                        "{} ({})",
+                        tr("ASSIGNED AUDIO OUTPUT CHANNELS"),
                         cfg.assigned_channel_uuids.len()
                     ))
                     .size(11.0)
@@ -563,7 +569,7 @@ fn render_climate_body(
                 .inner_margin(egui::Margin::same(12))
                 .show(&mut cols[0], |ui| {
                     ui.label(
-                        RichText::new("HEATING CURVE & MIXER PARAMETERS")
+                        RichText::new(tr("HEATING CURVE & MIXER PARAMETERS"))
                             .size(11.0)
                             .strong()
                             .color(LOXONE_GREEN),
@@ -573,15 +579,15 @@ fn render_climate_body(
                         .num_columns(2)
                         .spacing([16.0, 8.0])
                         .show(ui, |ui| {
-                            ui.label("Controller Mode:");
+                            ui.label(tr("Controller Mode:"));
                             ui.add(DragValue::new(&mut cfg.controller_mode).range(0..=4));
                             ui.end_row();
 
-                            ui.label("Cooling Mode (Cool):");
+                            ui.label(tr("Cooling Mode (Cool):"));
                             ui.add(DragValue::new(&mut cfg.cooling_mode).range(0..=3));
                             ui.end_row();
 
-                            ui.label("Min Flow Temp (Min):");
+                            ui.label(tr("Min Flow Temp (Min):"));
                             ui.add(
                                 DragValue::new(&mut cfg.min_flow_temp)
                                     .speed(0.5)
@@ -590,7 +596,7 @@ fn render_climate_body(
                             );
                             ui.end_row();
 
-                            ui.label("Max Flow Temp (Max):");
+                            ui.label(tr("Max Flow Temp (Max):"));
                             ui.add(
                                 DragValue::new(&mut cfg.max_flow_temp)
                                     .speed(0.5)
@@ -599,7 +605,7 @@ fn render_climate_body(
                             );
                             ui.end_row();
 
-                            ui.label("Buffer Offset (BufferInc):");
+                            ui.label(tr("Buffer Offset (BufferInc):"));
                             ui.add(
                                 DragValue::new(&mut cfg.buffer_inc)
                                     .speed(0.5)
@@ -608,7 +614,7 @@ fn render_climate_body(
                             );
                             ui.end_row();
 
-                            ui.label("Flow Offset (PrevInc):");
+                            ui.label(tr("Flow Offset (PrevInc):"));
                             ui.add(
                                 DragValue::new(&mut cfg.prev_inc)
                                     .speed(0.5)
@@ -617,7 +623,7 @@ fn render_climate_body(
                             );
                             ui.end_row();
 
-                            ui.label("Curve Slope (Transconductance):");
+                            ui.label(tr("Curve Slope (Transconductance):"));
                             ui.add(
                                 DragValue::new(&mut cfg.transconductance)
                                     .speed(0.05)
@@ -625,7 +631,7 @@ fn render_climate_body(
                             );
                             ui.end_row();
 
-                            ui.label("Threshold (Treshold):");
+                            ui.label(tr("Threshold (Treshold):"));
                             ui.add(
                                 DragValue::new(&mut cfg.threshold)
                                     .speed(0.5)
@@ -634,14 +640,14 @@ fn render_climate_body(
                             );
                             ui.end_row();
 
-                            ui.label("Valve Gain (Gain):");
+                            ui.label(tr("Valve Gain (Gain):"));
                             ui.add(
                                 DragValue::new(&mut cfg.gain).speed(0.1).range(0.1..=10.0),
                             );
                             ui.end_row();
                         });
                     ui.add_space(8.0);
-                    ui.checkbox(&mut cfg.use_hvac, "Link to HVAC Controller (UseHVAc)");
+                    ui.checkbox(&mut cfg.use_hvac, tr("Link to HVAC Controller (UseHVAc)"));
                 });
 
             egui::Frame::NONE
@@ -652,7 +658,8 @@ fn render_climate_body(
                 .show(&mut cols[1], |ui| {
                     ui.label(
                         RichText::new(format!(
-                            "ASSIGNED ROOM CONTROLLERS ({}/{})",
+                            "{} ({}/{})",
+                            tr("ASSIGNED ROOM CONTROLLERS"),
                             cfg.assigned_irc_uuids.len(),
                             ircs.len()
                         ))
@@ -663,7 +670,7 @@ fn render_climate_body(
                     ui.add_space(6.0);
                     ui.add(
                         TextEdit::singleline(search_filter)
-                            .hint_text("🔍 Filter room controllers...")
+                            .hint_text(tr("🔍 Filter room controllers..."))
                             .desired_width(240.0),
                     );
                     ui.add_space(6.0);
@@ -710,7 +717,7 @@ fn render_climate_body(
                 .inner_margin(egui::Margin::same(14))
                 .show(&mut cols[0], |ui| {
                     ui.label(
-                        RichText::new("HVAC CLIMATE CONTROLLER SETTINGS")
+                        RichText::new(tr("HVAC CLIMATE CONTROLLER SETTINGS"))
                             .size(11.5)
                             .strong()
                             .color(LOXONE_GREEN),
@@ -720,15 +727,15 @@ fn render_climate_body(
                         .num_columns(2)
                         .spacing([24.0, 10.0])
                         .show(ui, |ui| {
-                            ui.label("Capabilities Bitmask (cCap):");
+                            ui.label(tr("Capabilities Bitmask (cCap):"));
                             ui.add(DragValue::new(&mut cfg.capabilities).range(1..=15));
                             ui.end_row();
 
-                            ui.label("Device Type (DType):");
+                            ui.label(tr("Device Type (DType):"));
                             ui.add(DragValue::new(&mut cfg.device_type).range(0..=10));
                             ui.end_row();
 
-                            ui.label("Cooling Outdoor Limit (TempLimitC):");
+                            ui.label(tr("Cooling Outdoor Limit (TempLimitC):"));
                             ui.add(
                                 DragValue::new(&mut cfg.temp_limit_c)
                                     .speed(0.5)
@@ -736,7 +743,7 @@ fn render_climate_body(
                             );
                             ui.end_row();
 
-                            ui.label("Heating Outdoor Limit (TempLimitH):");
+                            ui.label(tr("Heating Outdoor Limit (TempLimitH):"));
                             ui.add(
                                 DragValue::new(&mut cfg.temp_limit_h)
                                     .speed(0.5)
@@ -744,7 +751,7 @@ fn render_climate_body(
                             );
                             ui.end_row();
 
-                            ui.label("Activation Threshold (OnThreshold):");
+                            ui.label(tr("Activation Threshold (OnThreshold):"));
                             ui.add(
                                 DragValue::new(&mut cfg.on_threshold)
                                     .speed(1.0)
@@ -752,7 +759,7 @@ fn render_climate_body(
                             );
                             ui.end_row();
 
-                            ui.label("Target Humidity (HTarget):");
+                            ui.label(tr("Target Humidity (HTarget):"));
                             ui.add(
                                 DragValue::new(&mut cfg.humid_target)
                                     .speed(1.0)
@@ -760,19 +767,19 @@ fn render_climate_body(
                             );
                             ui.end_row();
 
-                            ui.label("Pump Off Delay (TimeOffPump):");
+                            ui.label(tr("Pump Off Delay (TimeOffPump):"));
                             ui.add(DragValue::new(&mut cfg.time_off_pump).suffix(" s"));
                             ui.end_row();
 
-                            ui.label("Fan Delay (FanDelay):");
+                            ui.label(tr("Fan Delay (FanDelay):"));
                             ui.add(DragValue::new(&mut cfg.fan_delay).suffix(" s"));
                             ui.end_row();
 
-                            ui.label("Min Setpoint (TPMin):");
+                            ui.label(tr("Min Setpoint (TPMin):"));
                             ui.add(DragValue::new(&mut cfg.tp_min).speed(0.5).suffix(" °C"));
                             ui.end_row();
 
-                            ui.label("Max Setpoint (TPMax):");
+                            ui.label(tr("Max Setpoint (TPMax):"));
                             ui.add(DragValue::new(&mut cfg.tp_max).speed(0.5).suffix(" °C"));
                             ui.end_row();
                         });
@@ -786,7 +793,8 @@ fn render_climate_body(
                 .show(&mut cols[1], |ui| {
                     ui.label(
                         RichText::new(format!(
-                            "ASSIGNED ROOM CONTROLLERS ({}/{})",
+                            "{} ({}/{})",
+                            tr("ASSIGNED ROOM CONTROLLERS"),
                             cfg.assigned_irc_uuids.len(),
                             ircs.len()
                         ))
@@ -797,7 +805,7 @@ fn render_climate_body(
                     ui.add_space(6.0);
                     ui.add(
                         TextEdit::singleline(search_filter)
-                            .hint_text("🔍 Filter room controllers...")
+                            .hint_text(tr("🔍 Filter room controllers..."))
                             .desired_width(240.0),
                     );
                     ui.add_space(6.0);
@@ -840,14 +848,14 @@ fn render_climate_body(
 fn render_sequence_body(ui: &mut egui::Ui, cfg: &mut SequenceConfig) {
     ui.horizontal(|ui| {
         ui.label(
-            RichText::new(format!("Sequence Steps ({})", cfg.steps.len()))
+            RichText::new(format!("{} ({})", tr("Sequence Steps"), cfg.steps.len()))
                 .size(12.0)
                 .strong()
                 .color(LOXONE_GREEN),
         );
         if ui
             .add(
-                egui::Button::new(RichText::new("+ Add Step").size(11.5).color(LOXONE_GREEN))
+                egui::Button::new(RichText::new(tr("+ Add Step")).size(11.5).color(LOXONE_GREEN))
                     .fill(CARD_BG)
                     .stroke(Stroke::new(1.0_f32, LOXONE_GREEN))
                     .corner_radius(CornerRadius::same(6)),
@@ -884,13 +892,13 @@ fn render_sequence_body(ui: &mut egui::Ui, cfg: &mut SequenceConfig) {
                             );
                             ui.add(
                                 TextEdit::singleline(&mut step.label)
-                                    .hint_text("Step Name")
+                                    .hint_text(tr("Step Name"))
                                     .desired_width(120.0),
                             );
-                            ui.label(RichText::new("IF").size(11.0).color(TEXT_MUTED));
+                            ui.label(RichText::new(tr("IF")).size(11.0).color(TEXT_MUTED));
                             ui.add(
                                 TextEdit::singleline(&mut step.condition)
-                                    .hint_text("Condition (e.g. AI1 > 0)")
+                                    .hint_text(tr("Condition (e.g. AI1 > 0)"))
                                     .desired_width(130.0),
                             );
                             ui.label("AQ1:");
@@ -901,7 +909,7 @@ fn render_sequence_body(ui: &mut egui::Ui, cfg: &mut SequenceConfig) {
                             ui.add(DragValue::new(&mut step.aq3).speed(0.5));
                             ui.label("AQ4:");
                             ui.add(DragValue::new(&mut step.aq4).speed(0.5));
-                            ui.label("Wait:");
+                            ui.label(tr("Wait:"));
                             ui.add(
                                 DragValue::new(&mut step.wait_sec)
                                     .speed(0.5)

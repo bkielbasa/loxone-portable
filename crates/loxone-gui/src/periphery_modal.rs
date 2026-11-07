@@ -6,6 +6,7 @@ use loxone_core::{
     ProjectEdit,
 };
 
+use crate::i18n::{tr, tr_fmt};
 use crate::theme;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -138,7 +139,7 @@ pub fn render_periphery_modal(
         .show(ctx, |ui| {
             ui.horizontal(|ui| {
                 ui.label(
-                    RichText::new("🔌 Periphery Hardware & Device Provisioning")
+                    RichText::new(tr("🔌 Periphery Hardware & Device Provisioning"))
                         .size(16.0)
                         .strong()
                         .color(theme::TEXT_PRIMARY),
@@ -147,7 +148,9 @@ pub fn render_periphery_modal(
                     if ui
                         .add(
                             egui::Button::new(
-                                RichText::new("✕ Close").size(12.0).color(theme::TEXT_PRIMARY),
+                                RichText::new(tr("✕ Close"))
+                                    .size(12.0)
+                                    .color(theme::TEXT_PRIMARY),
                             )
                             .fill(theme::BG_WIDGET)
                             .corner_radius(CornerRadius::same(6)),
@@ -164,11 +167,11 @@ pub fn render_periphery_modal(
                 for (tab, label) in [
                     (
                         PeripheryModalTab::ProvisionDevice,
-                        "➕ Provision Extension / Tree / Air Device",
+                        tr("➕ Provision Extension / Tree / Air Device"),
                     ),
                     (
                         PeripheryModalTab::HardwareInventory,
-                        "🔢 Hardware Serial Inventory & Swap",
+                        tr("🔢 Hardware Serial Inventory & Swap"),
                     ),
                 ] {
                     let active = state.active_tab == tab;
@@ -256,13 +259,13 @@ fn render_provision_tab(
 
     ui.horizontal(|ui| {
         ui.label(
-            RichText::new("Category:")
+            RichText::new(tr("Category:"))
                 .size(12.0)
                 .color(theme::TEXT_SECONDARY),
         );
         for cat in HardwareCategory::ALL {
             let active = state.selected_category == cat;
-            let btn = egui::Button::new(RichText::new(cat.label()).size(12.0).color(if active {
+            let btn = egui::Button::new(RichText::new(tr(cat.label())).size(12.0).color(if active {
                 theme::ACCENT_PRIMARY
             } else {
                 theme::TEXT_PRIMARY
@@ -298,7 +301,7 @@ fn render_provision_tab(
     ui.columns(2, |cols| {
         // Left column: Hardware Templates catalog
         cols[0].label(
-            RichText::new("1. Select Hardware Model")
+            RichText::new(tr("1. Select Hardware Model"))
                 .size(13.0)
                 .strong()
                 .color(theme::TEXT_PRIMARY),
@@ -372,7 +375,7 @@ fn render_provision_tab(
 
         // Right column: Configuration & Parent Bus
         cols[1].label(
-            RichText::new("2. Configure Device & Bus Target")
+            RichText::new(tr("2. Configure Device & Bus Target"))
                 .size(13.0)
                 .strong()
                 .color(theme::TEXT_PRIMARY),
@@ -381,7 +384,7 @@ fn render_provision_tab(
 
         let Some(tpl) = state.selected_template else {
             cols[1].label(
-                RichText::new("Select a hardware template on the left.")
+                RichText::new(tr("Select a hardware template on the left."))
                     .color(theme::TEXT_MUTED),
             );
             return;
@@ -395,7 +398,7 @@ fn render_provision_tab(
             .show(&mut cols[1], |ui| {
                 let candidates = collect_parent_bus_candidates(project, tpl.category());
                 ui.label(
-                    RichText::new("Parent Bus / Extension")
+                    RichText::new(tr("Parent Bus / Extension"))
                         .size(11.5)
                         .color(theme::TEXT_SECONDARY),
                 );
@@ -403,7 +406,7 @@ fn render_provision_tab(
                     .iter()
                     .find(|c| c.uuid == state.selected_parent_uuid)
                     .map(|c| c.label.clone())
-                    .unwrap_or_else(|| "Auto / Periphery Root".to_string());
+                    .unwrap_or_else(|| tr("Auto / Periphery Root").to_string());
 
                 egui::ComboBox::from_id_salt("provision_parent_bus_combo")
                     .selected_text(current_parent_label)
@@ -420,7 +423,7 @@ fn render_provision_tab(
 
                 ui.add_space(10.0);
                 ui.label(
-                    RichText::new("Device Title")
+                    RichText::new(tr("Device Title"))
                         .size(11.5)
                         .color(theme::TEXT_SECONDARY),
                 );
@@ -431,9 +434,9 @@ fn render_provision_tab(
 
                 ui.add_space(10.0);
                 ui.label(
-                    RichText::new(format!(
-                        "Serial Number (optional — prefix {} auto-generated if blank)",
-                        tpl.serial_prefix()
+                    RichText::new(tr_fmt(
+                        "Serial Number (optional — prefix {prefix} auto-generated if blank)",
+                        &[("prefix", tpl.serial_prefix())],
                     ))
                     .size(11.5)
                     .color(theme::TEXT_SECONDARY),
@@ -446,7 +449,7 @@ fn render_provision_tab(
                     );
                     if ui
                         .add(
-                            egui::Button::new(RichText::new("🎲 Generate").size(11.5))
+                            egui::Button::new(RichText::new(tr("🎲 Generate")).size(11.5))
                                 .fill(theme::BG_WIDGET)
                                 .corner_radius(CornerRadius::same(6)),
                         )
@@ -458,15 +461,17 @@ fn render_provision_tab(
 
                 ui.add_space(10.0);
                 ui.label(
-                    RichText::new("Default Room (optional — propagates to child I/O channels)")
-                        .size(11.5)
-                        .color(theme::TEXT_SECONDARY),
+                    RichText::new(tr(
+                        "Default Room (optional — propagates to child I/O channels)",
+                    ))
+                    .size(11.5)
+                    .color(theme::TEXT_SECONDARY),
                 );
                 let selected_room_title = project
                     .places
                     .get(&state.place_uuid_draft)
                     .map(|r| r.title.as_str())
-                    .unwrap_or("(None)");
+                    .unwrap_or(tr("(None)"));
                 egui::ComboBox::from_id_salt("provision_room_combo")
                     .selected_text(selected_room_title)
                     .width(ui.available_width())
@@ -474,7 +479,7 @@ fn render_provision_tab(
                         ui.selectable_value(
                             &mut state.place_uuid_draft,
                             String::new(),
-                            "(None)",
+                            tr("(None)"),
                         );
                         let mut rooms: Vec<_> = project.places.values().collect();
                         rooms.sort_by(|a, b| a.title.cmp(&b.title));
@@ -489,7 +494,7 @@ fn render_provision_tab(
 
                 ui.add_space(10.0);
                 ui.label(
-                    RichText::new("Default Category (optional)")
+                    RichText::new(tr("Default Category (optional)"))
                         .size(11.5)
                         .color(theme::TEXT_SECONDARY),
                 );
@@ -497,7 +502,7 @@ fn render_provision_tab(
                     .categories
                     .get(&state.category_uuid_draft)
                     .map(|c| c.title.as_str())
-                    .unwrap_or("(None)");
+                    .unwrap_or(tr("(None)"));
                 egui::ComboBox::from_id_salt("provision_category_combo")
                     .selected_text(selected_cat_title)
                     .width(ui.available_width())
@@ -505,7 +510,7 @@ fn render_provision_tab(
                         ui.selectable_value(
                             &mut state.category_uuid_draft,
                             String::new(),
-                            "(None)",
+                            tr("(None)"),
                         );
                         let mut cats: Vec<_> = project.categories.values().collect();
                         cats.sort_by(|a, b| a.title.cmp(&b.title));
@@ -520,10 +525,13 @@ fn render_provision_tab(
 
                 ui.add_space(16.0);
                 let provision_btn = egui::Button::new(
-                    RichText::new(format!("➕ Provision {}", tpl.display_name()))
-                        .size(13.0)
-                        .strong()
-                        .color(Color32::BLACK),
+                    RichText::new(tr_fmt(
+                        "➕ Provision {model}",
+                        &[("model", tpl.display_name())],
+                    ))
+                    .size(13.0)
+                    .strong()
+                    .color(Color32::BLACK),
                 )
                 .fill(theme::ACCENT_PRIMARY)
                 .corner_radius(CornerRadius::same(6))
@@ -568,15 +576,18 @@ fn render_inventory_tab(
 
     ui.horizontal(|ui| {
         ui.label(
-            RichText::new(format!("Provisioned Hardware ({} devices)", items.len()))
-                .size(13.0)
-                .strong()
-                .color(theme::TEXT_PRIMARY),
+            RichText::new(tr_fmt(
+                "Provisioned Hardware ({count} devices)",
+                &[("count", &items.len().to_string())],
+            ))
+            .size(13.0)
+            .strong()
+            .color(theme::TEXT_PRIMARY),
         );
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             ui.add(
                 egui::TextEdit::singleline(&mut state.inventory_filter)
-                    .hint_text("🔎 Filter by name, serial, bus, or type...")
+                    .hint_text(tr("🔎 Filter by name, serial, bus, or type..."))
                     .desired_width(260.0),
             );
         });
@@ -584,9 +595,9 @@ fn render_inventory_tab(
 
     ui.add_space(4.0);
     ui.label(
-        RichText::new(
+        RichText::new(tr(
             "Swap a physical device's Serial Number in-place while preserving all child I/O channels and schematic wire links.",
-        )
+        ))
         .size(11.0)
         .color(theme::TEXT_SECONDARY),
     );
@@ -642,7 +653,7 @@ fn render_inventory_tab(
                                         if ui
                                             .add(
                                                 egui::Button::new(
-                                                    RichText::new("Cancel").size(11.0),
+                                                    RichText::new(tr("Cancel")).size(11.0),
                                                 )
                                                 .fill(theme::BG_WIDGET)
                                                 .corner_radius(CornerRadius::same(5)),
@@ -654,7 +665,7 @@ fn render_inventory_tab(
                                         if ui
                                             .add(
                                                 egui::Button::new(
-                                                    RichText::new("✓ Save Serial")
+                                                    RichText::new(tr("✓ Save Serial"))
                                                         .size(11.0)
                                                         .strong()
                                                         .color(Color32::BLACK),
@@ -687,7 +698,7 @@ fn render_inventory_tab(
                                         if ui
                                             .add(
                                                 egui::Button::new(
-                                                    RichText::new("⇄ Swap Serial")
+                                                    RichText::new(tr("⇄ Swap Serial"))
                                                         .size(11.0)
                                                         .color(theme::TEXT_PRIMARY),
                                                 )
@@ -700,7 +711,7 @@ fn render_inventory_tab(
                                             state.editing_serial_draft = item.serial.clone();
                                         }
                                         let serial_text = if item.serial.is_empty() {
-                                            "(no serial)".to_string()
+                                            tr("(no serial)").to_string()
                                         } else {
                                             format!("SN: {}", item.serial)
                                         };

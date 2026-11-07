@@ -950,7 +950,7 @@ fn render_page_block_inspector(
             .add_sized(
                 [ui.available_width(), 28.0],
                 egui::Button::new(
-                    RichText::new("📊 Konfiguracja warunków bloku Status…")
+                    RichText::new(crate::i18n::tr("📊 Konfiguracja warunków bloku Status…"))
                         .size(12.0)
                         .color(egui::Color32::from_rgb(0x69, 0xC8, 0x32))
                         .strong(),
@@ -966,7 +966,7 @@ fn render_page_block_inspector(
             .add_sized(
                 [ui.available_width(), 28.0],
                 egui::Button::new(
-                    RichText::new("⏰ Konfiguracja Budzika…")
+                    RichText::new(crate::i18n::tr("⏰ Konfiguracja Budzika…"))
                         .size(12.0)
                         .color(egui::Color32::from_rgb(0x69, 0xC8, 0x32))
                         .strong(),
@@ -1041,7 +1041,7 @@ fn render_specialized_block_editor(
         "LightControllerV2" | "LightController2" | "LightController" => {
             render_inspector_section_card(ui, |ui| {
                 egui::CollapsingHeader::new(
-                    RichText::new("💡 LIGHTING SCENES & MOOD EDITOR")
+                    RichText::new(crate::i18n::tr("💡 LIGHTING SCENES & MOOD EDITOR"))
                         .size(11.0)
                         .color(LOXONE_GREEN)
                         .strong(),
@@ -1058,9 +1058,11 @@ fn render_specialized_block_editor(
                     }
                     ui.add_space(4.0);
                     ui.label(
-                        RichText::new("Mood / Scene Descriptions (<LightsceneDescription>):")
-                            .size(10.5)
-                            .color(TEXT_MUTED),
+                        RichText::new(crate::i18n::tr(
+                            "Mood / Scene Descriptions (<LightsceneDescription>):",
+                        ))
+                        .size(10.5)
+                        .color(TEXT_MUTED),
                     );
                     let lsd = block
                         .extra_children
@@ -1088,7 +1090,7 @@ fn render_specialized_block_editor(
         "IRoomControllerV2" | "HeatIRoomController2" | "IRoomController" => {
             render_inspector_section_card(ui, |ui| {
                 egui::CollapsingHeader::new(
-                    RichText::new("🌡 COMFORT & ECO TEMPERATURE PRESETS")
+                    RichText::new(crate::i18n::tr("🌡 COMFORT & ECO TEMPERATURE PRESETS"))
                         .size(11.0)
                         .color(LOXONE_GREEN)
                         .strong(),
@@ -1109,9 +1111,10 @@ fn render_specialized_block_editor(
                             .and_then(|p| p.default_value.as_deref())
                             .unwrap_or("");
                         let mut val: f64 = cur_str.parse().unwrap_or(fallback);
+                        let translated_lbl = crate::i18n::tr(label);
                         ui.horizontal(|ui| {
                             ui.label(
-                                RichText::new(format!("{label} [{pin_key}]:"))
+                                RichText::new(format!("{translated_lbl} [{pin_key}]:"))
                                     .size(11.0)
                                     .color(TEXT_MUTED),
                             );
@@ -1138,7 +1141,7 @@ fn render_specialized_block_editor(
         "Radio" | "ValueSelector" => {
             render_inspector_section_card(ui, |ui| {
                 egui::CollapsingHeader::new(
-                    RichText::new("🔘 RADIO / SELECTOR OUTPUT TABLE (1..8)")
+                    RichText::new(crate::i18n::tr("🔘 RADIO / SELECTOR OUTPUT TABLE (1..8)"))
                         .size(11.0)
                         .color(LOXONE_GREEN)
                         .strong(),
@@ -1157,7 +1160,7 @@ fn render_specialized_block_editor(
         "Status" => {
             render_inspector_section_card(ui, |ui| {
                 egui::CollapsingHeader::new(
-                    RichText::new("📊 STATUS CONDITION & TEXT TABLE")
+                    RichText::new(crate::i18n::tr("📊 STATUS CONDITION & TEXT TABLE"))
                         .size(11.0)
                         .color(LOXONE_GREEN)
                         .strong(),
@@ -1413,14 +1416,16 @@ fn render_value_kind_widget(
     tooltip: &str,
 ) -> Option<String> {
     let mut changed_val = None;
+    let translated_lbl = crate::i18n::tr(label);
+    let translated_tip = crate::i18n::tr(tooltip);
     ui.horizontal(|ui| {
         let lbl_resp = ui.label(
-            RichText::new(format!("{} ({}):", label, code_key))
+            RichText::new(format!("{} ({}):", translated_lbl, code_key))
                 .size(11.0)
                 .color(TEXT_MUTED),
         );
-        if !tooltip.is_empty() {
-            lbl_resp.on_hover_text(tooltip);
+        if !translated_tip.is_empty() {
+            lbl_resp.on_hover_text(translated_tip);
         }
 
         match kind {
@@ -1596,10 +1601,13 @@ fn render_child_configs_section(
         let tag_name = lm_node.map(|n| n.tag.as_str()).unwrap_or("LoggerMailer");
         render_inspector_section_card(ui, |ui| {
             egui::CollapsingHeader::new(
-                RichText::new(format!("LOGGER / MAILER / TRACKER (<{tag_name}>)"))
-                    .size(11.0)
-                    .color(egui::Color32::WHITE)
-                    .strong(),
+                RichText::new(format!(
+                    "{} (<{tag_name}>)",
+                    crate::i18n::tr("LOGGER / MAILER / TRACKER")
+                ))
+                .size(11.0)
+                .color(egui::Color32::WHITE)
+                .strong(),
             )
             .default_open(true)
             .show(ui, |ui| {
@@ -1626,7 +1634,7 @@ fn render_child_configs_section(
         let hcl_node = extra_children.iter().find(|c| c.tag == "HCL");
         render_inspector_section_card(ui, |ui| {
             egui::CollapsingHeader::new(
-                RichText::new("HUMAN CENTRIC LIGHTING (<HCL>)")
+                RichText::new(crate::i18n::tr("HUMAN CENTRIC LIGHTING (<HCL>)"))
                     .size(11.0)
                     .color(egui::Color32::WHITE)
                     .strong(),
@@ -1655,7 +1663,7 @@ fn render_child_configs_section(
         let psd_node = extra_children.iter().find(|c| c.tag == "PSD");
         render_inspector_section_card(ui, |ui| {
             egui::CollapsingHeader::new(
-                RichText::new("SUN DIRECTION / SHADING (<PSD>)")
+                RichText::new(crate::i18n::tr("SUN DIRECTION / SHADING (<PSD>)"))
                     .size(11.0)
                     .color(egui::Color32::WHITE)
                     .strong(),
@@ -1806,7 +1814,7 @@ fn render_documented_pins_section(
                     PinKind::Input => "IN",
                 };
                 let title_str = match doc {
-                    Some(d) => format!("[{dir_badge}] {} — {}", pin.key, d.label),
+                    Some(d) => format!("[{dir_badge}] {} — {}", pin.key, tr(d.label)),
                     None => format!("[{dir_badge}] {}", pin.key),
                 };
                 let resp = ui.label(
@@ -1816,8 +1824,8 @@ fn render_documented_pins_section(
                         .color(TEXT_PRIMARY),
                 );
                 if let Some(d) = doc {
-                    resp.on_hover_text(d.description);
-                    ui.label(RichText::new(d.description).size(10.0).color(TEXT_MUTED));
+                    resp.on_hover_text(tr(d.description));
+                    ui.label(RichText::new(tr(d.description)).size(10.0).color(TEXT_MUTED));
                 }
 
                 // Incoming wire navigation links + disconnect button

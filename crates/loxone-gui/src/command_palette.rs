@@ -146,7 +146,10 @@ pub fn build_palette_entries(project: Option<&LoxoneProject>, query: &str) -> Ve
     if let Some(proj) = project {
         for (idx, page) in proj.pages.iter().enumerate() {
             let visible_count = page.blocks.iter().filter(|b| b.has_position).count();
-            let subtitle = format!("Page • {} blocks", visible_count);
+            let subtitle = crate::i18n::tr_fmt(
+                "Page • {count} blocks",
+                &[("count", &visible_count.to_string())],
+            );
             if q.is_empty()
                 || page.title.to_lowercase().contains(&q)
                 || page.uuid.to_lowercase().contains(&q)
@@ -198,14 +201,23 @@ pub fn build_palette_entries(project: Option<&LoxoneProject>, query: &str) -> Ve
                             continue;
                         }
                         let title = if summary.title.is_empty() {
-                            summary.object_type.clone()
+                            crate::i18n::block_display_name(&summary.object_type).to_string()
                         } else {
                             summary.title.clone()
                         };
                         entries.push(PaletteEntry {
                             badge: PaletteBadge::Block,
                             title,
-                            subtitle: format!("{} on page '{}'", summary.object_type, page_title),
+                            subtitle: crate::i18n::tr_fmt(
+                                "{type} on page '{page}'",
+                                &[
+                                    (
+                                        "type",
+                                        crate::i18n::block_display_name(&summary.object_type),
+                                    ),
+                                    ("page", page_title),
+                                ],
+                            ),
                             shortcut: None,
                             action: PaletteAction::NavigateToBlock {
                                 page_index: *page_index,
@@ -217,7 +229,7 @@ pub fn build_palette_entries(project: Option<&LoxoneProject>, query: &str) -> Ve
                         entries.push(PaletteEntry {
                             badge: PaletteBadge::Room,
                             title: summary.title.clone(),
-                            subtitle: "Room".to_string(),
+                            subtitle: crate::i18n::tr("Room").to_string(),
                             shortcut: None,
                             action: PaletteAction::SelectObject(summary.uuid.clone()),
                         });
@@ -226,7 +238,7 @@ pub fn build_palette_entries(project: Option<&LoxoneProject>, query: &str) -> Ve
                         entries.push(PaletteEntry {
                             badge: PaletteBadge::Category,
                             title: summary.title.clone(),
-                            subtitle: "Category".to_string(),
+                            subtitle: crate::i18n::tr("Category").to_string(),
                             shortcut: None,
                             action: PaletteAction::SelectObject(summary.uuid.clone()),
                         });
@@ -241,11 +253,20 @@ pub fn build_palette_entries(project: Option<&LoxoneProject>, query: &str) -> Ve
                         entries.push(PaletteEntry {
                             badge,
                             title: if summary.title.is_empty() {
-                                summary.object_type.clone()
+                                crate::i18n::block_display_name(&summary.object_type).to_string()
                             } else {
                                 summary.title.clone()
                             },
-                            subtitle: format!("{} • {} page refs", summary.object_type, usages),
+                            subtitle: crate::i18n::tr_fmt(
+                                "{type} • {count} page refs",
+                                &[
+                                    (
+                                        "type",
+                                        crate::i18n::block_display_name(&summary.object_type),
+                                    ),
+                                    ("count", &usages.to_string()),
+                                ],
+                            ),
                             shortcut: None,
                             action: PaletteAction::SelectObject(summary.uuid.clone()),
                         });

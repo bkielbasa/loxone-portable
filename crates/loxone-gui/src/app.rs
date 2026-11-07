@@ -2807,7 +2807,7 @@ impl eframe::App for LoxonePortableApp {
                                                     .strong()
                                                     .size(11.5),
                                             )
-                                            .on_hover_text("Click to jump to this block")
+                                            .on_hover_text(crate::i18n::tr("Click to jump to this block"))
                                             .clicked()
                                         {
                                             jump_to = Some((

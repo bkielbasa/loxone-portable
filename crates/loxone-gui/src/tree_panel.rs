@@ -191,15 +191,19 @@ pub fn render_left_explorer(
         }
         LeftTab::Periphery => {
             if ui
-                .small_button(RichText::new("+ Hardware").color(LOXONE_GREEN))
-                .on_hover_text("Provision Extensions, Loxone Tree devices, or Loxone Air devices")
+                .small_button(RichText::new(crate::i18n::tr("+ Hardware")).color(LOXONE_GREEN))
+                .on_hover_text(crate::i18n::tr(
+                    "Provision Extensions, Loxone Tree devices, or Loxone Air devices",
+                ))
                 .clicked()
             {
                 action = Some(TreeAction::OpenPeripheryProvisioning);
             }
             if ui
-                .small_button(RichText::new("Serials").color(ACCENT_BLUE))
-                .on_hover_text("Hardware Serial Inventory & In-Place Serial Swap")
+                .small_button(RichText::new(crate::i18n::tr("Serials")).color(ACCENT_BLUE))
+                .on_hover_text(crate::i18n::tr(
+                    "Hardware Serial Inventory & In-Place Serial Swap",
+                ))
                 .clicked()
             {
                 action = Some(TreeAction::OpenHardwareInventory(
@@ -491,12 +495,18 @@ fn count_tree_devices_recursive(node: &TreeNode) -> usize {
 pub fn tree_node_subtitle(project: &LoxoneProject, node: &TreeNode) -> Option<String> {
     let icon = icon_for_tree_node(node);
     if icon == LoxoneIcon::LoxoneLink && !node.children.is_empty() {
-        return Some(format!("{}/30 Urządzenia", node.children.len()));
+        return Some(crate::i18n::tr_fmt(
+            "{count}/{max} Devices",
+            &[("count", &node.children.len().to_string()), ("max", "30")],
+        ));
     }
     if node.control_type == "LoxTree" {
         let dev_count = count_tree_devices_recursive(node);
         if dev_count > 0 {
-            return Some(format!("{}/50 Urządzenia", dev_count));
+            return Some(crate::i18n::tr_fmt(
+                "{count}/{max} Devices",
+                &[("count", &dev_count.to_string()), ("max", "50")],
+            ));
         }
     }
     if let Some(r_uuid) = node.room_uuid.as_deref() {

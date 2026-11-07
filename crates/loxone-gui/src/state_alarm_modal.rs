@@ -11,7 +11,7 @@ use loxone_core::state_alarm_config::{
 };
 use loxone_core::writer::ProjectEdit;
 
-use crate::i18n::tr;
+use crate::i18n::{tr, tr_fmt};
 use crate::theme::{BORDER_SUBTLE, CARD_BG, PANEL_BG, TEXT_MUTED, TEXT_PRIMARY};
 
 const LOXONE_GREEN: Color32 = Color32::from_rgb(0x69, 0xC8, 0x32);
@@ -47,7 +47,7 @@ impl StateModalState {
         self.page_uuid = page_uuid;
         self.block_uuid = block.uuid.clone();
         self.block_title = if block.title.is_empty() {
-            "Status".to_string()
+            tr("Status").to_string()
         } else {
             block.title.clone()
         };
@@ -131,10 +131,13 @@ pub fn render_state_modal(
 
             ui.horizontal(|ui| {
                 ui.label(
-                    RichText::new(format!("📊 Konfiguracja bloku Status: {}", state.block_title))
-                        .size(16.0)
-                        .strong()
-                        .color(TEXT_PRIMARY),
+                    RichText::new(tr_fmt(
+                        "📊 Konfiguracja bloku Status: {title}",
+                        &[("title", &state.block_title)],
+                    ))
+                    .size(16.0)
+                    .strong()
+                    .color(TEXT_PRIMARY),
                 );
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     if ui
@@ -150,7 +153,7 @@ pub fn render_state_modal(
                     if ui
                         .add(
                             egui::Button::new(
-                                RichText::new("➕ Dodaj warunek")
+                                RichText::new(tr("➕ Dodaj warunek"))
                                     .size(12.5)
                                     .strong()
                                     .color(Color32::BLACK),
@@ -167,9 +170,9 @@ pub fn render_state_modal(
 
             ui.add_space(4.0);
             ui.label(
-                RichText::new(
+                RichText::new(tr(
                     "Reguły są sprawdzane od góry do dołu. Pierwszy spełniony warunek ustawia wyjście tekstowe (Text) i wartość (Val).",
-                )
+                ))
                 .size(12.0)
                 .color(TEXT_MUTED),
             );
@@ -193,7 +196,7 @@ pub fn render_state_modal(
                             ui.horizontal(|ui| {
                                 ui.allocate_ui(Vec2::new(66.0, 18.0), |ui| {
                                     ui.label(
-                                        RichText::new("Priorytet")
+                                        RichText::new(tr("Priorytet"))
                                             .size(12.0)
                                             .strong()
                                             .color(TEXT_PRIMARY),
@@ -201,7 +204,7 @@ pub fn render_state_modal(
                                 });
                                 ui.allocate_ui(Vec2::new(420.0, 18.0), |ui| {
                                     ui.label(
-                                        RichText::new("Warunki (AI1..AI4 / DI1..DI4)")
+                                        RichText::new(tr("Warunki (AI1..AI4 / DI1..DI4)"))
                                             .size(12.0)
                                             .strong()
                                             .color(TEXT_PRIMARY),
@@ -209,7 +212,7 @@ pub fn render_state_modal(
                                 });
                                 ui.allocate_ui(Vec2::new(72.0, 18.0), |ui| {
                                     ui.label(
-                                        RichText::new("Wartość")
+                                        RichText::new(tr("Wartość"))
                                             .size(12.0)
                                             .strong()
                                             .color(TEXT_PRIMARY),
@@ -217,7 +220,7 @@ pub fn render_state_modal(
                                 });
                                 ui.allocate_ui(Vec2::new(220.0, 18.0), |ui| {
                                     ui.label(
-                                        RichText::new("Tekst statusu")
+                                        RichText::new(tr("Tekst statusu"))
                                             .size(12.0)
                                             .strong()
                                             .color(TEXT_PRIMARY),
@@ -225,7 +228,7 @@ pub fn render_state_modal(
                                 });
                                 ui.allocate_ui(Vec2::new(150.0, 18.0), |ui| {
                                     ui.label(
-                                        RichText::new("Kolor / Akcje")
+                                        RichText::new(tr("Kolor / Akcje"))
                                             .size(12.0)
                                             .strong()
                                             .color(TEXT_PRIMARY),
@@ -286,15 +289,15 @@ pub fn render_state_modal(
                                                 ui.horizontal(|ui| {
                                                     if rule.is_fallback() {
                                                         ui.label(
-                                                            RichText::new(
+                                                            RichText::new(tr(
                                                                 "W przeciwnym razie (domyślnie)",
-                                                            )
+                                                            ))
                                                             .size(12.0)
                                                             .italics()
                                                             .color(TEXT_MUTED),
                                                         );
                                                         if ui
-                                                            .small_button("+ Warunek")
+                                                            .small_button(tr("+ Warunek"))
                                                             .clicked()
                                                         {
                                                             rule.input0 = Some(1);
@@ -302,7 +305,7 @@ pub fn render_state_modal(
                                                     } else {
                                                         let i0_label = match rule.input0 {
                                                             Some(n) => format!("AI{n} / DI{n}"),
-                                                            None => "Brak".to_string(),
+                                                            None => tr("Brak").to_string(),
                                                         };
                                                         ComboBox::from_id_salt(("st_in0", idx))
                                                             .width(82.0)
@@ -311,7 +314,7 @@ pub fn render_state_modal(
                                                                 if ui
                                                                     .selectable_label(
                                                                         rule.input0.is_none(),
-                                                                        "Domyślnie (brak)",
+                                                                        tr("Domyślnie (brak)"),
                                                                     )
                                                                     .clicked()
                                                                 {
@@ -371,7 +374,7 @@ pub fn render_state_modal(
                                                                 if ui
                                                                     .selectable_label(
                                                                         rule.input1.is_none(),
-                                                                        "Brak 2. warunku",
+                                                                        tr("Brak 2. warunku"),
                                                                     )
                                                                     .clicked()
                                                                 {
@@ -443,7 +446,7 @@ pub fn render_state_modal(
                                                 ui.add(
                                                     TextEdit::singleline(&mut rule.text)
                                                         .desired_width(204.0)
-                                                        .hint_text("(brak tekstu)"),
+                                                        .hint_text(tr("(brak tekstu)")),
                                                 );
                                             });
 
@@ -465,7 +468,7 @@ pub fn render_state_modal(
                                                                 if ui
                                                                     .selectable_label(
                                                                         rule.icon_color == *code,
-                                                                        *label,
+                                                                        tr(*label),
                                                                     )
                                                                     .clicked()
                                                                 {
@@ -508,9 +511,12 @@ pub fn render_state_modal(
 
             ui.horizontal(|ui| {
                 ui.label(
-                    RichText::new(format!("Liczba reguł: {}", cfg.rules.len()))
-                        .size(12.0)
-                        .color(TEXT_MUTED),
+                    RichText::new(tr_fmt(
+                        "Liczba reguł: {count}",
+                        &[("count", &cfg.rules.len().to_string())],
+                    ))
+                    .size(12.0)
+                    .color(TEXT_MUTED),
                 );
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     if ui
@@ -612,7 +618,7 @@ impl AlarmClockModalState {
         self.page_uuid = page_uuid;
         self.block_uuid = block.uuid.clone();
         self.block_title = if block.title.is_empty() {
-            "Budzik".to_string()
+            tr("Budzik").to_string()
         } else {
             block.title.clone()
         };
@@ -689,10 +695,13 @@ pub fn render_alarm_clock_modal(
 
             ui.horizontal(|ui| {
                 ui.label(
-                    RichText::new(format!("⏰ Konfiguracja Budzika: {}", state.block_title))
-                        .size(16.0)
-                        .strong()
-                        .color(TEXT_PRIMARY),
+                    RichText::new(tr_fmt(
+                        "⏰ Konfiguracja Budzika: {title}",
+                        &[("title", &state.block_title)],
+                    ))
+                    .size(16.0)
+                    .strong()
+                    .color(TEXT_PRIMARY),
                 );
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     if ui
@@ -708,7 +717,7 @@ pub fn render_alarm_clock_modal(
                     if ui
                         .add(
                             egui::Button::new(
-                                RichText::new("➕ Dodaj budzik")
+                                RichText::new(tr("➕ Dodaj budzik"))
                                     .size(12.5)
                                     .strong()
                                     .color(Color32::BLACK),
@@ -736,27 +745,35 @@ pub fn render_alarm_clock_modal(
                 .show(ui, |ui| {
                     ui.horizontal_wrapped(|ui| {
                         ui.label(
-                            RichText::new("Czas alarmu (s):")
+                            RichText::new(tr("Czas alarmu (s):"))
                                 .size(12.0)
                                 .color(TEXT_MUTED),
                         );
                         ui.add(egui::DragValue::new(&mut cfg.alarm_time_sec).range(5..=7200));
                         ui.add_space(12.0);
                         ui.label(
-                            RichText::new("Czas przygotowania PrepTime (s):")
+                            RichText::new(tr("Czas przygotowania PrepTime (s):"))
                                 .size(12.0)
                                 .color(TEXT_MUTED),
                         );
                         ui.add(egui::DragValue::new(&mut cfg.prep_time_sec).range(0..=7200));
                         ui.add_space(12.0);
-                        ui.label(RichText::new("Drzemka (s):").size(12.0).color(TEXT_MUTED));
+                        ui.label(
+                            RichText::new(tr("Drzemka (s):"))
+                                .size(12.0)
+                                .color(TEXT_MUTED),
+                        );
                         ui.add(egui::DragValue::new(&mut cfg.snooze_time_sec).range(30..=3600));
                         ui.add_space(12.0);
-                        ui.label(RichText::new("Dźwięk (1-9):").size(12.0).color(TEXT_MUTED));
+                        ui.label(
+                            RichText::new(tr("Dźwięk (1-9):"))
+                                .size(12.0)
+                                .color(TEXT_MUTED),
+                        );
                         ui.add(egui::DragValue::new(&mut cfg.wake_sound).range(1..=9));
                         ui.add_space(12.0);
                         ui.label(
-                            RichText::new("Głośność (%):")
+                            RichText::new(tr("Głośność (%):"))
                                 .size(12.0)
                                 .color(TEXT_MUTED),
                         );
@@ -784,7 +801,7 @@ pub fn render_alarm_clock_modal(
                             ui.horizontal(|ui| {
                                 ui.allocate_ui(Vec2::new(200.0, 18.0), |ui| {
                                     ui.label(
-                                        RichText::new("Nazwa budzika")
+                                        RichText::new(tr("Nazwa budzika"))
                                             .size(12.0)
                                             .strong()
                                             .color(TEXT_PRIMARY),
@@ -792,7 +809,7 @@ pub fn render_alarm_clock_modal(
                                 });
                                 ui.allocate_ui(Vec2::new(90.0, 18.0), |ui| {
                                     ui.label(
-                                        RichText::new("Godzina (GG:MM)")
+                                        RichText::new(tr("Godzina (GG:MM)"))
                                             .size(12.0)
                                             .strong()
                                             .color(TEXT_PRIMARY),
@@ -800,7 +817,7 @@ pub fn render_alarm_clock_modal(
                                 });
                                 ui.allocate_ui(Vec2::new(560.0, 18.0), |ui| {
                                     ui.label(
-                                        RichText::new("Aktywne dni i tryby pracy")
+                                        RichText::new(tr("Aktywne dni i tryby pracy"))
                                             .size(12.0)
                                             .strong()
                                             .color(TEXT_PRIMARY),
@@ -830,7 +847,7 @@ pub fn render_alarm_clock_modal(
                                                                 .size(11.5)
                                                                 .color(TEXT_MUTED),
                                                         )
-                                                        .on_hover_text("Wbudowany alarm domyślny");
+                                                        .on_hover_text(tr("Wbudowany alarm domyślny"));
                                                     }
                                                     ui.add(
                                                         TextEdit::singleline(&mut entry.name)
@@ -861,7 +878,7 @@ pub fn render_alarm_clock_modal(
                                                     for &(bit, label) in MODE_BITS {
                                                         let mut active = entry.has_mode_bit(bit);
                                                         if ui
-                                                            .selectable_label(active, label)
+                                                            .selectable_label(active, tr(label))
                                                             .clicked()
                                                         {
                                                             active = !active;
@@ -869,13 +886,13 @@ pub fn render_alarm_clock_modal(
                                                         }
                                                     }
                                                     ui.add_space(6.0);
-                                                    if ui.small_button("Pn-Pt").clicked() {
+                                                    if ui.small_button(tr("Pn-Pt")).clicked() {
                                                         entry.modes_mask = ALARM_MODES_WEEKDAYS;
                                                     }
-                                                    if ui.small_button("Weekend").clicked() {
+                                                    if ui.small_button(tr("Weekend")).clicked() {
                                                         entry.modes_mask = ALARM_MODES_WEEKEND;
                                                     }
-                                                    if ui.small_button("Wszystkie").clicked() {
+                                                    if ui.small_button(tr("Wszystkie")).clicked() {
                                                         entry.modes_mask = ALARM_MODES_ALL;
                                                     }
                                                     if !entry.is_internal_default
@@ -907,9 +924,12 @@ pub fn render_alarm_clock_modal(
 
             ui.horizontal(|ui| {
                 ui.label(
-                    RichText::new(format!("Liczba budzików: {}", cfg.entries.len()))
-                        .size(12.0)
-                        .color(TEXT_MUTED),
+                    RichText::new(tr_fmt(
+                        "Liczba budzików: {count}",
+                        &[("count", &cfg.entries.len().to_string())],
+                    ))
+                    .size(12.0)
+                    .color(TEXT_MUTED),
                 );
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     if ui

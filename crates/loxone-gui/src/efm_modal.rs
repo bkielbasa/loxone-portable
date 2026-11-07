@@ -9,7 +9,7 @@ use loxone_core::efm_config::{
 use loxone_core::model::LoxoneProject;
 use loxone_core::writer::ProjectEdit;
 
-use crate::i18n::tr;
+use crate::i18n::{tr, tr_fmt};
 use crate::theme::{BORDER_SUBTLE, CARD_BG, PANEL_BG, TEXT_MUTED, TEXT_PRIMARY};
 
 const LOXONE_GREEN: Color32 = Color32::from_rgb(0x69, 0xC8, 0x32);
@@ -166,12 +166,12 @@ pub fn render_efm_modal(
                         ui.add(TextEdit::singleline(&mut cfg.root.title).desired_width(150.0));
 
                         ui.add_space(10.0);
-                        ui.checkbox(&mut cfg.root.calc_rest, "Oblicz niezmierzone zużycie");
+                        ui.checkbox(&mut cfg.root.calc_rest, tr("Oblicz niezmierzone zużycie"));
                         if cfg.root.calc_rest {
                             ui.add(
                                 TextEdit::singleline(&mut cfg.root.rest_name)
                                     .desired_width(120.0)
-                                    .hint_text("Nieokreślone"),
+                                    .hint_text(tr("Nieokreślone")),
                             );
                         }
 
@@ -179,7 +179,7 @@ pub fn render_efm_modal(
                         ui.label(RichText::new(format!("{}:", tr("Statistic Interval"))).size(12.0).color(TEXT_PRIMARY));
                         ComboBox::from_id_salt("efm_stat_power")
                             .width(110.0)
-                            .selected_text(format!("Moc: {}", translate_stat_interval(cfg.stat_power_interval)))
+                            .selected_text(format!("{}: {}", tr("Power"), translate_stat_interval(cfg.stat_power_interval)))
                             .show_ui(ui, |ui| {
                                 for &si in StatInterval::all() {
                                     ui.selectable_value(
@@ -191,7 +191,7 @@ pub fn render_efm_modal(
                             });
                         ComboBox::from_id_salt("efm_stat_energy")
                             .width(120.0)
-                            .selected_text(format!("Energia: {}", translate_stat_interval(cfg.stat_energy_interval)))
+                            .selected_text(format!("{}: {}", tr("Energy"), translate_stat_interval(cfg.stat_energy_interval)))
                             .show_ui(ui, |ui| {
                                 for &si in StatInterval::all() {
                                     ui.selectable_value(
@@ -335,7 +335,7 @@ pub fn render_efm_modal(
                                 });
                                 ui.allocate_ui(Vec2::new(col_rest_w, 18.0), |ui| {
                                     ui.label(
-                                        RichText::new("Niezmierzone zużycie")
+                                        RichText::new(tr("Niezmierzone zużycie"))
                                             .size(12.0)
                                             .strong()
                                             .color(TEXT_PRIMARY),
@@ -543,9 +543,12 @@ fn render_efm_node_row(
                 ui.allocate_ui(Vec2::new(col_object_w, 24.0), |ui| {
                     if node.node_type == EfmNodeType::Group {
                         ui.label(
-                            RichText::new(format!("({} elementów)", node.children.len()))
-                                .size(12.0)
-                                .color(TEXT_MUTED),
+                            RichText::new(tr_fmt(
+                                "({count} elementów)",
+                                &[("count", &node.children.len().to_string())],
+                            ))
+                            .size(12.0)
+                            .color(TEXT_MUTED),
                         );
                     } else {
                         let current_label = if node.ctrl_uuid.is_empty() {
@@ -588,7 +591,7 @@ fn render_efm_node_row(
                 ui.allocate_ui(Vec2::new(col_rest_w, 24.0), |ui| {
                     ui.horizontal(|ui| {
                         if node.node_type == EfmNodeType::Group {
-                            ui.checkbox(&mut node.calc_rest, "Oblicz resztę");
+                            ui.checkbox(&mut node.calc_rest, tr("Oblicz resztę"));
                         } else {
                             ui.add_space(92.0);
                         }

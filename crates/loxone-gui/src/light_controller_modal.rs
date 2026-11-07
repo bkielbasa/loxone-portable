@@ -629,7 +629,7 @@ fn render_circuits_tab(ui: &mut Ui, state: &mut LightControllerModalState) {
                                     ui.add(
                                         TextEdit::singleline(&mut circuit.name)
                                             .desired_width(col_name - 8.0)
-                                            .hint_text("nieznane"),
+                                            .hint_text(tr("nieznane")),
                                     );
                                 },
                             );
