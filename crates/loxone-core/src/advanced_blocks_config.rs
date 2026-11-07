@@ -3,12 +3,16 @@ use crate::writer::ProjectEdit;
 
 /// Master helper returning `true` when `block_type` supports the dedicated Advanced Block
 /// Double-Click Configuration Modal (`Central`, `AudioZone` / `MusicPlayer`,
-/// `Heatmixer2` / `ClimateController`, or `Sequence`).
+/// `Heatmixer2` / `ClimateController`, `Sequence`, `AutoJalousie` / `Jalousie`,
+/// `Doorcontroller` / `Intercom` / `Door` / `NfcCodeTouch`, or `PresenceDetector`).
 pub fn supports_advanced_block_modal(block_type: &str) -> bool {
     CentralBlockConfig::is_central_block(block_type)
         || AudioZoneConfig::is_audio_zone_block(block_type)
         || ClimateControllerConfig::is_climate_controller_block(block_type)
         || SequenceConfig::is_sequence_block(block_type)
+        || ShadingBlockConfig::is_shading_block(block_type)
+        || AccessBlockConfig::is_access_block(block_type)
+        || PresenceBlockConfig::is_presence_block(block_type)
 }
 
 fn find_attr<'a>(attrs: &'a [(String, String)], key: &str) -> Option<&'a str> {
@@ -38,11 +42,17 @@ fn parse_pin_u32(block: &PageBlock, key: &str, default: u32) -> u32 {
         .unwrap_or(default)
 }
 
+fn parse_pin_i32(block: &PageBlock, key: &str, default: i32) -> i32 {
+    find_pin_def(block, key)
+        .and_then(|v| v.trim().parse::<i32>().ok())
+        .unwrap_or(default)
+}
+
 fn fmt_f32(val: f32) -> String {
     if (val - val.round()).abs() < 1e-4 {
         format!("{}", val.round() as i64)
     } else {
-        format!("{:.2}", val)
+        format!("{:.3}", val)
             .trim_end_matches('0')
             .trim_end_matches('.')
             .to_string()
@@ -1118,6 +1128,570 @@ impl SequenceConfig {
     }
 }
 
+// ============================================================================
+// 5. SHADING / AUTOMATIC BLINDS (`AutoJalousie`, `Jalousie`, `RoofWindowShading`)
+// ============================================================================
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ShadingBlockConfig {
+    pub sun_automation: bool,
+    pub blind_type: u32,
+    pub compass_dir: u32,
+    pub time_up: f32,
+    pub time_down: f32,
+    pub turn_offset: f32,
+    pub min_move: f32,
+    pub back_turn: f32,
+    pub dir_tol_start: f32,
+    pub dir_tol_end: f32,
+    pub slat_width_mm: u32,
+    pub slat_space_mm: u32,
+    pub auto_shade_end: u32,
+    pub auto_mode: u32,
+    pub auto_shade_time_min: u32,
+    pub sunrise_offset_min: i32,
+    pub sunset_offset_min: i32,
+    pub linked_actuator_uuid: Option<String>,
+}
+
+impl ShadingBlockConfig {
+    pub fn is_shading_block(block_type: &str) -> bool {
+        matches!(
+            block_type,
+            "AutoJalousie" | "Jalousie" | "RoofWindowShading"
+        )
+    }
+
+    pub fn from_block(block: &PageBlock) -> Self {
+        let sun_automation = find_attr(&block.raw_attributes, "Sun")
+            .map(|v| v.eq_ignore_ascii_case("true") || v == "1")
+            .unwrap_or(true);
+        let linked_actuator_uuid = find_attr(&block.raw_attributes, "Ref")
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+            .or_else(|| block.ref_uuid.clone());
+
+        Self {
+            sun_automation,
+            blind_type: parse_pin_u32(block, "Type", 1),
+            compass_dir: parse_pin_u32(block, "Dir", 8),
+            time_up: parse_pin_f32(block, "TimeEnd", 30.0),
+            time_down: parse_pin_f32(block, "TimeEndDown", 28.0),
+            turn_offset: parse_pin_f32(block, "TurnOffset", 0.15),
+            min_move: parse_pin_f32(block, "MinMove", 0.4),
+            back_turn: parse_pin_f32(block, "Back", 0.8),
+            dir_tol_start: parse_pin_f32(block, "DirTol", 85.0),
+            dir_tol_end: parse_pin_f32(block, "DirTol2", 85.0),
+            slat_width_mm: parse_pin_u32(block, "Width", 70),
+            slat_space_mm: parse_pin_u32(block, "Space", 60),
+            auto_shade_end: parse_pin_u32(block, "AutoShadeEnd", 1),
+            auto_mode: parse_pin_u32(block, "AutMode", 1),
+            auto_shade_time_min: parse_pin_u32(block, "AutoShadeTime", 120),
+            sunrise_offset_min: parse_pin_i32(block, "SRoff", 30),
+            sunset_offset_min: parse_pin_i32(block, "SSoff", -30),
+            linked_actuator_uuid,
+        }
+    }
+
+    pub fn to_project_edit(&self, _page_uuid: &str, block_uuid: &str) -> ProjectEdit {
+        let mut edits = vec![
+            ProjectEdit::SetControlAttr {
+                control_uuid: block_uuid.to_string(),
+                attr_name: "Sun".to_string(),
+                value: Some(if self.sun_automation {
+                    "true".to_string()
+                } else {
+                    "false".to_string()
+                }),
+            },
+            ProjectEdit::SetPinDefault {
+                control_uuid: block_uuid.to_string(),
+                pin_key: "Type".to_string(),
+                default_value: Some(self.blind_type.to_string()),
+            },
+            ProjectEdit::SetPinDefault {
+                control_uuid: block_uuid.to_string(),
+                pin_key: "Dir".to_string(),
+                default_value: Some(self.compass_dir.to_string()),
+            },
+            ProjectEdit::SetPinDefault {
+                control_uuid: block_uuid.to_string(),
+                pin_key: "TimeEnd".to_string(),
+                default_value: Some(fmt_f32(self.time_up)),
+            },
+            ProjectEdit::SetPinDefault {
+                control_uuid: block_uuid.to_string(),
+                pin_key: "TimeEndDown".to_string(),
+                default_value: Some(fmt_f32(self.time_down)),
+            },
+            ProjectEdit::SetPinDefault {
+                control_uuid: block_uuid.to_string(),
+                pin_key: "TurnOffset".to_string(),
+                default_value: Some(fmt_f32(self.turn_offset)),
+            },
+            ProjectEdit::SetPinDefault {
+                control_uuid: block_uuid.to_string(),
+                pin_key: "MinMove".to_string(),
+                default_value: Some(fmt_f32(self.min_move)),
+            },
+            ProjectEdit::SetPinDefault {
+                control_uuid: block_uuid.to_string(),
+                pin_key: "Back".to_string(),
+                default_value: Some(fmt_f32(self.back_turn)),
+            },
+            ProjectEdit::SetPinDefault {
+                control_uuid: block_uuid.to_string(),
+                pin_key: "DirTol".to_string(),
+                default_value: Some(fmt_f32(self.dir_tol_start)),
+            },
+            ProjectEdit::SetPinDefault {
+                control_uuid: block_uuid.to_string(),
+                pin_key: "DirTol2".to_string(),
+                default_value: Some(fmt_f32(self.dir_tol_end)),
+            },
+            ProjectEdit::SetPinDefault {
+                control_uuid: block_uuid.to_string(),
+                pin_key: "Width".to_string(),
+                default_value: Some(self.slat_width_mm.to_string()),
+            },
+            ProjectEdit::SetPinDefault {
+                control_uuid: block_uuid.to_string(),
+                pin_key: "Space".to_string(),
+                default_value: Some(self.slat_space_mm.to_string()),
+            },
+            ProjectEdit::SetPinDefault {
+                control_uuid: block_uuid.to_string(),
+                pin_key: "AutoShadeEnd".to_string(),
+                default_value: Some(self.auto_shade_end.to_string()),
+            },
+            ProjectEdit::SetPinDefault {
+                control_uuid: block_uuid.to_string(),
+                pin_key: "AutMode".to_string(),
+                default_value: Some(self.auto_mode.to_string()),
+            },
+            ProjectEdit::SetPinDefault {
+                control_uuid: block_uuid.to_string(),
+                pin_key: "AutoShadeTime".to_string(),
+                default_value: Some(self.auto_shade_time_min.to_string()),
+            },
+            ProjectEdit::SetPinDefault {
+                control_uuid: block_uuid.to_string(),
+                pin_key: "SRoff".to_string(),
+                default_value: Some(self.sunrise_offset_min.to_string()),
+            },
+            ProjectEdit::SetPinDefault {
+                control_uuid: block_uuid.to_string(),
+                pin_key: "SSoff".to_string(),
+                default_value: Some(self.sunset_offset_min.to_string()),
+            },
+        ];
+        if let Some(ref_u) = &self.linked_actuator_uuid {
+            edits.push(ProjectEdit::SetControlAttr {
+                control_uuid: block_uuid.to_string(),
+                attr_name: "Ref".to_string(),
+                value: (!ref_u.trim().is_empty()).then(|| ref_u.trim().to_string()),
+            });
+        }
+        ProjectEdit::Batch(edits)
+    }
+}
+
+// ============================================================================
+// 6. ACCESS & INTERCOM (`Doorcontroller`, `Intercom`, `Door`, `NfcCodeTouch`, `Gate`)
+// ============================================================================
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct AccessBlockConfig {
+    pub block_type: String,
+    pub out_name_1: String,
+    pub out_name_2: String,
+    pub out_name_3: String,
+    pub nfc_output_labels: [String; 6],
+    pub intercom_answers: String,
+    pub door_number: u32,
+    pub ctrl_type: u32,
+    pub history_size: u32,
+    pub timeout_sec: f32,
+    pub pulse_time_sec: f32,
+    pub pulse_open_sec: f32,
+    pub pulse_close_sec: f32,
+    pub led_brightness: u32,
+    pub acoustic_feedback: u32,
+    pub assigned_audio_uuid: Option<String>,
+}
+
+impl AccessBlockConfig {
+    pub fn is_access_block(block_type: &str) -> bool {
+        matches!(
+            block_type,
+            "Doorcontroller" | "Intercom" | "Door" | "NfcCodeTouch" | "Gate"
+        )
+    }
+
+    pub fn from_block(block: &PageBlock) -> Self {
+        let mut nfc_output_labels = [
+            String::new(),
+            String::new(),
+            String::new(),
+            String::new(),
+            String::new(),
+            String::new(),
+        ];
+        if let Some(ostr) = find_attr(&block.raw_attributes, "OStr") {
+            for (i, part) in ostr.split(';').take(6).enumerate() {
+                nfc_output_labels[i] = part.trim().to_string();
+            }
+        }
+        let assigned_audio_uuid = find_attr(&block.raw_attributes, "Objects")
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string);
+
+        Self {
+            block_type: block.block_type.clone(),
+            out_name_1: find_attr(&block.raw_attributes, "OutName1")
+                .unwrap_or_default()
+                .to_string(),
+            out_name_2: find_attr(&block.raw_attributes, "OutName2")
+                .unwrap_or_default()
+                .to_string(),
+            out_name_3: find_attr(&block.raw_attributes, "OutName3")
+                .unwrap_or_default()
+                .to_string(),
+            nfc_output_labels,
+            intercom_answers: find_attr(&block.raw_attributes, "ans")
+                .unwrap_or_default()
+                .to_string(),
+            door_number: find_attr(&block.raw_attributes, "DoorNumber")
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(1),
+            ctrl_type: find_attr(&block.raw_attributes, "CtrlType")
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(1),
+            history_size: find_attr(&block.raw_attributes, "HSize")
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(10),
+            timeout_sec: parse_pin_f32(block, "Timeout", 60.0),
+            pulse_time_sec: parse_pin_f32(block, "PulseTime", 5.0),
+            pulse_open_sec: parse_pin_f32(block, "PulseOpen", 60.0),
+            pulse_close_sec: parse_pin_f32(block, "PulseClose", 60.0),
+            led_brightness: parse_pin_u32(block, "Lbr", 50),
+            acoustic_feedback: if block.block_type == "Intercom" {
+                parse_pin_u32(block, "Tp", 1)
+            } else {
+                parse_pin_u32(block, "Au", 1)
+            },
+            assigned_audio_uuid,
+        }
+    }
+
+    pub fn to_project_edit(&self, _page_uuid: &str, block_uuid: &str) -> ProjectEdit {
+        let mut edits = Vec::new();
+        match self.block_type.as_str() {
+            "NfcCodeTouch" => {
+                let ostr_joined = self
+                    .nfc_output_labels
+                    .iter()
+                    .map(|s| if s.trim().is_empty() { " " } else { s.trim() })
+                    .collect::<Vec<_>>()
+                    .join(";");
+                edits.extend([
+                    ProjectEdit::SetControlAttr {
+                        control_uuid: block_uuid.to_string(),
+                        attr_name: "OStr".to_string(),
+                        value: Some(ostr_joined),
+                    },
+                    ProjectEdit::SetControlAttr {
+                        control_uuid: block_uuid.to_string(),
+                        attr_name: "HSize".to_string(),
+                        value: Some(self.history_size.to_string()),
+                    },
+                    ProjectEdit::SetPinDefault {
+                        control_uuid: block_uuid.to_string(),
+                        pin_key: "PulseTime".to_string(),
+                        default_value: Some(fmt_f32(self.pulse_time_sec)),
+                    },
+                    ProjectEdit::SetPinDefault {
+                        control_uuid: block_uuid.to_string(),
+                        pin_key: "Lbr".to_string(),
+                        default_value: Some(self.led_brightness.to_string()),
+                    },
+                    ProjectEdit::SetPinDefault {
+                        control_uuid: block_uuid.to_string(),
+                        pin_key: "Au".to_string(),
+                        default_value: Some(self.acoustic_feedback.to_string()),
+                    },
+                ]);
+            }
+            "Door" | "Gate" => {
+                edits.extend([
+                    ProjectEdit::SetControlAttr {
+                        control_uuid: block_uuid.to_string(),
+                        attr_name: "CtrlType".to_string(),
+                        value: Some(self.ctrl_type.to_string()),
+                    },
+                    ProjectEdit::SetPinDefault {
+                        control_uuid: block_uuid.to_string(),
+                        pin_key: "PulseOpen".to_string(),
+                        default_value: Some(fmt_f32(self.pulse_open_sec)),
+                    },
+                    ProjectEdit::SetPinDefault {
+                        control_uuid: block_uuid.to_string(),
+                        pin_key: "PulseClose".to_string(),
+                        default_value: Some(fmt_f32(self.pulse_close_sec)),
+                    },
+                ]);
+            }
+            "Intercom" => {
+                edits.extend([
+                    ProjectEdit::SetControlAttr {
+                        control_uuid: block_uuid.to_string(),
+                        attr_name: "OutName1".to_string(),
+                        value: (!self.out_name_1.is_empty()).then(|| self.out_name_1.clone()),
+                    },
+                    ProjectEdit::SetControlAttr {
+                        control_uuid: block_uuid.to_string(),
+                        attr_name: "OutName2".to_string(),
+                        value: (!self.out_name_2.is_empty()).then(|| self.out_name_2.clone()),
+                    },
+                    ProjectEdit::SetControlAttr {
+                        control_uuid: block_uuid.to_string(),
+                        attr_name: "OutName3".to_string(),
+                        value: (!self.out_name_3.is_empty()).then(|| self.out_name_3.clone()),
+                    },
+                    ProjectEdit::SetControlAttr {
+                        control_uuid: block_uuid.to_string(),
+                        attr_name: "ans".to_string(),
+                        value: (!self.intercom_answers.is_empty())
+                            .then(|| self.intercom_answers.clone()),
+                    },
+                    ProjectEdit::SetControlAttr {
+                        control_uuid: block_uuid.to_string(),
+                        attr_name: "Objects".to_string(),
+                        value: self
+                            .assigned_audio_uuid
+                            .as_ref()
+                            .filter(|s| !s.trim().is_empty())
+                            .cloned(),
+                    },
+                    ProjectEdit::SetPinDefault {
+                        control_uuid: block_uuid.to_string(),
+                        pin_key: "Timeout".to_string(),
+                        default_value: Some(fmt_f32(self.timeout_sec)),
+                    },
+                    ProjectEdit::SetPinDefault {
+                        control_uuid: block_uuid.to_string(),
+                        pin_key: "Lbr".to_string(),
+                        default_value: Some(self.led_brightness.to_string()),
+                    },
+                    ProjectEdit::SetPinDefault {
+                        control_uuid: block_uuid.to_string(),
+                        pin_key: "Tp".to_string(),
+                        default_value: Some(self.acoustic_feedback.to_string()),
+                    },
+                ]);
+            }
+            _ => {
+                // Doorcontroller
+                edits.extend([
+                    ProjectEdit::SetControlAttr {
+                        control_uuid: block_uuid.to_string(),
+                        attr_name: "OutName1".to_string(),
+                        value: (!self.out_name_1.is_empty()).then(|| self.out_name_1.clone()),
+                    },
+                    ProjectEdit::SetControlAttr {
+                        control_uuid: block_uuid.to_string(),
+                        attr_name: "OutName2".to_string(),
+                        value: (!self.out_name_2.is_empty()).then(|| self.out_name_2.clone()),
+                    },
+                    ProjectEdit::SetControlAttr {
+                        control_uuid: block_uuid.to_string(),
+                        attr_name: "OutName3".to_string(),
+                        value: (!self.out_name_3.is_empty()).then(|| self.out_name_3.clone()),
+                    },
+                    ProjectEdit::SetControlAttr {
+                        control_uuid: block_uuid.to_string(),
+                        attr_name: "DoorNumber".to_string(),
+                        value: Some(self.door_number.to_string()),
+                    },
+                    ProjectEdit::SetControlAttr {
+                        control_uuid: block_uuid.to_string(),
+                        attr_name: "Objects".to_string(),
+                        value: self
+                            .assigned_audio_uuid
+                            .as_ref()
+                            .filter(|s| !s.trim().is_empty())
+                            .cloned(),
+                    },
+                    ProjectEdit::SetPinDefault {
+                        control_uuid: block_uuid.to_string(),
+                        pin_key: "Timeout".to_string(),
+                        default_value: Some(fmt_f32(self.timeout_sec)),
+                    },
+                ]);
+            }
+        }
+        ProjectEdit::Batch(edits)
+    }
+}
+
+// ============================================================================
+// 7. PRESENCE DETECTOR (`PresenceDetector`)
+// ============================================================================
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PresenceSensorCandidate {
+    pub uuid: String,
+    pub title: String,
+    pub control_type: String,
+    pub parent_title: String,
+    pub serial: String,
+}
+
+fn collect_presence_sensors_recursive(
+    node: &TreeNode,
+    parent_title: &str,
+    out: &mut Vec<PresenceSensorCandidate>,
+) {
+    if matches!(
+        node.control_type.as_str(),
+        "TreeDevice" | "AirDevice" | "IntercomDevice"
+    ) && !node.uuid.is_empty()
+    {
+        let serial = find_attr(&node.raw_attributes, "Serial")
+            .unwrap_or_default()
+            .to_string();
+        let title_l = node.title.to_lowercase();
+        let is_sensor_candidate = title_l.contains("czujnik")
+            || title_l.contains("obecno")
+            || title_l.contains("presence")
+            || title_l.contains("motion")
+            || title_l.contains("touch")
+            || title_l.contains("intercom")
+            || node
+                .children
+                .iter()
+                .any(|c| matches!(c.control_type.as_str(), "SensorIn" | "DaytimerIn" | "SoundIn"));
+        if is_sensor_candidate {
+            out.push(PresenceSensorCandidate {
+                uuid: node.uuid.clone(),
+                title: if node.title.is_empty() {
+                    node.control_type.clone()
+                } else {
+                    node.title.clone()
+                },
+                control_type: node.control_type.clone(),
+                parent_title: parent_title.to_string(),
+                serial,
+            });
+        }
+    }
+    let next_parent = if !node.title.is_empty() {
+        node.title.as_str()
+    } else {
+        parent_title
+    };
+    for child in &node.children {
+        collect_presence_sensors_recursive(child, next_parent, out);
+    }
+}
+
+pub fn collect_presence_sensor_candidates(project: &LoxoneProject) -> Vec<PresenceSensorCandidate> {
+    let mut out = Vec::new();
+    for node in project
+        .periphery_tree
+        .iter()
+        .chain(project.system_tree.iter())
+    {
+        collect_presence_sensors_recursive(node, &node.title, &mut out);
+    }
+    out.sort_by(|a, b| polish_sort_key(&a.title).cmp(&polish_sort_key(&b.title)));
+    out
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct PresenceBlockConfig {
+    pub hold_time_sec: f32,
+    pub warn_time_sec: f32,
+    pub track_ne: u32,
+    pub track_max: u32,
+    pub assigned_device_uuids: Vec<String>,
+}
+
+impl PresenceBlockConfig {
+    pub fn is_presence_block(block_type: &str) -> bool {
+        block_type == "PresenceDetector"
+    }
+
+    pub fn from_block(block: &PageBlock) -> Self {
+        let assigned_device_uuids = find_attr(&block.raw_attributes, "DEVS")
+            .unwrap_or_default()
+            .split(|c| c == ',' || c == ';')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+            .collect();
+        let track_ne = find_attr(&block.raw_attributes, "TRK_NE")
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(50);
+        let track_max = find_attr(&block.raw_attributes, "TRK_MAX")
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(50);
+
+        Self {
+            hold_time_sec: parse_pin_f32(block, "ParamTOn", 900.0),
+            warn_time_sec: parse_pin_f32(block, "ParamTWarn", 15.0),
+            track_ne,
+            track_max,
+            assigned_device_uuids,
+        }
+    }
+
+    pub fn is_device_assigned(&self, uuid: &str) -> bool {
+        self.assigned_device_uuids.iter().any(|u| u == uuid)
+    }
+
+    pub fn toggle_device(&mut self, uuid: &str) {
+        if let Some(pos) = self.assigned_device_uuids.iter().position(|u| u == uuid) {
+            self.assigned_device_uuids.remove(pos);
+        } else {
+            self.assigned_device_uuids.push(uuid.to_string());
+        }
+    }
+
+    pub fn to_project_edit(&self, _page_uuid: &str, block_uuid: &str) -> ProjectEdit {
+        let devs_joined = self.assigned_device_uuids.join(",");
+        ProjectEdit::Batch(vec![
+            ProjectEdit::SetControlAttr {
+                control_uuid: block_uuid.to_string(),
+                attr_name: "DEVS".to_string(),
+                value: (!devs_joined.is_empty()).then_some(devs_joined),
+            },
+            ProjectEdit::SetControlAttr {
+                control_uuid: block_uuid.to_string(),
+                attr_name: "TRK_NE".to_string(),
+                value: Some(self.track_ne.to_string()),
+            },
+            ProjectEdit::SetControlAttr {
+                control_uuid: block_uuid.to_string(),
+                attr_name: "TRK_MAX".to_string(),
+                value: Some(self.track_max.to_string()),
+            },
+            ProjectEdit::SetPinDefault {
+                control_uuid: block_uuid.to_string(),
+                pin_key: "ParamTOn".to_string(),
+                default_value: Some(fmt_f32(self.hold_time_sec)),
+            },
+            ProjectEdit::SetPinDefault {
+                control_uuid: block_uuid.to_string(),
+                pin_key: "ParamTWarn".to_string(),
+                default_value: Some(fmt_f32(self.warn_time_sec)),
+            },
+        ])
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1205,6 +1779,93 @@ mod tests {
         assert_eq!(seq_cfg.steps.len(), 2);
         seq_cfg.add_step();
         assert_eq!(seq_cfg.steps.len(), 3);
+
+        // 5. AutoJalousie
+        let (aj_page_uuid, aj_block) = proj
+            .pages
+            .iter()
+            .find_map(|p| {
+                p.blocks
+                    .iter()
+                    .find(|b| b.block_type == "AutoJalousie")
+                    .map(|b| (p.uuid.clone(), b.clone()))
+            })
+            .expect("find AutoJalousie");
+        let aj_uuid = &aj_block.uuid;
+        assert!(supports_advanced_block_modal(&aj_block.block_type));
+        let mut aj_cfg = ShadingBlockConfig::from_block(&aj_block);
+        assert!(aj_cfg.sun_automation);
+        assert_eq!(aj_cfg.blind_type, 1);
+        assert!(aj_cfg.time_up > 10.0);
+        assert!(aj_cfg.time_down > 10.0);
+        aj_cfg.time_up = 31.5;
+        let aj_edit = aj_cfg.to_project_edit(&aj_page_uuid, aj_uuid);
+        let aj_inv = apply_edit_with_inverse(&mut proj, &aj_edit).unwrap();
+        apply_edit_with_inverse(&mut proj, &aj_inv).unwrap();
+
+        // 6. Access blocks: Intercom, NfcCodeTouch
+        let (ic_page_uuid, ic_block) = proj
+            .pages
+            .iter()
+            .find_map(|p| {
+                p.blocks
+                    .iter()
+                    .find(|b| b.block_type == "Intercom")
+                    .map(|b| (p.uuid.clone(), b.clone()))
+            })
+            .expect("find Intercom");
+        let ic_uuid = &ic_block.uuid;
+        assert!(supports_advanced_block_modal(&ic_block.block_type));
+        let mut ic_cfg = AccessBlockConfig::from_block(&ic_block);
+        assert_eq!(ic_cfg.out_name_1, "Otwórz furtkę");
+        assert!(ic_cfg.intercom_answers.contains("Nie ma nas w domu."));
+        ic_cfg.timeout_sec = 45.0;
+        let ic_edit = ic_cfg.to_project_edit(&ic_page_uuid, ic_uuid);
+        let ic_inv = apply_edit_with_inverse(&mut proj, &ic_edit).unwrap();
+        apply_edit_with_inverse(&mut proj, &ic_inv).unwrap();
+
+        let (nfc_page_uuid, nfc_block) = proj
+            .pages
+            .iter()
+            .find_map(|p| {
+                p.blocks
+                    .iter()
+                    .find(|b| b.block_type == "NfcCodeTouch")
+                    .map(|b| (p.uuid.clone(), b.clone()))
+            })
+            .expect("find NfcCodeTouch");
+        let nfc_uuid = &nfc_block.uuid;
+        let mut nfc_cfg = AccessBlockConfig::from_block(&nfc_block);
+        assert_eq!(nfc_cfg.nfc_output_labels[0], "wiatrołap: elektrozaczep");
+        assert_eq!(nfc_cfg.nfc_output_labels[1], "Brama");
+        nfc_cfg.pulse_time_sec = 6.0;
+        let nfc_edit = nfc_cfg.to_project_edit(&nfc_page_uuid, nfc_uuid);
+        let nfc_inv = apply_edit_with_inverse(&mut proj, &nfc_edit).unwrap();
+        apply_edit_with_inverse(&mut proj, &nfc_inv).unwrap();
+
+        // 7. PresenceDetector
+        let (pd_page_uuid, pd_block) = proj
+            .pages
+            .iter()
+            .find_map(|p| {
+                p.blocks
+                    .iter()
+                    .find(|b| b.block_type == "PresenceDetector")
+                    .map(|b| (p.uuid.clone(), b.clone()))
+            })
+            .expect("find PresenceDetector");
+        let pd_uuid = &pd_block.uuid;
+        assert!(supports_advanced_block_modal(&pd_block.block_type));
+        let mut pd_cfg = PresenceBlockConfig::from_block(&pd_block);
+        assert_eq!(pd_cfg.hold_time_sec, 900.0);
+        assert_eq!(pd_cfg.warn_time_sec, 15.0);
+        assert!(!pd_cfg.assigned_device_uuids.is_empty());
+        let pd_candidates = collect_presence_sensor_candidates(&proj);
+        assert!(!pd_candidates.is_empty());
+        pd_cfg.hold_time_sec = 600.0;
+        let pd_edit = pd_cfg.to_project_edit(&pd_page_uuid, pd_uuid);
+        let pd_inv = apply_edit_with_inverse(&mut proj, &pd_edit).unwrap();
+        apply_edit_with_inverse(&mut proj, &pd_inv).unwrap();
     }
 
     #[test]

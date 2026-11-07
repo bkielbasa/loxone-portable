@@ -4,7 +4,8 @@ use egui::{
 };
 use loxone_core::advanced_blocks_config::{
     collect_audio_out_channels, collect_central_candidates, collect_irc_candidates,
-    AudioZoneConfig, CentralBlockConfig, ClimateControllerConfig, SequenceConfig,
+    collect_presence_sensor_candidates, AccessBlockConfig, AudioZoneConfig, CentralBlockConfig,
+    ClimateControllerConfig, PresenceBlockConfig, SequenceConfig, ShadingBlockConfig,
 };
 use loxone_core::model::LoxoneProject;
 use loxone_core::writer::ProjectEdit;
@@ -21,6 +22,9 @@ pub enum ActiveAdvancedModal {
     AudioZone(AudioZoneConfig),
     Climate(ClimateControllerConfig),
     Sequence(SequenceConfig),
+    Shading(ShadingBlockConfig),
+    Access(AccessBlockConfig),
+    Presence(PresenceBlockConfig),
 }
 
 #[derive(Debug, Clone, Default)]
@@ -61,6 +65,18 @@ impl AdvancedBlocksModalState {
             Some(ActiveAdvancedModal::Sequence(SequenceConfig::from_block(
                 block,
             )))
+        } else if ShadingBlockConfig::is_shading_block(&block.block_type) {
+            Some(ActiveAdvancedModal::Shading(ShadingBlockConfig::from_block(
+                block,
+            )))
+        } else if AccessBlockConfig::is_access_block(&block.block_type) {
+            Some(ActiveAdvancedModal::Access(AccessBlockConfig::from_block(
+                block,
+            )))
+        } else if PresenceBlockConfig::is_presence_block(&block.block_type) {
+            Some(ActiveAdvancedModal::Presence(
+                PresenceBlockConfig::from_block(block),
+            ))
         } else {
             None
         };
@@ -129,6 +145,13 @@ pub fn render_advanced_blocks_modal(
             }
         }
         Some(ActiveAdvancedModal::Sequence(_)) => tr("Sequence Controller Step Table"),
+        Some(ActiveAdvancedModal::Shading(_)) => {
+            tr("Automatic Blinds & Solar Shading Configuration")
+        }
+        Some(ActiveAdvancedModal::Access(_)) => tr("Access Control, Intercom & Door Parameters"),
+        Some(ActiveAdvancedModal::Presence(_)) => {
+            tr("Presence Detector Timing & Assigned Sensors")
+        }
         None => tr("Advanced Block Configuration"),
     };
 
@@ -212,6 +235,15 @@ pub fn render_advanced_blocks_modal(
                     ActiveAdvancedModal::Sequence(cfg) => {
                         render_sequence_body(ui, cfg);
                     }
+                    ActiveAdvancedModal::Shading(cfg) => {
+                        render_shading_body(ui, cfg);
+                    }
+                    ActiveAdvancedModal::Access(cfg) => {
+                        render_access_body(ui, cfg);
+                    }
+                    ActiveAdvancedModal::Presence(cfg) => {
+                        render_presence_body(ui, cfg, proj, filter_ref);
+                    }
                 }
             }
 
@@ -260,6 +292,15 @@ pub fn render_advanced_blocks_modal(
                                     )
                                 }
                                 ActiveAdvancedModal::Sequence(cfg) => {
+                                    cfg.to_project_edit(&page_uuid, &block_uuid)
+                                }
+                                ActiveAdvancedModal::Shading(cfg) => {
+                                    cfg.to_project_edit(&page_uuid, &block_uuid)
+                                }
+                                ActiveAdvancedModal::Access(cfg) => {
+                                    cfg.to_project_edit(&page_uuid, &block_uuid)
+                                }
+                                ActiveAdvancedModal::Presence(cfg) => {
                                     cfg.to_project_edit(&page_uuid, &block_uuid)
                                 }
                             });
@@ -946,6 +987,489 @@ fn render_sequence_body(ui: &mut egui::Ui, cfg: &mut SequenceConfig) {
     }
 }
 
+fn render_shading_body(ui: &mut egui::Ui, cfg: &mut ShadingBlockConfig) {
+    ui.columns(2, |cols| {
+        egui::Frame::NONE
+            .fill(CARD_BG)
+            .stroke(Stroke::new(1.0_f32, BORDER_SUBTLE))
+            .corner_radius(CornerRadius::same(8))
+            .inner_margin(egui::Margin::same(12))
+            .show(&mut cols[0], |ui| {
+                ui.label(
+                    RichText::new(tr("BLIND TYPE & TRAVEL TIMING"))
+                        .size(11.0)
+                        .strong()
+                        .color(LOXONE_GREEN),
+                );
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    ui.label(tr("Shading Type (Type):"));
+                    ComboBox::from_id_salt("shading_type_combo")
+                        .selected_text(match cfg.blind_type {
+                            0 => tr("0 — Venetian Blind (Jalousie)"),
+                            1 => tr("1 — Roller Shutter (Roleta)"),
+                            2 => tr("2 — Awning / Sunblind"),
+                            3 => tr("3 — Roof Window Blind"),
+                            4 => tr("4 — Curtain"),
+                            _ => tr("Custom"),
+                        })
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(
+                                &mut cfg.blind_type,
+                                0,
+                                tr("0 — Venetian Blind (Jalousie)"),
+                            );
+                            ui.selectable_value(
+                                &mut cfg.blind_type,
+                                1,
+                                tr("1 — Roller Shutter (Roleta)"),
+                            );
+                            ui.selectable_value(
+                                &mut cfg.blind_type,
+                                2,
+                                tr("2 — Awning / Sunblind"),
+                            );
+                            ui.selectable_value(
+                                &mut cfg.blind_type,
+                                3,
+                                tr("3 — Roof Window Blind"),
+                            );
+                            ui.selectable_value(&mut cfg.blind_type, 4, tr("4 — Curtain"));
+                        });
+                });
+                ui.add_space(6.0);
+                egui::Grid::new("shading_timing_grid")
+                    .num_columns(2)
+                    .spacing([16.0, 8.0])
+                    .show(ui, |ui| {
+                        ui.label(tr("Full Up Time (TimeEnd):"));
+                        ui.add(
+                            DragValue::new(&mut cfg.time_up)
+                                .speed(0.1)
+                                .range(1.0..=300.0)
+                                .suffix(" s"),
+                        );
+                        ui.end_row();
+
+                        ui.label(tr("Full Down Time (TimeEndDown):"));
+                        ui.add(
+                            DragValue::new(&mut cfg.time_down)
+                                .speed(0.1)
+                                .range(1.0..=300.0)
+                                .suffix(" s"),
+                        );
+                        ui.end_row();
+
+                        ui.label(tr("Slat Turn Offset (TurnOffset):"));
+                        ui.add(
+                            DragValue::new(&mut cfg.turn_offset)
+                                .speed(0.01)
+                                .range(0.0..=5.0)
+                                .suffix(" s"),
+                        );
+                        ui.end_row();
+
+                        ui.label(tr("Min Move Duration (MinMove):"));
+                        ui.add(
+                            DragValue::new(&mut cfg.min_move)
+                                .speed(0.05)
+                                .range(0.0..=10.0)
+                                .suffix(" s"),
+                        );
+                        ui.end_row();
+
+                        ui.label(tr("Reverse Slat Time (Back):"));
+                        ui.add(
+                            DragValue::new(&mut cfg.back_turn)
+                                .speed(0.05)
+                                .range(0.0..=10.0)
+                                .suffix(" s"),
+                        );
+                        ui.end_row();
+
+                        ui.label(tr("Slat Width (Width):"));
+                        ui.add(
+                            DragValue::new(&mut cfg.slat_width_mm)
+                                .range(10..=200)
+                                .suffix(" mm"),
+                        );
+                        ui.end_row();
+
+                        ui.label(tr("Slat Spacing (Space):"));
+                        ui.add(
+                            DragValue::new(&mut cfg.slat_space_mm)
+                                .range(10..=200)
+                                .suffix(" mm"),
+                        );
+                        ui.end_row();
+                    });
+            });
+
+        egui::Frame::NONE
+            .fill(CARD_BG)
+            .stroke(Stroke::new(1.0_f32, BORDER_SUBTLE))
+            .corner_radius(CornerRadius::same(8))
+            .inner_margin(egui::Margin::same(12))
+            .show(&mut cols[1], |ui| {
+                ui.label(
+                    RichText::new(tr("SOLAR SHADING & COMPASS ORIENTATION"))
+                        .size(11.0)
+                        .strong()
+                        .color(LOXONE_GREEN),
+                );
+                ui.add_space(6.0);
+                ui.checkbox(
+                    &mut cfg.sun_automation,
+                    tr("Enable Solar Shading Automation (Sun)"),
+                );
+                ui.add_space(6.0);
+                egui::Grid::new("shading_sun_grid")
+                    .num_columns(2)
+                    .spacing([16.0, 8.0])
+                    .show(ui, |ui| {
+                        ui.label(tr("Compass Direction (Dir 0..15):"));
+                        ui.add(DragValue::new(&mut cfg.compass_dir).range(0..=360));
+                        ui.end_row();
+
+                        ui.label(tr("Sun Entry Tolerance (DirTol):"));
+                        ui.add(
+                            DragValue::new(&mut cfg.dir_tol_start)
+                                .speed(1.0)
+                                .range(0.0..=180.0)
+                                .suffix(" °"),
+                        );
+                        ui.end_row();
+
+                        ui.label(tr("Sun Exit Tolerance (DirTol2):"));
+                        ui.add(
+                            DragValue::new(&mut cfg.dir_tol_end)
+                                .speed(1.0)
+                                .range(0.0..=180.0)
+                                .suffix(" °"),
+                        );
+                        ui.end_row();
+
+                        ui.label(tr("Auto Mode (AutMode):"));
+                        ui.add(DragValue::new(&mut cfg.auto_mode).range(0..=3));
+                        ui.end_row();
+
+                        ui.label(tr("End of Shading Action (AutoShadeEnd):"));
+                        ui.add(DragValue::new(&mut cfg.auto_shade_end).range(0..=3));
+                        ui.end_row();
+
+                        ui.label(tr("Shading Delay Time (AutoShadeTime):"));
+                        ui.add(
+                            DragValue::new(&mut cfg.auto_shade_time_min)
+                                .range(0..=600)
+                                .suffix(" min"),
+                        );
+                        ui.end_row();
+
+                        ui.label(tr("Sunrise Offset (SRoff):"));
+                        ui.add(
+                            DragValue::new(&mut cfg.sunrise_offset_min)
+                                .range(-180..=180)
+                                .suffix(" min"),
+                        );
+                        ui.end_row();
+
+                        ui.label(tr("Sunset Offset (SSoff):"));
+                        ui.add(
+                            DragValue::new(&mut cfg.sunset_offset_min)
+                                .range(-180..=180)
+                                .suffix(" min"),
+                        );
+                        ui.end_row();
+                    });
+            });
+    });
+}
+
+fn render_access_body(ui: &mut egui::Ui, cfg: &mut AccessBlockConfig) {
+    ui.columns(2, |cols| {
+        egui::Frame::NONE
+            .fill(CARD_BG)
+            .stroke(Stroke::new(1.0_f32, BORDER_SUBTLE))
+            .corner_radius(CornerRadius::same(8))
+            .inner_margin(egui::Margin::same(12))
+            .show(&mut cols[0], |ui| {
+                ui.label(
+                    RichText::new(tr("OUTPUT LABELS & QUICK ACTIONS"))
+                        .size(11.0)
+                        .strong()
+                        .color(LOXONE_GREEN),
+                );
+                ui.add_space(6.0);
+                if cfg.block_type == "NfcCodeTouch" {
+                    egui::Grid::new("nfc_labels_grid")
+                        .num_columns(2)
+                        .spacing([12.0, 6.0])
+                        .show(ui, |ui| {
+                            for i in 0..6 {
+                                ui.label(format!("Output Q{}:", i + 1));
+                                ui.add(
+                                    TextEdit::singleline(&mut cfg.nfc_output_labels[i])
+                                        .desired_width(220.0),
+                                );
+                                ui.end_row();
+                            }
+                        });
+                } else {
+                    egui::Grid::new("door_out_names_grid")
+                        .num_columns(2)
+                        .spacing([12.0, 8.0])
+                        .show(ui, |ui| {
+                            ui.label(tr("Output 1 Label (OutName1):"));
+                            ui.add(
+                                TextEdit::singleline(&mut cfg.out_name_1).desired_width(220.0),
+                            );
+                            ui.end_row();
+
+                            ui.label(tr("Output 2 Label (OutName2):"));
+                            ui.add(
+                                TextEdit::singleline(&mut cfg.out_name_2).desired_width(220.0),
+                            );
+                            ui.end_row();
+
+                            ui.label(tr("Output 3 Label (OutName3):"));
+                            ui.add(
+                                TextEdit::singleline(&mut cfg.out_name_3).desired_width(220.0),
+                            );
+                            ui.end_row();
+                        });
+                    if cfg.block_type == "Intercom" {
+                        ui.add_space(8.0);
+                        ui.label(
+                            RichText::new(tr("Intercom Voice Answers (ans, semicolon-separated):"))
+                                .size(11.0)
+                                .color(TEXT_MUTED),
+                        );
+                        ui.add(
+                            TextEdit::multiline(&mut cfg.intercom_answers)
+                                .desired_rows(3)
+                                .desired_width(340.0),
+                        );
+                    }
+                }
+            });
+
+        egui::Frame::NONE
+            .fill(CARD_BG)
+            .stroke(Stroke::new(1.0_f32, BORDER_SUBTLE))
+            .corner_radius(CornerRadius::same(8))
+            .inner_margin(egui::Margin::same(12))
+            .show(&mut cols[1], |ui| {
+                ui.label(
+                    RichText::new(tr("PULSE TIMING & HARDWARE PARAMETERS"))
+                        .size(11.0)
+                        .strong()
+                        .color(LOXONE_GREEN),
+                );
+                ui.add_space(6.0);
+                egui::Grid::new("access_params_grid")
+                    .num_columns(2)
+                    .spacing([16.0, 8.0])
+                    .show(ui, |ui| {
+                        match cfg.block_type.as_str() {
+                            "NfcCodeTouch" => {
+                                ui.label(tr("Pulse Duration (PulseTime):"));
+                                ui.add(
+                                    DragValue::new(&mut cfg.pulse_time_sec)
+                                        .speed(0.5)
+                                        .range(0.5..=120.0)
+                                        .suffix(" s"),
+                                );
+                                ui.end_row();
+
+                                ui.label(tr("LED Brightness (Lbr):"));
+                                ui.add(
+                                    DragValue::new(&mut cfg.led_brightness)
+                                        .range(0..=100)
+                                        .suffix(" %"),
+                                );
+                                ui.end_row();
+
+                                ui.label(tr("Acoustic Beep (Au):"));
+                                ui.add(DragValue::new(&mut cfg.acoustic_feedback).range(0..=1));
+                                ui.end_row();
+
+                                ui.label(tr("History Size (HSize):"));
+                                ui.add(DragValue::new(&mut cfg.history_size).range(1..=100));
+                                ui.end_row();
+                            }
+                            "Door" | "Gate" => {
+                                ui.label(tr("Controller Type (CtrlType):"));
+                                ui.add(DragValue::new(&mut cfg.ctrl_type).range(0..=5));
+                                ui.end_row();
+
+                                ui.label(tr("Open Pulse Duration (PulseOpen):"));
+                                ui.add(
+                                    DragValue::new(&mut cfg.pulse_open_sec)
+                                        .speed(0.5)
+                                        .range(0.1..=300.0)
+                                        .suffix(" s"),
+                                );
+                                ui.end_row();
+
+                                ui.label(tr("Close Pulse Duration (PulseClose):"));
+                                ui.add(
+                                    DragValue::new(&mut cfg.pulse_close_sec)
+                                        .speed(0.5)
+                                        .range(0.1..=300.0)
+                                        .suffix(" s"),
+                                );
+                                ui.end_row();
+                            }
+                            _ => {
+                                ui.label(tr("Door Number (DoorNumber):"));
+                                ui.add(DragValue::new(&mut cfg.door_number).range(1..=16));
+                                ui.end_row();
+
+                                ui.label(tr("Call / Ring Timeout (Timeout):"));
+                                ui.add(
+                                    DragValue::new(&mut cfg.timeout_sec)
+                                        .speed(1.0)
+                                        .range(5.0..=300.0)
+                                        .suffix(" s"),
+                                );
+                                ui.end_row();
+
+                                if cfg.block_type == "Intercom" {
+                                    ui.label(tr("LED Brightness (Lbr):"));
+                                    ui.add(
+                                        DragValue::new(&mut cfg.led_brightness)
+                                            .range(0..=100)
+                                            .suffix(" %"),
+                                    );
+                                    ui.end_row();
+
+                                    ui.label(tr("Proximity Sensor (Tp):"));
+                                    ui.add(DragValue::new(&mut cfg.acoustic_feedback).range(0..=1));
+                                    ui.end_row();
+                                }
+                            }
+                        }
+                    });
+            });
+    });
+}
+
+fn render_presence_body(
+    ui: &mut egui::Ui,
+    cfg: &mut PresenceBlockConfig,
+    project: &LoxoneProject,
+    search_filter: &mut String,
+) {
+    let sensors = collect_presence_sensor_candidates(project);
+    ui.columns(2, |cols| {
+        egui::Frame::NONE
+            .fill(CARD_BG)
+            .stroke(Stroke::new(1.0_f32, BORDER_SUBTLE))
+            .corner_radius(CornerRadius::same(8))
+            .inner_margin(egui::Margin::same(12))
+            .show(&mut cols[0], |ui| {
+                ui.label(
+                    RichText::new(tr("PRESENCE TIMING & TRACKING"))
+                        .size(11.0)
+                        .strong()
+                        .color(LOXONE_GREEN),
+                );
+                ui.add_space(8.0);
+                egui::Grid::new("presence_timing_grid")
+                    .num_columns(2)
+                    .spacing([16.0, 10.0])
+                    .show(ui, |ui| {
+                        ui.label(tr("Hold / Overrun Time (ParamTOn):"));
+                        ui.add(
+                            DragValue::new(&mut cfg.hold_time_sec)
+                                .speed(5.0)
+                                .range(1.0..=7200.0)
+                                .suffix(" s"),
+                        );
+                        ui.end_row();
+
+                        ui.label(tr("Pre-Off Warning Time (ParamTWarn):"));
+                        ui.add(
+                            DragValue::new(&mut cfg.warn_time_sec)
+                                .speed(1.0)
+                                .range(0.0..=600.0)
+                                .suffix(" s"),
+                        );
+                        ui.end_row();
+
+                        ui.label(tr("History Events (TRK_NE):"));
+                        ui.add(DragValue::new(&mut cfg.track_ne).range(0..=500));
+                        ui.end_row();
+
+                        ui.label(tr("Max Tracked Entries (TRK_MAX):"));
+                        ui.add(DragValue::new(&mut cfg.track_max).range(0..=500));
+                        ui.end_row();
+                    });
+            });
+
+        egui::Frame::NONE
+            .fill(CARD_BG)
+            .stroke(Stroke::new(1.0_f32, BORDER_SUBTLE))
+            .corner_radius(CornerRadius::same(8))
+            .inner_margin(egui::Margin::same(12))
+            .show(&mut cols[1], |ui| {
+                ui.label(
+                    RichText::new(format!(
+                        "{} ({}/{})",
+                        tr("ASSIGNED PRESENCE SENSORS (DEVS)"),
+                        cfg.assigned_device_uuids.len(),
+                        sensors.len()
+                    ))
+                    .size(11.0)
+                    .strong()
+                    .color(LOXONE_GREEN),
+                );
+                ui.add_space(6.0);
+                ui.add(
+                    TextEdit::singleline(search_filter)
+                        .hint_text(tr("🔍 Filter presence sensors..."))
+                        .desired_width(240.0),
+                );
+                ui.add_space(6.0);
+                let q = search_filter.trim().to_lowercase();
+                ScrollArea::vertical()
+                    .id_salt("presence_sensors_scroll")
+                    .max_height(310.0)
+                    .show(ui, |ui| {
+                        for sensor in &sensors {
+                            if !q.is_empty()
+                                && !sensor.title.to_lowercase().contains(&q)
+                                && !sensor.parent_title.to_lowercase().contains(&q)
+                                && !sensor.serial.to_lowercase().contains(&q)
+                            {
+                                continue;
+                            }
+                            let mut assigned = cfg.is_device_assigned(&sensor.uuid);
+                            ui.horizontal(|ui| {
+                                if ui.checkbox(&mut assigned, "").changed() {
+                                    cfg.toggle_device(&sensor.uuid);
+                                }
+                                ui.label(
+                                    RichText::new(&sensor.title)
+                                        .size(12.0)
+                                        .strong()
+                                        .color(TEXT_PRIMARY),
+                                );
+                                ui.label(
+                                    RichText::new(format!(
+                                        "({} • {})",
+                                        sensor.parent_title, sensor.serial
+                                    ))
+                                    .size(10.5)
+                                    .color(TEXT_MUTED),
+                                );
+                            });
+                        }
+                    });
+            });
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1001,5 +1525,21 @@ mod tests {
             !state.is_open,
             "Clicking outside the advanced blocks modal must close it"
         );
+
+        // Verify Shading (AutoJalousie), Access (Intercom, NfcCodeTouch), and Presence (PresenceDetector) modals open and render
+        for btype in ["AutoJalousie", "Intercom", "NfcCodeTouch", "PresenceDetector"] {
+            let uuid = proj
+                .pages
+                .iter()
+                .flat_map(|p| &p.blocks)
+                .find(|b| b.block_type == btype)
+                .map(|b| b.uuid.clone())
+                .expect("find block type in Sample.Loxone");
+            assert!(state.open_for_block(&proj, &uuid), "should open for {btype}");
+            let _ = ctx.run(egui::RawInput::default(), |ctx| {
+                let _ = render_advanced_blocks_modal(ctx, &mut state, Some(&proj));
+            });
+            state.close();
+        }
     }
 }
