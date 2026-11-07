@@ -955,12 +955,18 @@ impl LoxonePortableApp {
         if let Some(proj) = &self.project {
             if let Some(page) = proj.pages.get(self.active_page_index) {
                 for block in &page.blocks {
+                    if block.is_note() {
+                        continue;
+                    }
                     if let Some(ref_u) = &block.ref_uuid {
                         if !ref_u.is_empty() && seen.insert(ref_u.clone()) {
                             ids.push(ref_u.clone());
                         }
                     }
-                    if !block.uuid.is_empty() && seen.insert(block.uuid.clone()) {
+                    if (!block.is_ref_bar() || block.ref_uuid.is_none())
+                        && !block.uuid.is_empty()
+                        && seen.insert(block.uuid.clone())
+                    {
                         ids.push(block.uuid.clone());
                     }
                     if ids.len() >= 48 {
