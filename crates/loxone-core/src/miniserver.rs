@@ -1043,9 +1043,49 @@ pub struct LiveControlSnapshot {
     pub outputs: std::collections::BTreeMap<String, String>,
 }
 
+/// Sanitizes unescaped nested double-quotes emitted by Miniserver firmware 17.x inside
+/// `<SpecialState ... value=""TextValue, not Implemented""/>` attributes so `quick-xml` can parse `<LL>`.
+fn sanitize_ll_xml(xml: &str) -> std::borrow::Cow<'_, str> {
+    if !xml.contains("\"\"") {
+        return std::borrow::Cow::Borrowed(xml);
+    }
+    let bytes = xml.as_bytes();
+    let mut out = String::with_capacity(xml.len() + 16);
+    let mut i = 0;
+    while i < bytes.len() {
+        if i + 1 < bytes.len() && bytes[i] == b'"' && bytes[i + 1] == b'"' {
+            let prev = if i > 0 { Some(bytes[i - 1]) } else { None };
+            let next = bytes.get(i + 2).copied();
+            let is_empty_attr = prev == Some(b'=')
+                && matches!(
+                    next,
+                    None | Some(b' ' | b'\t' | b'\r' | b'\n' | b'/' | b'>')
+                );
+            if is_empty_attr {
+                out.push_str("\"\"");
+                i += 2;
+                continue;
+            } else if prev == Some(b'=') {
+                out.push_str("\"&quot;");
+                i += 2;
+                continue;
+            } else {
+                out.push_str("&quot;\"");
+                i += 2;
+                continue;
+            }
+        }
+        let ch = xml[i..].chars().next().unwrap();
+        out.push(ch);
+        i += ch.len_utf8();
+    }
+    std::borrow::Cow::Owned(out)
+}
+
 pub fn parse_ll_io_response(xml: &str) -> Option<LiveControlSnapshot> {
     let trimmed = xml.trim().trim_start_matches('\u{FEFF}');
-    let nodes = crate::parser::parse_raw_dom(trimmed).ok()?;
+    let sanitized = sanitize_ll_xml(trimmed);
+    let nodes = crate::parser::parse_raw_dom(&sanitized).ok()?;
     let root = nodes.iter().find(|n| n.tag.eq_ignore_ascii_case("LL"))?;
 
     let raw_control = root.attr("control").unwrap_or("");
@@ -1172,13 +1212,21 @@ pub fn format_live_signal(
     }
 
     // 3. Temperature ("22.9°")
-    let is_temp = hint_pin_key == "Temp"
-        || hint_pin_key == "ϑc"
+    let is_temp = matches!(
+        hint_pin_key,
+        "Temp" | "TempAvg" | "Outer" | "TempO" | "AQt" | "TxQr" | "OutAverageTemp"
+    ) || hint_pin_key.starts_with('ϑ')
         || title_lower.contains("temperatura")
         || trimmed.ends_with('°')
         || trimmed.ends_with("°C");
     if is_temp {
-        let num = parse_numeric_prefix(trimmed).unwrap_or(0.0);
+        let raw_num = parse_numeric_prefix(trimmed).unwrap_or(0.0);
+        // Loxone XML uses Def="-1000" as sentinel for unconnected outdoor temperature pins (shown as 0°)
+        let num = if (raw_num - (-1000.0)).abs() < 1e-4 {
+            0.0
+        } else {
+            raw_num
+        };
         let formatted = if trimmed.ends_with('°') {
             trimmed.to_string()
         } else if let Some(stripped) = trimmed.strip_suffix("°C") {
@@ -1898,6 +1946,7 @@ pub fn classify_ref_bar_live_control(
 pub struct LiveValueStore {
     pub controls: std::collections::HashMap<String, LiveControlSnapshot>,
     pub pin_overrides: std::collections::HashMap<(String, String), String>,
+    pub polled_ids: std::collections::HashSet<String>,
     pub poll_count: u64,
     pub last_error: Option<String>,
 }
@@ -1992,6 +2041,11 @@ impl LiveValueStore {
     }
 
     pub fn apply_polled_snapshot(&mut self, id: String, snapshot: LiveControlSnapshot) {
+        if snapshot.code >= 400 && snapshot.primary_value.is_none() && snapshot.outputs.is_empty() {
+            return;
+        }
+        self.poll_count = self.poll_count.saturating_add(1);
+        self.polled_ids.insert(id.clone());
         self.controls.insert(id, snapshot);
     }
 
@@ -2246,7 +2300,22 @@ impl LiveValueStore {
             }
         }
 
-        // 3. Check control snapshot on block.uuid first (channel-specific), then ref_uuid
+        // 3. If ref_uuid was actively polled from the live Miniserver, prefer its live snapshot
+        if let Some(ref_uuid) = &block.ref_uuid {
+            if self.polled_ids.contains(ref_uuid) {
+                if let Some(snap) = self.controls.get(ref_uuid) {
+                    if let Some(val) = snap
+                        .primary_value
+                        .as_deref()
+                        .or_else(|| snap.outputs.values().next().map(|s| s.as_str()))
+                    {
+                        return format_live_signal(val, &block.title, &badge, &block.block_type);
+                    }
+                }
+            }
+        }
+
+        // 4. Otherwise check control snapshot on block.uuid first (channel-specific), then ref_uuid
         if let Some(snap) = self.controls.get(&block.uuid) {
             if let Some(val) = snap
                 .primary_value
@@ -2343,7 +2412,7 @@ impl LiveValueStore {
         }
 
         if let Some(snap) = self.controls.get(&block.uuid) {
-            if let Some(v) = snap.outputs.get(&pin.key) {
+            if let Some(v) = Self::lookup_live_output(snap, &block.block_type, &pin.key) {
                 return format_live_signal(v, &block.title, &pin.key, &block.block_type);
             }
             if let Some(v) = &snap.primary_value {
@@ -2360,6 +2429,41 @@ impl LiveValueStore {
         }
 
         format_live_signal("0", &block.title, &pin.key, &block.block_type)
+    }
+
+    fn lookup_live_output<'a>(
+        snap: &'a LiveControlSnapshot,
+        block_type: &str,
+        pin_key: &str,
+    ) -> Option<&'a str> {
+        if let Some(v) = snap.outputs.get(pin_key) {
+            return Some(v.as_str());
+        }
+        let short = loxone_short_pin_label(block_type, pin_key);
+        if short != pin_key {
+            if let Some(v) = snap.outputs.get(short) {
+                return Some(v.as_str());
+            }
+        }
+        if block_type == "ClimateControllerUS" {
+            let us_key = match pin_key {
+                "OutHeat1" => Some("W/W1"),
+                "OutHeat2" => Some("W2"),
+                "OutCool1" | "OutCompressor" => Some("Y"),
+                "OutCool2" => Some("Y2"),
+                "OutEmergency" | "OutSecHeat" => Some("E"),
+                "OutValve" => Some("O/B"),
+                "OutFan" => Some("G"),
+                "OutHumid" => Some("Hmd"),
+                _ => None,
+            };
+            if let Some(k) = us_key {
+                if let Some(v) = snap.outputs.get(k) {
+                    return Some(v.as_str());
+                }
+            }
+        }
+        None
     }
 
     fn evaluate_function_block_output(
@@ -3352,6 +3456,114 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_ll_io_response_tolerates_malformed_special_state_quotes_and_maps_hvac_outputs() {
+        let hvac_xml = "<?xml version=\"1.0\" encoding=\"utf-8\"?>\r\n\
+<LL control=\"dev/sps/io/19eb19aa-03bc-4048-ffff51535bcccc04/all\" value=\"1\" Code=\"200\">\r\n\
+\t<output name=\"H\" nr=\"1\"  value=\"1\"/> \r\n\
+\t<output name=\"H2\" nr=\"2\"  value=\"1\"/> \r\n\
+\t<output name=\"C\" nr=\"3\"  value=\"0\"/> \r\n\
+\t<output name=\"C2\" nr=\"4\"  value=\"0\"/> \r\n\
+\t<output name=\"Ah\" nr=\"5\"  value=\"0\"/> \r\n\
+\t<output name=\"Sv\" nr=\"6\"  value=\"0\"/> \r\n\
+\t<output name=\"F\" nr=\"7\"  value=\"1\"/> \r\n\
+\t<output name=\"Fc\" nr=\"8\"  value=\"0\"/> \r\n\
+\t<output name=\"ϑoa\" nr=\"9\"  value=\"0.000\"/> \r\n\
+\t<output name=\"API\" nr=\"10\"  value=\"\"/> \r\n\
+\t<SpecialState uuid=\"19eb19aa-03bb-4019-fffffbec5abd3faa\" nr=\"1\"  value=\"\"TextValue, not Implemented\"\"/>\r\n\
+</LL>";
+
+        let us_hvac_xml = "<?xml version=\"1.0\" encoding=\"utf-8\"?>\r\n\
+<LL control=\"dev/sps/io/19f5278e-0184-ed04-ffff51535bcccc04/all\" value=\"1\" Code=\"200\">\r\n\
+\t<output name=\"W/W1\" nr=\"1\"  value=\"1\"/> \r\n\
+\t<output name=\"W2\" nr=\"2\"  value=\"1\"/> \r\n\
+\t<output name=\"Y\" nr=\"3\"  value=\"0\"/> \r\n\
+\t<output name=\"Y2\" nr=\"4\"  value=\"0\"/> \r\n\
+\t<output name=\"E\" nr=\"5\"  value=\"0\"/> \r\n\
+\t<output name=\"O/B\" nr=\"6\"  value=\"0\"/> \r\n\
+\t<output name=\"G\" nr=\"7\"  value=\"1\"/> \r\n\
+\t<output name=\"Hmd\" nr=\"8\"  value=\"0\"/> \r\n\
+\t<output name=\"API\" nr=\"9\"  value=\"\"/> \r\n\
+\t<SpecialState uuid=\"19f5278e-0183-ed02-fffffbec5abd3faa\" nr=\"1\"  value=\"\"TextValue, not Implemented\"\"/>\r\n\
+</LL>";
+
+        let mixer_xml = "<?xml version=\"1.0\" encoding=\"utf-8\"?>\r\n\
+<LL control=\"dev/sps/io/19eb19ab-001b-406d-ffff51535bcccc04/all\" value=\"22.500\" Code=\"200\">\r\n\
+\t<output name=\"AQt\" nr=\"1\"  value=\"22.500\"/> \r\n\
+\t<output name=\"Qp\" nr=\"2\"  value=\"1\"/> \r\n\
+\t<output name=\"TxQr\" nr=\"3\"  value=\"0.000\"/> \r\n\
+\t<output name=\"AQf\" nr=\"4\"  value=\"37.452\"/> \r\n\
+\t<output name=\"AQb\" nr=\"5\"  value=\"42.452\"/> \r\n\
+\t<output name=\"AQr\" nr=\"6\"  value=\"0.000\"/> \r\n\
+\t<output name=\"AQl\" nr=\"7\"  value=\"0.000\"/> \r\n\
+\t<output name=\"AQi\" nr=\"8\"  value=\"0.000\"/> \r\n\
+\t<output name=\"Qe\" nr=\"9\"  value=\"0\"/> \r\n\
+\t<output name=\"OutputAPI\" nr=\"10\"  value=\"\"/> \r\n\
+</LL>";
+
+        let hvac_snap = parse_ll_io_response(hvac_xml).expect("HVAC LL XML should parse despite SpecialState double quotes");
+        assert_eq!(hvac_snap.outputs.get("H").map(String::as_str), Some("1"));
+        assert_eq!(hvac_snap.outputs.get("F").map(String::as_str), Some("1"));
+
+        let us_snap = parse_ll_io_response(us_hvac_xml).expect("ClimateControllerUS LL XML should parse");
+        assert_eq!(us_snap.outputs.get("W/W1").map(String::as_str), Some("1"));
+        assert_eq!(us_snap.outputs.get("G").map(String::as_str), Some("1"));
+
+        let mixer_snap = parse_ll_io_response(mixer_xml).expect("Heatmixer2 LL XML should parse");
+
+        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../Sample.Loxone");
+        let project = crate::parser::load_loxone_file(&path).expect("Sample.Loxone should parse");
+        let page = project
+            .pages
+            .iter()
+            .find(|p| p.title.contains("Ogrzewanie"))
+            .expect("Ogrzewanie page should exist");
+
+        let mut store = LiveValueStore::new();
+        store.seed_project_defaults(&project);
+
+        let outdoor_temp_xml = "<?xml version=\"1.0\" encoding=\"utf-8\"?>\r\n\
+<LL control=\"dev/sps/io/19eb19aa-03b8-3ea4-ffff51535bcccc04/all\" value=\"0.000\" Code=\"200\"/>";
+        let outdoor_snap = parse_ll_io_response(outdoor_temp_xml).expect("Outdoor temp LL XML should parse");
+
+        store.apply_polled_snapshot(outdoor_snap.control_id.clone(), outdoor_snap);
+        store.apply_polled_snapshot(hvac_snap.control_id.clone(), hvac_snap);
+        store.apply_polled_snapshot(us_snap.control_id.clone(), us_snap);
+        store.apply_polled_snapshot(mixer_snap.control_id.clone(), mixer_snap);
+
+        let hvac_blk = page
+            .blocks
+            .iter()
+            .find(|b| b.uuid == "19eb19aa-03bc-4048-ffff51535bcccc04")
+            .unwrap();
+        let in_temp = hvac_blk.pins.iter().find(|p| p.key == "Temp").unwrap();
+        let out_heat1 = hvac_blk.pins.iter().find(|p| p.key == "OutHeat1").unwrap();
+        let out_fan = hvac_blk.pins.iter().find(|p| p.key == "OutFan").unwrap();
+        assert_eq!(store.resolve_pin_signal(hvac_blk, in_temp, page, &project).formatted, "0°");
+        assert_eq!(store.resolve_pin_signal(hvac_blk, out_heat1, page, &project).formatted, "Wł.");
+        assert_eq!(store.resolve_pin_signal(hvac_blk, out_fan, page, &project).formatted, "Wł.");
+
+        let us_blk = page
+            .blocks
+            .iter()
+            .find(|b| b.uuid == "19f5278e-0184-ed04-ffff51535bcccc04")
+            .unwrap();
+        let us_heat1 = us_blk.pins.iter().find(|p| p.key == "OutHeat1").unwrap();
+        let us_fan = us_blk.pins.iter().find(|p| p.key == "OutFan").unwrap();
+        assert_eq!(store.resolve_pin_signal(us_blk, us_heat1, page, &project).formatted, "Wł.");
+        assert_eq!(store.resolve_pin_signal(us_blk, us_fan, page, &project).formatted, "Wł.");
+
+        let mixer_blk = page
+            .blocks
+            .iter()
+            .find(|b| b.uuid == "19eb19ab-001b-406d-ffff51535bcccc04")
+            .unwrap();
+        let aqt = mixer_blk.pins.iter().find(|p| p.key == "AQt").unwrap();
+        let qp = mixer_blk.pins.iter().find(|p| p.key == "Qp").unwrap();
+        assert_eq!(store.resolve_pin_signal(mixer_blk, aqt, page, &project).formatted, "22.5°");
+        assert_eq!(store.resolve_pin_signal(mixer_blk, qp, page, &project).formatted, "Wł.");
+    }
+
+    #[test]
     fn test_compute_loxone_auth_hash_supports_sha256_challenge() {
         let challenge = parse_getkey2_response(
             r#"{"LL":{"control":"dev/sys/getkey2/admin","code":"200","value":{"key":"4343344632353746","salt":"31393731","hashAlg":"SHA256"}}}"#,
@@ -3361,5 +3573,49 @@ mod tests {
         let digest = compute_loxone_auth_hash("admin", "test-password", &challenge);
         // SHA-256 HMAC output must be 32 bytes = 64 hex characters
         assert_eq!(digest.len(), 64);
+    }
+
+    #[test]
+    fn test_live_miniserver_readonly_smoke_when_env_set() {
+        let Ok(host) = std::env::var("LOXONE_LIVE_HOST") else {
+            return;
+        };
+        let username = std::env::var("LOXONE_LIVE_USER").unwrap_or_default();
+        let password = std::env::var("LOXONE_LIVE_PASS").unwrap_or_default();
+        let creds = MiniserverCredentials {
+            host,
+            username,
+            password,
+        };
+
+        let snaps = MiniserverClient::list_snapshots(&creds).expect("list_snapshots should succeed on live Miniserver");
+        assert!(!snaps.is_empty(), "live Miniserver should have at least 1 backup in /prog");
+        assert!(snaps[0].size_bytes.is_some(), "latest snapshot should have parsed size_bytes");
+
+        let jwt = MiniserverClient::exchange_loxone_jwt(&creds)
+            .expect("exchange_loxone_jwt should succeed with SHA256 on live Miniserver");
+        assert!(!jwt.is_empty(), "issued JWT should not be empty");
+
+        let (filename, xml) = MiniserverClient::download_snapshot_xml(&creds, None)
+            .expect("download_snapshot_xml should succeed on live Miniserver");
+        assert!(!filename.is_empty());
+        let project = crate::parser::parse_loxone_xml(&xml).expect("downloaded live XML should parse cleanly");
+        assert!(!project.pages.is_empty());
+
+        let page = project
+            .pages
+            .iter()
+            .find(|p| p.title.contains("Ogrzewanie"))
+            .expect("Ogrzewanie page should exist in downloaded project");
+        let poll_ids = LiveValueStore::collect_poll_ids_for_page(page, &project);
+        let batch = MiniserverClient::fetch_batch_io_states(&creds, &poll_ids);
+        let mut store = LiveValueStore::new();
+        store.seed_project_defaults(&project);
+        for (id, res) in batch {
+            if let Ok(snap) = res {
+                store.apply_polled_snapshot(id, snap);
+            }
+        }
+        assert!(store.poll_count >= 3, "should have polled at least 3 live controls on Ogrzewanie");
     }
 }
