@@ -711,7 +711,12 @@ impl MiniserverClient {
             if snap.control_id.is_empty() {
                 snap.control_id = clean_id.to_string();
             }
-            if snap.code == 200 || snap.primary_value.is_some() || !snap.outputs.is_empty() {
+            let is_placeholder_all = snap.primary_value.is_none()
+                && snap.outputs.is_empty()
+                && text.contains("value=\"?\"");
+            if !is_placeholder_all
+                && (snap.code == 200 || snap.primary_value.is_some() || !snap.outputs.is_empty())
+            {
                 return Ok(snap);
             }
         }
@@ -1025,6 +1030,158 @@ impl MiniserverClient {
             restarted_sps,
         })
     }
+
+    /// Queries real-time system health, SPS status, online periphery monitors, and the tail of
+    /// `/dev/fsget/log/def.log` from the Miniserver.
+    pub fn fetch_system_diagnostics(
+        creds: &MiniserverCredentials,
+        monitors: &[OnlineDeviceMonitor],
+    ) -> Result<MiniserverSystemDiagnostics, MiniserverError> {
+        let base_url = Self::normalize_base_url(&creds.host)?;
+
+        let fetch_ll_val = |path: &str| -> Option<String> {
+            let url = format!("{}{}", base_url, path);
+            let bytes = Self::http_get_bytes_fast(&url, creds).ok()?;
+            let text = String::from_utf8_lossy(&bytes);
+            parse_ll_io_response(&text).and_then(|s| s.primary_value)
+        };
+
+        let firmware_version = fetch_ll_val("/dev/cfg/version").unwrap_or_default();
+        let mac_address = fetch_ll_val("/dev/cfg/mac").unwrap_or_default();
+        let sps_status = fetch_ll_val("/dev/sps/status").unwrap_or_default();
+        let sps_state_code = fetch_ll_val("/dev/sps/state").unwrap_or_default();
+        let cpu_load = fetch_ll_val("/dev/sys/cpu").unwrap_or_default();
+        let heap_usage = fetch_ll_val("/dev/sys/heap").unwrap_or_default();
+        let num_tasks = fetch_ll_val("/dev/sys/numtasks").unwrap_or_default();
+        let loxapp_version = fetch_ll_val("/dev/sps/LoxAPPversion3").unwrap_or_default();
+        let lan_tx_packets = fetch_ll_val("/dev/lan/txp").unwrap_or_default();
+
+        if firmware_version.is_empty() && sps_status.is_empty() && cpu_load.is_empty() {
+            // Verify authentication/reachability via /dev/sps/status so errors propagate cleanly
+            let url = format!("{}/dev/sps/status", base_url);
+            let _ = Self::http_get_bytes(&url, creds)?;
+        }
+
+        let mut online_devices = Vec::with_capacity(monitors.len());
+        for mon in monitors {
+            let snap = Self::fetch_io_state(creds, &mon.online_uuid).ok();
+            let raw_val = snap
+                .as_ref()
+                .and_then(|s| {
+                    s.outputs
+                        .get("Q")
+                        .or(s.primary_value.as_ref())
+                        .map(|v| v.as_str())
+                })
+                .unwrap_or("0");
+            let is_online = matches!(raw_val.trim(), "1" | "1.0" | "1.000" | "true" | "On");
+            online_devices.push(OnlineDeviceStatus {
+                monitor: mon.clone(),
+                is_online,
+                raw_value: raw_val.to_string(),
+            });
+        }
+
+        let log_url = format!("{}/dev/fsget/log/def.log", base_url);
+        let recent_log_lines = match Self::http_get_bytes(&log_url, creds) {
+            Ok(bytes) => {
+                let text = String::from_utf8_lossy(&bytes);
+                parse_def_log_tail(&text, 60)
+            }
+            Err(_) => Vec::new(),
+        };
+
+        Ok(MiniserverSystemDiagnostics {
+            firmware_version,
+            mac_address,
+            sps_status,
+            sps_state_code,
+            cpu_load,
+            heap_usage,
+            num_tasks,
+            loxapp_version,
+            lan_tx_packets,
+            online_devices,
+            recent_log_lines,
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OnlineDeviceMonitor {
+    pub online_uuid: String,
+    pub title: String,
+    pub parent_title: String,
+    pub parent_type: String,
+    pub serial_number: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OnlineDeviceStatus {
+    pub monitor: OnlineDeviceMonitor,
+    pub is_online: bool,
+    pub raw_value: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct MiniserverSystemDiagnostics {
+    pub firmware_version: String,
+    pub mac_address: String,
+    pub sps_status: String,
+    pub sps_state_code: String,
+    pub cpu_load: String,
+    pub heap_usage: String,
+    pub num_tasks: String,
+    pub loxapp_version: String,
+    pub lan_tx_packets: String,
+    pub online_devices: Vec<OnlineDeviceStatus>,
+    pub recent_log_lines: Vec<String>,
+}
+
+/// Extracts all `<C Type="Online">` hardware online-status monitors from the project tree.
+pub fn extract_online_monitors(
+    project: &crate::model::LoxoneProject,
+) -> Vec<OnlineDeviceMonitor> {
+    fn walk_nodes(
+        nodes: &[crate::model::TreeNode],
+        parent_title: &str,
+        parent_type: &str,
+        parent_serial: &str,
+        out: &mut Vec<OnlineDeviceMonitor>,
+    ) {
+        for node in nodes {
+            let serial = node
+                .attr("Serial")
+                .filter(|s| !s.is_empty())
+                .unwrap_or(parent_serial);
+            if node.control_type == "Online" && !node.uuid.is_empty() {
+                out.push(OnlineDeviceMonitor {
+                    online_uuid: node.uuid.clone(),
+                    title: node.title.clone(),
+                    parent_title: parent_title.to_string(),
+                    parent_type: parent_type.to_string(),
+                    serial_number: serial.to_string(),
+                });
+            }
+            walk_nodes(&node.children, &node.title, &node.control_type, serial, out);
+        }
+    }
+
+    let mut out = Vec::new();
+    walk_nodes(&project.periphery_tree, "", "", "", &mut out);
+    walk_nodes(&project.system_tree, "", "", "", &mut out);
+    out
+}
+
+/// Returns the last `max_lines` non-empty lines from a Loxone `def.log` payload.
+pub fn parse_def_log_tail(log_text: &str, max_lines: usize) -> Vec<String> {
+    let all_lines: Vec<&str> = log_text
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .collect();
+    let start = all_lines.len().saturating_sub(max_lines);
+    all_lines[start..].iter().map(|s| (*s).to_string()).collect()
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1126,9 +1283,12 @@ pub fn parse_ll_io_response(xml: &str) -> Option<LiveControlSnapshot> {
         if let (Some(k), Some(v)) = (key, val) {
             let k_clean = k.trim();
             let v_clean = v.trim();
-            // Firmware 17.x LightController2 /dev/sps/io/<uuid>/all returns Type="RGB|Switch" value="383"
-            // (0x17F static capability mask) on all 18 channels regardless of active state.
-            if child.attr("Type").is_some() && v_clean == "383" {
+            // Firmware 17.x LightController2 /dev/sps/io/<uuid>/all returns Type="RGB|Switch"
+            // with static capability masks or uninitialized stack values regardless of active state.
+            if matches!(
+                child.attr("Type").or_else(|| child.attr("type")),
+                Some("RGB" | "Switch")
+            ) {
                 continue;
             }
             if !k_clean.is_empty() {
@@ -1334,7 +1494,7 @@ pub fn format_live_signal(
         };
     }
 
-    // 7. Numeric / Analog pins (I1, I2, HC1, HC2, V1, V2, H1, H2, C1, C2, AQ, AI, Zawór)
+    // 7. Numeric / Analog pins (I1, I2, HC1, HC2, V1, V2, H1, H2, C1, C2, AQ, AI, Zawór, Meters, Audio, Shading)
     let is_light_controller_aq = matches!(
         hint_block_type,
         "LightController2" | "LightControllerV2" | "LightController"
@@ -1342,10 +1502,53 @@ pub fn format_live_signal(
     let is_analog_pin = !is_light_controller_aq
         && (matches!(
             key_upper.as_str(),
-            "I1" | "I2" | "I3" | "I4" | "HC1" | "HC2" | "V1" | "V2" | "H1" | "H2" | "C1" | "C2" | "AQ" | "AI" | "VQ" | "VAL" | "POS" | "OUTPUTONTIME"
+            "I1"
+                | "I2"
+                | "I3"
+                | "I4"
+                | "HC1"
+                | "HC2"
+                | "V1"
+                | "V2"
+                | "H1"
+                | "H2"
+                | "C1"
+                | "C2"
+                | "AQ"
+                | "AI"
+                | "VQ"
+                | "VAL"
+                | "POS"
+                | "OUTPUTONTIME"
+                | "OUTVOLUME"
+                | "VOLUME"
+                | "SCENE"
+                | "OUTOPEN"
+                | "OUTCLOSE"
+                | "OUTNUMALARMS"
+                | "OPF"
+                | "PF"
+                | "OMR"
+                | "OMR1"
+                | "OMR2"
+                | "OGPWR"
+                | "OPPWR"
+                | "OCPWR"
+                | "OSPWR"
+                | "OED"
+                | "OID"
+                | "OPD"
+                | "OCD"
+                | "OSCD"
+                | "OCO2D"
+                | "OYD"
+                | "REST"
         ) || key_upper.starts_with("AI")
             || key_upper.starts_with("AQ")
+            || key_upper.starts_with("OR")
             || key_upper.ends_with("POS")
+            || (matches!(hint_block_type, "CentralLight" | "CentralMusic")
+                && key_upper == "OUTACTIVE")
             || title_lower.contains("zawór"));
 
     if let Some(num) = parse_numeric_prefix(trimmed) {
@@ -2142,13 +2345,67 @@ impl LiveValueStore {
         for (page_idx, page) in proj.pages.iter().enumerate() {
             if let Some(blk) = page.blocks.iter().find(|b| b.uuid == control_uuid) {
                 let badge = ref_bar_capsule_badge(blk, page, proj);
-                if let Some(ref_u) = &blk.ref_uuid {
-                    target_io_id = ref_u.clone();
+                if blk.is_ref_bar() {
+                    if let Some(ref_u) = &blk.ref_uuid {
+                        target_io_id = ref_u.clone();
+                    }
+                }
+                match blk.block_type.as_str() {
+                    "AutoJalousie" | "Jalousie" | "RoofWindowShading" | "CentralShade" => {
+                        match raw_value {
+                            "FullUp" | "Up" => {
+                                self.set_pin_override(control_uuid, "Up", "1");
+                                self.set_pin_override(control_uuid, "Down", "0");
+                                self.set_pin_override(control_uuid, "Position", "0");
+                            }
+                            "FullDown" | "Down" => {
+                                self.set_pin_override(control_uuid, "Up", "0");
+                                self.set_pin_override(control_uuid, "Down", "1");
+                                self.set_pin_override(control_uuid, "Position", "100");
+                            }
+                            "Stop" => {
+                                self.set_pin_override(control_uuid, "Up", "0");
+                                self.set_pin_override(control_uuid, "Down", "0");
+                            }
+                            "shade" => {
+                                self.set_pin_override(control_uuid, "Shade", "1");
+                                self.set_pin_override(control_uuid, "Position", "50");
+                                self.set_pin_override(control_uuid, "SlatPosition", "75");
+                            }
+                            _ => {}
+                        }
+                    }
+                    "MusicPlayer" | "AudioZone" | "CentralMusic" => match raw_value {
+                        "Play" => {
+                            self.set_pin_override(control_uuid, "OutState", "1");
+                            self.set_pin_override(control_uuid, "OutActive", "1");
+                        }
+                        "Pause" | "0" => {
+                            self.set_pin_override(control_uuid, "OutState", "0");
+                            self.set_pin_override(control_uuid, "OutActive", "0");
+                        }
+                        v if v.parse::<u32>().is_ok() => {
+                            self.set_pin_override(control_uuid, "OutVolume", v);
+                        }
+                        _ => {}
+                    },
+                    "LightController2" | "LightController" => {
+                        self.set_pin_override(control_uuid, "Scene", raw_value);
+                        self.set_pin_override(control_uuid, "OutputAPI", raw_value);
+                    }
+                    "HeatIRoomController2" | "HeatIRoomController" => {
+                        if matches!(raw_value, "0" | "1" | "2" | "3" | "4") {
+                            self.set_pin_override(control_uuid, "Mode", raw_value);
+                        } else if raw_value.parse::<f64>().is_ok() {
+                            self.set_pin_override(control_uuid, "TempTarget", raw_value);
+                        }
+                    }
+                    _ => {}
                 }
                 matched_info = Some((
                     page_idx,
                     blk.title.clone(),
-                    blk.ref_uuid.clone(),
+                    blk.ref_uuid.clone().filter(|_| blk.is_ref_bar()),
                     badge.clone(),
                 ));
 
@@ -2538,10 +2795,151 @@ impl LiveValueStore {
             ("PresenceDetector", "OutputOnTime") => Some("Pd"),
             ("PresenceDetector", "OutputWarn") => Some("Warn"),
             ("PresenceDetector", "OutputAPI") => Some("API"),
-            ("LongClick" | "MultiClick", "Q1") => Some("O1"),
-            ("LongClick" | "MultiClick", "Q2") => Some("O2"),
-            ("LongClick" | "MultiClick", "Q3") => Some("O3"),
-            ("LongClick" | "MultiClick", "Q4") => Some("O4"),
+            ("Doorcontroller", "Qb") => Some("Bell"),
+            ("Doorcontroller", "Q1") => Some("O1"),
+            ("Doorcontroller", "Q2") => Some("O2"),
+            ("Doorcontroller", "Q3") => Some("O3"),
+            ("Doorcontroller", "OutputAPI") => Some("API"),
+            ("Intercom", "Qb") => Some("Bell"),
+            ("Intercom", "Qmute") => Some("Mute"),
+            ("Intercom", "Q1") => Some("O1"),
+            ("Intercom", "Q2") => Some("O2"),
+            ("Intercom", "Q3") => Some("O3"),
+            ("Intercom", "OutputAPI" | "API") => Some("API"),
+            ("Door", "OutputTrigger") => Some("Tg"),
+            ("Door", "OutputOpen") => Some("Op"),
+            ("Door", "OutputClose") => Some("Cl"),
+            ("Door", "OutputActive") => Some("Im"),
+            ("Door", "OutputPos") => Some("Pos"),
+            ("Door", "Light") => Some("Wl"),
+            ("Door", "OutputAPI") => Some("API"),
+            ("Alarm" | "BurglarAlarm", "Q") => Some("S"),
+            ("Alarm" | "BurglarAlarm", "Q1") => Some("Sa"),
+            ("Alarm" | "BurglarAlarm", "Q2") => Some("Aa"),
+            ("Alarm" | "BurglarAlarm", "Q3") => Some("Va"),
+            ("Alarm" | "BurglarAlarm", "Q4") => Some("Ia"),
+            ("Alarm" | "BurglarAlarm", "Q5") => Some("Ea"),
+            ("Alarm" | "BurglarAlarm", "Q6") => Some("Ra"),
+            ("Alarm" | "BurglarAlarm", "AQ") => Some("N"),
+            ("Alarm" | "BurglarAlarm", "QT") => Some("At"),
+            ("Alarm" | "BurglarAlarm", "AQr") => Some("Rtad"),
+            ("Alarm" | "BurglarAlarm", "TQ") => Some("Ca"),
+            ("Alarm" | "BurglarAlarm", "OutTime") => Some("Ta"),
+            ("Alarm" | "BurglarAlarm", "Qo") => Some("WDs"),
+            ("Alarm" | "BurglarAlarm", "TTS") => Some("WDot"),
+            ("Alarm" | "BurglarAlarm", "OutputAPI") => Some("API"),
+            ("SmokeAlarm", "OutAlarm1") => Some("Pa"),
+            ("SmokeAlarm", "OutAlarm2") => Some("Ma"),
+            ("SmokeAlarm", "OutSilent") => Some("Pas"),
+            ("SmokeAlarm", "OutHorn") => Some("Mas"),
+            ("SmokeAlarm", "OutNumAlarms") => Some("N"),
+            ("SmokeAlarm", "OutAlarmTest") => Some("At"),
+            ("SmokeAlarm", "OutText") => Some("Ca"),
+            ("SmokeAlarm", "OutTime") => Some("Ta"),
+            ("SmokeAlarm", "OutputAPI") => Some("API"),
+            ("AlarmChain", "Level1" | "Q1") => Some("A1"),
+            ("AlarmChain", "Level2" | "Q2") => Some("A2"),
+            ("AlarmChain", "Level3" | "Q3") => Some("A3"),
+            ("AlarmChain", "Level4" | "Q4") => Some("A4"),
+            ("AlarmChain", "Level5" | "Q5") => Some("A5"),
+            ("AlarmChain", "Level6" | "Q6") => Some("A6"),
+            ("AlarmChain", "Level7" | "Q7") => Some("A7"),
+            ("AlarmChain", "Level8" | "Q8") => Some("A8"),
+            ("AlarmChain", "Level9" | "Q9") => Some("A9"),
+            ("AlarmChain", "Level10" | "Q10") => Some("A10"),
+            ("AlarmChain", "OutEmgService" | "QEs") => Some("AEs"),
+            ("AlarmChain", "OutActive" | "Qs") => Some("As"),
+            ("AlarmChain", "OutTimeOn") => Some("Ton"),
+            ("AlarmChain", "OutTimeOff") => Some("Toff"),
+            ("AlarmChain", "OutConfirmSource") => Some("Cc"),
+            ("AlarmChain", "OutConfirmTime") => Some("Tc"),
+            ("AalEmergency", "OutAlarm") => Some("A"),
+            ("AalEmergency", "OutAlarmStart") => Some("Aon"),
+            ("AalEmergency", "OutAlarmStop") => Some("Aoff"),
+            ("AalEmergency", "OutAlarmSource") => Some("Ca"),
+            ("AalEmergency", "OutConfirmSource") => Some("Cc"),
+            ("AalEmergency", "OutputAPI") => Some("API"),
+            ("AalSmartAlarm", "Alarm Level 1") => Some("A1"),
+            ("AalSmartAlarm", "Alarm Level 2") => Some("A2"),
+            ("AalSmartAlarm", "Cause") => Some("Ca"),
+            ("AalSmartAlarm", "Time") => Some("Ta"),
+            ("AalSmartAlarm", "OutputAPI") => Some("API"),
+            ("CentralMusic" | "CentralLight", "OutActive") => Some("Na"),
+            ("CentralMusic" | "CentralLight", "OutputAPI") => Some("API"),
+            ("CentralShade", "OutOpen") => Some("No"),
+            ("CentralShade", "OutClose") => Some("Nc"),
+            ("CentralShade", "OutputAPI") => Some("API"),
+            ("MusicPlayer" | "AudioZone", "OutAudio") => Some("Stereo LR"),
+            ("MusicPlayer" | "AudioZone", "OutAudioL") => Some("Stereo L"),
+            ("MusicPlayer" | "AudioZone", "OutAudioR") => Some("Stereo R"),
+            ("MusicPlayer" | "AudioZone", "OutAudioSub") => Some("Sub"),
+            ("MusicPlayer" | "AudioZone", "OutActive") => Some("Play"),
+            ("MusicPlayer" | "AudioZone", "OutVolume") => Some("Volume"),
+            ("MusicPlayer" | "AudioZone", "RoomOff") => Some("2C"),
+            ("MusicPlayer" | "AudioZone", "HouseOff") => Some("3C"),
+            ("MusicPlayer" | "AudioZone", "OutVolUpExternal") => Some("V+"),
+            ("MusicPlayer" | "AudioZone", "OutVolDownExternal") => Some("V-"),
+            ("MusicPlayer" | "AudioZone", "OutBluetooth") => Some("BTp"),
+            ("MusicPlayer" | "AudioZone", "OutputAPI") => Some("API"),
+            ("MeterAbsBi", "OPf") => Some("Pf"),
+            ("MeterAbsBi", "OMr1") => Some("Mrc"),
+            ("MeterAbsBi", "ORd1") => Some("Rdc"),
+            ("MeterAbsBi", "ORld1") => Some("Rldc"),
+            ("MeterAbsBi", "ORm1") => Some("Rmc"),
+            ("MeterAbsBi", "ORlm1") => Some("Rlmc"),
+            ("MeterAbsBi", "ORy1") => Some("Ryc"),
+            ("MeterAbsBi", "ORly1") => Some("Rlyc"),
+            ("MeterAbsBi", "OMr2") => Some("Mrd"),
+            ("MeterAbsBi", "ORd2") => Some("Rdd"),
+            ("MeterAbsBi", "ORld2") => Some("Rldd"),
+            ("MeterAbsBi", "ORm2") => Some("Rmd"),
+            ("MeterAbsBi", "ORlm2") => Some("Rlmd"),
+            ("MeterAbsBi", "ORy2") => Some("Ryd"),
+            ("MeterAbsBi", "ORly2") => Some("Rlyd"),
+            ("MeterAbsBi", "OutputAPI") => Some("API"),
+            ("MeterPUni", "OPf") => Some("Pf"),
+            ("MeterPUni", "OMr") => Some("Mr"),
+            ("MeterPUni", "ORd") => Some("Rd"),
+            ("MeterPUni", "ORld") => Some("Rld"),
+            ("MeterPUni", "ORm") => Some("Rm"),
+            ("MeterPUni", "ORlm") => Some("Rlm"),
+            ("MeterPUni", "ORy") => Some("Ry"),
+            ("MeterPUni", "ORly") => Some("Rly"),
+            ("MeterPUni", "OutputAPI") => Some("API"),
+            ("EFM", "OGpwr") => Some("Gpwr"),
+            ("EFM", "OPpwr") => Some("Ppwr"),
+            ("EFM", "OCpwr") => Some("Cpwr"),
+            ("EFM", "OSpwr") => Some("Spwr"),
+            ("EFM", "OEd") => Some("Ed"),
+            ("EFM", "OId") => Some("Id"),
+            ("EFM", "OPd") => Some("Pd"),
+            ("EFM", "OCd") => Some("Cd"),
+            ("EFM", "OScd") => Some("Scd"),
+            ("EFM", "OCo2d") => Some("Co2d"),
+            ("EFM", "OYd") => Some("Yd"),
+            ("EFM", "Rest") => Some("Rest"),
+            ("EFM", "OutputAPI") => Some("API"),
+            ("AlarmClock", "QTa") => Some("Aon"),
+            ("AlarmClock", "QTe") => Some("Aoff"),
+            ("AlarmClock", "Qa") => Some("Buzzer"),
+            ("AlarmClock", "Qat") => Some("A"),
+            ("AlarmClock", "QTp") => Some("Pa"),
+            ("AlarmClock", "QMe") => Some("Da"),
+            ("AlarmClock", "AQs") => Some("Rst"),
+            ("AlarmClock", "QTna") => Some("Tna"),
+            ("AlarmClock", "OutputAPI") => Some("API"),
+            ("PushButton" | "Pushbutton" | "PButtonT", "Q") => Some("O"),
+            ("PushButton" | "Pushbutton", "Qon") => Some("On"),
+            ("PushButton" | "Pushbutton", "Qoff") => Some("Off"),
+            ("PushButton" | "Pushbutton" | "PButtonT", "OutputAPI") => Some("API"),
+            ("LongClick", "Q1") => Some("O1"),
+            ("LongClick", "Q2") => Some("O2"),
+            ("LongClick", "Q3") => Some("O3"),
+            ("LongClick", "Q4") => Some("O4"),
+            ("MultiClick", "Q1") => Some("1C"),
+            ("MultiClick", "Q2") => Some("2C"),
+            ("MultiClick", "Q3") => Some("3C"),
+            ("MultiClick", "Q4") => Some("4C"),
             ("LongClick" | "MultiClick", "AQ") => Some("V"),
             ("And" | "Or" | "Not", "Q") => Some("O"),
             ("Equal", "Q") => Some("E"),
@@ -2549,6 +2947,15 @@ impl LiveValueStore {
         };
         if let Some(k) = mapped_key {
             if let Some(v) = snap.outputs.get(k) {
+                return Some(v.as_str());
+            }
+        }
+        if matches!(
+            block_type,
+            "LightController2" | "LightControllerV2" | "LightController"
+        ) && pin_key == "Scene"
+        {
+            if let Some(v) = &snap.primary_value {
                 return Some(v.as_str());
             }
         }
@@ -3918,6 +4325,149 @@ mod tests {
         assert_eq!(
             store.resolve_pin_signal(jal_blk, lpos_pin, page, &project).formatted,
             "1"
+        );
+    }
+
+    #[test]
+    fn test_all_remaining_gen2_block_outputs_and_online_monitors() {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../Sample.Loxone");
+        let project =
+            crate::parser::load_loxone_file(&path).expect("Sample.Loxone should parse");
+
+        // 1. Verify Online hardware monitors extraction from Sample.Loxone (56 Online nodes)
+        let monitors = extract_online_monitors(&project);
+        assert_eq!(monitors.len(), 56);
+        assert!(monitors
+            .iter()
+            .any(|m| m.online_uuid == "194636e2-00ad-8395-ffff51535bcccc04"
+                && m.title.contains("Audioserver")));
+
+        // 2. Verify def.log tail parser
+        let sample_log = "2026-11-07 08:48:47.937;Program send: /lx/prog/sps_0274.zip\r\n\
+                          2026-11-07 13:06:03.132;Important 1013, Brama - Niezamknięto (Garaż)\r\n";
+        let lines = parse_def_log_tail(sample_log, 10);
+        assert_eq!(lines.len(), 2);
+        assert!(lines[1].contains("Brama - Niezamknięto"));
+
+        // 3. Verify LightController2 /all skips Type="RGB|Switch" stack garbage
+        let lc_all = parse_ll_io_response(
+            r#"<LL control="dev/sps/io/19eb19a8-03c0-3782-ffff51535bcccc04/all" value="?" Code="200">
+                <output name="gabinet: podcięcie" nr="1" Type="RGB" value="82"/>
+                <output name="Oświetlenie orientacyjne" nr="3" Type="Switch" value="992"/>
+            </LL>"#,
+        )
+        .expect("LightController2 /all should parse");
+        assert!(lc_all.primary_value.is_none());
+        assert!(lc_all.outputs.is_empty());
+
+        // 4. Verify MeterAbsBi, MeterPUni, and EFM on page "Energia"
+        let mut store = LiveValueStore::new();
+        store.seed_project_defaults(&project);
+        let energia_page = project
+            .pages
+            .iter()
+            .find(|p| p.title == "Energia")
+            .expect("Energia page should exist");
+
+        let meter_bi_snap = parse_ll_io_response(
+            r#"<LL control="dev/sps/io/1d0040f7-0341-6cb9-ffff51535bcccc04/all" value="-0.976" Code="200">
+                <output name="Pf" nr="1" value="-0.976"/>
+                <output name="Mrc" nr="2" value="14848.750"/>
+                <output name="Rdc" nr="3" value="30.981"/>
+                <output name="Mrd" nr="9" value="14498.448"/>
+            </LL>"#,
+        )
+        .unwrap();
+        store.apply_polled_snapshot(
+            "1d0040f7-0341-6cb9-ffff51535bcccc04".to_string(),
+            meter_bi_snap,
+        );
+        let meter_bi = energia_page
+            .blocks
+            .iter()
+            .find(|b| b.uuid == "1d0040f7-0341-6cb9-ffff51535bcccc04")
+            .unwrap();
+        let opf_pin = meter_bi.pins.iter().find(|p| p.key == "OPf").unwrap();
+        let omr1_pin = meter_bi.pins.iter().find(|p| p.key == "OMr1").unwrap();
+        assert_eq!(
+            store
+                .resolve_pin_signal(meter_bi, opf_pin, energia_page, &project)
+                .formatted,
+            "-0.98"
+        );
+        assert_eq!(
+            store
+                .resolve_pin_signal(meter_bi, omr1_pin, energia_page, &project)
+                .formatted,
+            "14848.75"
+        );
+
+        let efm_snap = parse_ll_io_response(
+            r#"<LL control="dev/sps/io/1d04656b-0128-8d7a-ffff51535bcccc04/all" value="0.000" Code="200">
+                <output name="Gpwr" nr="1" value="0.000"/>
+                <output name="Ppwr" nr="2" value="0.976"/>
+                <output name="Cpwr" nr="3" value="0.976"/>
+                <output name="Scd" nr="9" value="40.821"/>
+                <output name="Rest" nr="12" value="0.976"/>
+            </LL>"#,
+        )
+        .unwrap();
+        store.apply_polled_snapshot(
+            "1d04656b-0128-8d7a-ffff51535bcccc04".to_string(),
+            efm_snap,
+        );
+        let efm_blk = energia_page
+            .blocks
+            .iter()
+            .find(|b| b.uuid == "1d04656b-0128-8d7a-ffff51535bcccc04")
+            .unwrap();
+        let oppwr_pin = efm_blk.pins.iter().find(|p| p.key == "OPpwr").unwrap();
+        let oscd_pin = efm_blk.pins.iter().find(|p| p.key == "OScd").unwrap();
+        assert_eq!(
+            store
+                .resolve_pin_signal(efm_blk, oppwr_pin, energia_page, &project)
+                .formatted,
+            "0.98"
+        );
+        assert_eq!(
+            store
+                .resolve_pin_signal(efm_blk, oscd_pin, energia_page, &project)
+                .formatted,
+            "40.82"
+        );
+
+        // 5. Verify MusicPlayer on page "Salon"
+        let salon_page = project
+            .pages
+            .iter()
+            .find(|p| p.title == "Salon")
+            .expect("Salon page should exist");
+        let mp_snap = parse_ll_io_response(
+            r#"<LL control="dev/sps/io/19eb19a5-0392-28eb-ffff51535bcccc04/all" value="0" Code="200">
+                <output name="Play" nr="5" value="1"/>
+                <output name="Volume" nr="6" value="20.000"/>
+            </LL>"#,
+        )
+        .unwrap();
+        store.apply_polled_snapshot("19eb19a5-0392-28eb-ffff51535bcccc04".to_string(), mp_snap);
+        let mp_blk = salon_page
+            .blocks
+            .iter()
+            .find(|b| b.uuid == "19eb19a5-0392-28eb-ffff51535bcccc04")
+            .unwrap();
+        let play_pin = mp_blk.pins.iter().find(|p| p.key == "OutActive").unwrap();
+        let vol_pin = mp_blk.pins.iter().find(|p| p.key == "OutVolume").unwrap();
+        assert_eq!(
+            store
+                .resolve_pin_signal(mp_blk, play_pin, salon_page, &project)
+                .formatted,
+            "Wł."
+        );
+        assert_eq!(
+            store
+                .resolve_pin_signal(mp_blk, vol_pin, salon_page, &project)
+                .formatted,
+            "20"
         );
     }
 }
