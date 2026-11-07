@@ -229,6 +229,7 @@ fn render_live_monitor_card(
     let mut target_uuid = summary.uuid.clone();
     let mut primary_sig = None;
     let mut pin_rows: Vec<(String, loxone_core::miniserver::LiveSignal)> = Vec::new();
+    let mut block_ref: Option<&PageBlock> = None;
 
     match &summary.location {
         ObjectLocation::PageBlock {
@@ -238,14 +239,48 @@ fn render_live_monitor_card(
         } => {
             if let Some(page) = project.pages.get(*page_index) {
                 if let Some(block) = page.blocks.get(*block_index) {
+                    block_ref = Some(block);
                     if block.is_ref_bar() {
                         if let Some(ru) = &block.ref_uuid {
                             target_uuid = ru.clone();
                         }
                         primary_sig = Some(store.resolve_ref_bar_signal(block, page, project));
                     } else {
+                        let mut seen_keys = std::collections::HashSet::new();
+                        if let Some(schema) = lookup_block_schema(&block.block_type) {
+                            for out_schema in schema.pin_docs.iter().filter(|d| d.is_output) {
+                                seen_keys.insert(out_schema.pin_key.to_string());
+                                let synth_pin = ConnectorPin {
+                                    uuid: format!("synth:{}:{}", block.uuid, out_schema.pin_key),
+                                    key: out_schema.pin_key.to_string(),
+                                    pin_kind: PinKind::Output,
+                                    default_value: None,
+                                    incoming_links: Vec::new(),
+                                };
+                                let pin_to_use = block
+                                    .pins
+                                    .iter()
+                                    .find(|p| p.key == out_schema.pin_key)
+                                    .unwrap_or(&synth_pin);
+                                let sig = store.resolve_pin_signal(block, pin_to_use, page, project);
+                                if primary_sig.is_none() {
+                                    primary_sig = Some(sig.clone());
+                                }
+                                let short_k = loxone_core::miniserver::loxone_short_pin_label(
+                                    &block.block_type,
+                                    out_schema.pin_key,
+                                );
+                                pin_rows.push((format!("{} ({})", short_k, out_schema.pin_key), sig));
+                            }
+                        }
                         for pin in &block.pins {
+                            if !seen_keys.insert(pin.key.clone()) {
+                                continue;
+                            }
                             let sig = store.resolve_pin_signal(block, pin, page, project);
+                            if primary_sig.is_none() {
+                                primary_sig = Some(sig.clone());
+                            }
                             let short_k = loxone_core::miniserver::loxone_short_pin_label(
                                 &block.block_type,
                                 &pin.key,
@@ -309,7 +344,7 @@ fn render_live_monitor_card(
                     .num_columns(2)
                     .spacing([12.0, 3.0])
                     .show(ui, |ui| {
-                        for (label, sig) in pin_rows.iter().take(12) {
+                        for (label, sig) in pin_rows.iter().take(14) {
                             ui.label(RichText::new(label).monospace().size(11.0).color(TEXT_MUTED));
                             ui.label(
                                 RichText::new(&sig.formatted)
@@ -321,6 +356,10 @@ fn render_live_monitor_card(
                             ui.end_row();
                         }
                     });
+            }
+
+            if let Some(block) = block_ref.filter(|b| !b.is_ref_bar()) {
+                render_block_specific_live_controls(ui, block, &target_uuid, output);
             }
 
             ui.add_space(6.0);
@@ -343,6 +382,169 @@ fn render_live_monitor_card(
                 }
             });
         });
+}
+
+fn render_block_specific_live_controls(
+    ui: &mut Ui,
+    block: &PageBlock,
+    target_uuid: &str,
+    output: &mut InspectorOutput,
+) {
+    use crate::i18n::tr;
+    match block.block_type.as_str() {
+        "LightController2" | "LightController" => {
+            ui.add_space(6.0);
+            ui.horizontal_wrapped(|ui| {
+                ui.label(RichText::new(tr("Scenes:")).size(11.0).color(TEXT_MUTED));
+                if ui.small_button(tr("⏻ Off")).clicked() {
+                    output.live_commands.push(LiveCommand {
+                        control_uuid: target_uuid.to_string(),
+                        pin_key: None,
+                        command: "0".to_string(),
+                    });
+                }
+                let lc_cfg = loxone_core::LightControllerConfig::from_block(block);
+                if !lc_cfg.scenes.is_empty() {
+                    for scene in lc_cfg.scenes.iter().take(5) {
+                        let cmd = scene.sid.to_string();
+                        let label = format!("{}: {}", scene.sid, scene.name);
+                        if ui.small_button(label).clicked() {
+                            output.live_commands.push(LiveCommand {
+                                control_uuid: target_uuid.to_string(),
+                                pin_key: None,
+                                command: cmd,
+                            });
+                        }
+                    }
+                } else {
+                    for (lbl, cmd) in [("S1", "1"), ("S2", "2"), ("S3", "3"), ("S4", "4")] {
+                        if ui.small_button(lbl).clicked() {
+                            output.live_commands.push(LiveCommand {
+                                control_uuid: target_uuid.to_string(),
+                                pin_key: None,
+                                command: cmd.to_string(),
+                            });
+                        }
+                    }
+                }
+                for (lbl, cmd) in [("− Prev", "Minus"), ("+ Next", "Plus")] {
+                    if ui.small_button(tr(lbl)).clicked() {
+                        output.live_commands.push(LiveCommand {
+                            control_uuid: target_uuid.to_string(),
+                            pin_key: None,
+                            command: cmd.to_string(),
+                        });
+                    }
+                }
+            });
+        }
+        "AutoJalousie" | "Jalousie" | "RoofWindowShading" | "CentralShade" => {
+            ui.add_space(6.0);
+            ui.horizontal_wrapped(|ui| {
+                ui.label(RichText::new(tr("Shading:")).size(11.0).color(TEXT_MUTED));
+                for (lbl, cmd) in [
+                    ("▲ Up", "FullUp"),
+                    ("■ Stop", "Stop"),
+                    ("▼ Down", "FullDown"),
+                    ("☀ Shade", "shade"),
+                    ("⚙ Auto", "auto"),
+                ] {
+                    if ui.small_button(tr(lbl)).clicked() {
+                        output.live_commands.push(LiveCommand {
+                            control_uuid: target_uuid.to_string(),
+                            pin_key: None,
+                            command: cmd.to_string(),
+                        });
+                    }
+                }
+            });
+        }
+        "HeatIRoomController2" | "HeatIRoomController" => {
+            ui.add_space(6.0);
+            ui.horizontal_wrapped(|ui| {
+                ui.label(RichText::new(tr("Room Mode:")).size(11.0).color(TEXT_MUTED));
+                for (lbl, cmd) in [
+                    ("🔄 Auto", "0"),
+                    ("🔥 Comfort", "1"),
+                    ("🌱 Eco", "2"),
+                    ("❄ Frost", "4"),
+                    ("21.0°C", "21.0"),
+                    ("22.5°C", "22.5"),
+                ] {
+                    if ui.small_button(tr(lbl)).clicked() {
+                        output.live_commands.push(LiveCommand {
+                            control_uuid: target_uuid.to_string(),
+                            pin_key: None,
+                            command: cmd.to_string(),
+                        });
+                    }
+                }
+            });
+        }
+        "MusicPlayer" | "AudioZone" | "CentralMusic" => {
+            ui.add_space(6.0);
+            ui.horizontal_wrapped(|ui| {
+                ui.label(RichText::new(tr("Audio:")).size(11.0).color(TEXT_MUTED));
+                for (lbl, cmd) in [
+                    ("▶ Play", "Play"),
+                    ("⏸ Pause", "Pause"),
+                    ("🔉 15%", "15"),
+                    ("🔊 30%", "30"),
+                    ("🔊 50%", "50"),
+                    ("⏻ Off", "0"),
+                ] {
+                    if ui.small_button(tr(lbl)).clicked() {
+                        output.live_commands.push(LiveCommand {
+                            control_uuid: target_uuid.to_string(),
+                            pin_key: None,
+                            command: cmd.to_string(),
+                        });
+                    }
+                }
+            });
+        }
+        "Doorcontroller" | "Intercom" | "Door" | "Gate" | "UpDownDigital" | "NfcCodeTouch" => {
+            ui.add_space(6.0);
+            ui.horizontal_wrapped(|ui| {
+                ui.label(RichText::new(tr("Access:")).size(11.0).color(TEXT_MUTED));
+                for (lbl, cmd) in [
+                    ("🔓 Open / Pulse", "Pulse"),
+                    ("▲ Open", "On"),
+                    ("■ Stop", "Stop"),
+                    ("▼ Close", "Off"),
+                ] {
+                    if ui.small_button(tr(lbl)).clicked() {
+                        output.live_commands.push(LiveCommand {
+                            control_uuid: target_uuid.to_string(),
+                            pin_key: None,
+                            command: cmd.to_string(),
+                        });
+                    }
+                }
+            });
+        }
+        "Alarm" | "BurglarAlarm" | "SmokeAlarm" | "AlarmChain" | "AalSmartAlarm"
+        | "AalEmergency" => {
+            ui.add_space(6.0);
+            ui.horizontal_wrapped(|ui| {
+                ui.label(RichText::new(tr("Alarm:")).size(11.0).color(TEXT_MUTED));
+                for (lbl, cmd) in [
+                    ("🛡 Arm", "On"),
+                    ("🔓 Disarm", "Off"),
+                    ("🔔 Quit Alarm", "quit"),
+                ] {
+                    if ui.small_button(tr(lbl)).clicked() {
+                        output.live_commands.push(LiveCommand {
+                            control_uuid: target_uuid.to_string(),
+                            pin_key: None,
+                            command: cmd.to_string(),
+                        });
+                    }
+                }
+            });
+        }
+        _ => {}
+    }
 }
 
 fn resolve_summary_icon(

@@ -2671,19 +2671,30 @@ pub fn render_page_canvas(
             };
             let mut pin_active = false;
             if let Some(store) = live_store {
-                if let Some(cp) = block.pins.iter().find(|p| p.key == pin.key) {
-                    let sig = store.resolve_pin_signal(block, cp, page, project);
-                    pin_active = sig.is_active;
-                    if !connected_source_pins.contains(&cp.uuid)
-                        && (sig.is_active || store.controls.contains_key(&block.uuid))
-                    {
-                        live_wire_labels.push((
-                            Pos2::new(anchor.x + 7.5 * viewport.zoom, anchor.y),
-                            Align2::LEFT_CENTER,
-                            sig.formatted,
-                            sig.is_active,
-                        ));
-                    }
+                let fallback_pin;
+                let cp = if let Some(existing) = block.pins.iter().find(|p| p.key == pin.key) {
+                    existing
+                } else {
+                    fallback_pin = loxone_core::model::ConnectorPin {
+                        uuid: pin.uuid.clone(),
+                        key: pin.key.clone(),
+                        pin_kind: loxone_core::model::PinKind::Output,
+                        default_value: None,
+                        incoming_links: Vec::new(),
+                    };
+                    &fallback_pin
+                };
+                let sig = store.resolve_pin_signal(block, cp, page, project);
+                pin_active = sig.is_active;
+                if !connected_source_pins.contains(&cp.uuid)
+                    && (sig.is_active || store.controls.contains_key(&block.uuid))
+                {
+                    live_wire_labels.push((
+                        Pos2::new(anchor.x + 7.5 * viewport.zoom, anchor.y),
+                        Align2::LEFT_CENTER,
+                        sig.formatted,
+                        sig.is_active,
+                    ));
                 }
             } else if !connected_source_pins.contains(&pin.uuid) {
                 let explicitly_shown = block_custom_overrides
