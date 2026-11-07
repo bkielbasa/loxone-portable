@@ -80,6 +80,13 @@ pub struct InlineRenameState {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct ShowPinValuesPopupState {
+    pub screen_pos: Pos2,
+    pub block_uuid: String,
+    pub side: Option<PinSide>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct RefBarChromeLayout {
     pub badge: String,
     pub capsule_rect: Rect,
@@ -104,6 +111,8 @@ pub struct CanvasInteractionState {
     pub context_menu: Option<CanvasContextMenu>,
     pub live_value_popup: Option<LiveValuePopupState>,
     pub inline_rename: Option<InlineRenameState>,
+    pub show_pin_values_popup: Option<ShowPinValuesPopupState>,
+    pub custom_pin_visibility: HashMap<String, HashMap<String, bool>>,
     pub last_clicked_block_uuid: Option<String>,
 }
 
@@ -126,11 +135,16 @@ pub fn block_has_advanced_modal(block: &PageBlock) -> bool {
                 | "MusicPlayer"
                 | "AudioZone"
                 | "MusicServerZone"
+                | "HVACController"
                 | "Heatmixer2"
                 | "ClimateControllerUS"
                 | "ClimateController"
                 | "Sequence"
         )
+}
+
+pub fn block_type_subtitle_label(block_type: &str) -> &str {
+    crate::i18n::block_display_name(block_type)
 }
 
 #[derive(Debug, Clone)]
@@ -180,6 +194,10 @@ pub fn compute_page_loxone_bounds(page: &Page) -> Option<Rect> {
             (block.px2 - block.px).max(512.0)
         } else if block.is_ref_bar() {
             1680.0
+        } else if loxone_core::ClimateControllerConfig::is_climate_controller_block(&block.block_type)
+            || loxone_core::CentralBlockConfig::is_central_block(&block.block_type)
+        {
+            (block.px2 - block.px).max(1888.0) + 1500.0
         } else {
             1888.0
         };
@@ -486,7 +504,15 @@ impl CanvasViewport {
             has_positioned = true;
             min_x = min_x.min(b.px);
             min_y = min_y.min(b.py);
-            max_x = max_x.max(b.px2.max(b.px + 512.0));
+            let extra_right = if loxone_core::ClimateControllerConfig::is_climate_controller_block(
+                &b.block_type,
+            ) || loxone_core::CentralBlockConfig::is_central_block(&b.block_type)
+            {
+                1500.0
+            } else {
+                0.0
+            };
+            max_x = max_x.max(b.px2.max(b.px + 512.0) + extra_right);
             max_y = max_y.max(b.py2.max(b.py + 192.0));
         }
         if !has_positioned {
@@ -541,7 +567,10 @@ pub fn classify_pin_side(block: &PageBlock, pin: &ConnectorPin, xref: &XrefIndex
     if matches!(pin.key.as_str(), "API" | "OutputAPI") {
         return PinSide::Output;
     }
-    if pin.has_visible_incoming_links() || pin.default_value.is_some() {
+    if pin.key == "Outer" {
+        return PinSide::Input;
+    }
+    if pin.has_visible_incoming_links() {
         return PinSide::Input;
     }
     if has_visible_outgoing_wires(&pin.uuid, xref) {
@@ -558,9 +587,125 @@ pub fn is_pin_connected(pin: &ConnectorPin, xref: &XrefIndex) -> bool {
     if pin.key.ends_with("Hidden") {
         return false;
     }
-    pin.has_visible_incoming_links()
-        || pin.default_value.is_some()
-        || has_visible_outgoing_wires(&pin.uuid, xref)
+    pin.has_visible_incoming_links() || has_visible_outgoing_wires(&pin.uuid, xref)
+}
+
+pub fn is_internal_parameter_pin(block_type: &str, pin: &ConnectorPin) -> bool {
+    if matches!(
+        block_type,
+        "HVACController" | "ClimateControllerUS" | "ClimateController" | "Heatmixer2"
+    ) {
+        return !matches!(
+            pin.key.as_str(),
+            "Temp"
+                | "Outer"
+                | "TempAvg"
+                | "Boost"
+                | "Stop"
+                | "Error"
+                | "Emergency"
+                | "SecHeat"
+                | "Fan"
+                | "FilterAck"
+                | "CoolAvailable"
+                | "HeatAvailable"
+                | "ManualHeat"
+                | "ServiceMode"
+                | "Mode"
+                | "InHumid"
+                | "InBuffer"
+                | "OutHeat1"
+                | "OutHeat2"
+                | "OutCool1"
+                | "OutCompressor"
+                | "OutCool2"
+                | "OutSecHeat"
+                | "OutEmergency"
+                | "OutValve"
+                | "OutFan"
+                | "OutFilter"
+                | "OutAverageTemp"
+                | "OutHumid"
+                | "OutError"
+                | "AQt"
+                | "TxQr"
+                | "AQf"
+                | "AQb"
+                | "Qp"
+                | "AQr"
+                | "AQl"
+                | "AQi"
+                | "Qe"
+                | "OutputAPI"
+                | "API"
+        );
+    }
+    pin.default_value.is_some() && !matches!(pin.key.as_str(), "Temp" | "Outer")
+}
+
+pub fn is_default_visible_pin(block_type: &str, pin_key: &str) -> bool {
+    match block_type {
+        "HVACController" => matches!(
+            pin_key,
+            "Temp"
+                | "Stop"
+                | "CoolAvailable"
+                | "HeatAvailable"
+                | "Mode"
+                | "OutHeat1"
+                | "OutCool1"
+                | "OutFan"
+        ),
+        "ClimateControllerUS" | "ClimateController" => matches!(
+            pin_key,
+            "Temp"
+                | "Stop"
+                | "CoolAvailable"
+                | "HeatAvailable"
+                | "Mode"
+                | "OutHeat1"
+                | "OutCompressor"
+                | "OutCool1"
+                | "OutFan"
+                | "OutHeat2"
+                | "OutHumid"
+        ),
+        "Heatmixer2" => matches!(pin_key, "Outer" | "Stop" | "AQt" | "Qp"),
+        _ => false,
+    }
+}
+
+fn climate_pin_sort_order(block_type: &str, pin_key: &str) -> usize {
+    if !matches!(
+        block_type,
+        "HVACController" | "ClimateControllerUS" | "ClimateController" | "Heatmixer2"
+    ) {
+        return 1000;
+    }
+    match pin_key {
+        "Temp" | "Outer" => 1,
+        "TempAvg" => 2,
+        "Boost" => 3,
+        "Stop" => 4,
+        "CoolAvailable" => 5,
+        "HeatAvailable" => 6,
+        "Mode" => 7,
+        "OutHeat1" => 10,
+        "OutCool1" | "OutCompressor" => 11,
+        "OutFan" => 12,
+        "OutHeat2" => 13,
+        "OutCool2" => 14,
+        "OutHumid" => 15,
+        "OutSecHeat" | "OutEmergency" => 16,
+        "OutValve" => 17,
+        "OutFilter" => 18,
+        "OutAverageTemp" => 19,
+        "OutError" => 20,
+        "AQt" => 30,
+        "Qp" => 31,
+        "OutputAPI" | "API" => 99,
+        _ => 50,
+    }
 }
 
 fn truncate_text(text: &str, max_chars: usize) -> String {
@@ -728,8 +873,23 @@ pub fn collect_block_display_pins(
     xref: &XrefIndex,
     show_all_pins: bool,
 ) -> (Vec<DisplayPin>, Vec<DisplayPin>) {
+    collect_block_display_pins_with_overrides(block, xref, show_all_pins, None)
+}
+
+pub fn collect_block_display_pins_with_overrides(
+    block: &PageBlock,
+    xref: &XrefIndex,
+    show_all_pins: bool,
+    custom_overrides: Option<&HashMap<String, bool>>,
+) -> (Vec<DisplayPin>, Vec<DisplayPin>) {
     let mut inputs = Vec::new();
     let mut outputs = Vec::new();
+    let is_climate = loxone_core::ClimateControllerConfig::is_climate_controller_block(
+        &block.block_type,
+    );
+    let has_object_footer = is_climate
+        || loxone_core::CentralBlockConfig::is_central_block(&block.block_type)
+        || loxone_core::AudioZoneConfig::is_audio_zone_block(&block.block_type);
     let has_any_wire = block.pins.iter().any(|p| {
         !p.key.ends_with("Hidden")
             && (p.has_visible_incoming_links() || has_visible_outgoing_wires(&p.uuid, xref))
@@ -738,8 +898,33 @@ pub fn collect_block_display_pins(
         if pin.key.ends_with("Hidden") {
             continue;
         }
-        if !show_all_pins && has_any_wire && !is_pin_connected(pin, xref) {
+        let connected = is_pin_connected(pin, xref);
+        let override_val = custom_overrides.and_then(|m| m.get(&pin.key).copied());
+
+        if has_object_footer
+            && matches!(pin.key.as_str(), "OutputAPI" | "API")
+            && !connected
+            && override_val != Some(true)
+            && !show_all_pins
+        {
+            // Rendered inside the bottom "Przyporządkuj obiekty... / API ⇄" footer row
             continue;
+        }
+
+        if !show_all_pins {
+            if let Some(vis) = override_val {
+                if !vis && !connected {
+                    continue;
+                }
+            } else if is_climate {
+                if !connected && !is_default_visible_pin(&block.block_type, &pin.key) {
+                    continue;
+                }
+            } else if is_internal_parameter_pin(&block.block_type, pin) && !connected {
+                continue;
+            } else if has_any_wire && !connected {
+                continue;
+            }
         }
         let side = classify_pin_side(block, pin, xref);
         let dp = DisplayPin {
@@ -776,7 +961,34 @@ pub fn collect_block_display_pins(
             }
         }
     }
+    if is_climate {
+        inputs.sort_by_key(|p| climate_pin_sort_order(&block.block_type, &p.key));
+        outputs.sort_by_key(|p| climate_pin_sort_order(&block.block_type, &p.key));
+    }
     (inputs, outputs)
+}
+
+/// Collects all signal pins eligible for the „Pokaż wartości” (`[+]`) popover on `block`.
+pub fn collect_block_selectable_pins<'a>(
+    block: &'a PageBlock,
+    xref: &XrefIndex,
+    filter_side: Option<PinSide>,
+) -> Vec<(&'a ConnectorPin, PinSide)> {
+    let mut out = Vec::new();
+    for pin in &block.pins {
+        if pin.key.ends_with("Hidden") {
+            continue;
+        }
+        if is_internal_parameter_pin(&block.block_type, pin) && !is_pin_connected(pin, xref) {
+            continue;
+        }
+        let side = classify_pin_side(block, pin, xref);
+        if filter_side.is_some_and(|s| s != side) {
+            continue;
+        }
+        out.push((pin, side));
+    }
+    out
 }
 
 const LIVE_ACTIVE_GREEN: Color32 = Color32::from_rgb(0x69, 0xC3, 0x50);
@@ -1156,9 +1368,12 @@ pub fn render_page_canvas(
         block: &'a PageBlock,
         rect: Rect,
         header_h: f32,
+        subtitle_h: f32,
+        footer_h: f32,
         row_h: f32,
         inputs: Vec<DisplayPin>,
         outputs: Vec<DisplayPin>,
+        assignment_summary: Option<loxone_core::BlockObjectAssignmentSummary>,
     }
 
     let mut action: Option<CanvasAction> = None;
@@ -1169,6 +1384,7 @@ pub fn render_page_canvas(
     let mut clicked_any_block = false;
     let mut clicked_any_pin_or_wire = false;
     let mut opened_live_popup_this_frame = false;
+    let mut opened_pin_values_popup_this_frame = false;
     let multi_mod = ui.input(|i| i.modifiers.shift || i.modifiers.command || i.modifiers.ctrl);
     let pan_mod = ui.input(|i| i.key_down(egui::Key::Space) || i.modifiers.alt);
     let show_all_pins = !viewport.compact_pins || viewport.interaction.wiring_from.is_some();
@@ -1239,9 +1455,12 @@ pub fn render_page_canvas(
                 block,
                 rect,
                 header_h: 0.0,
+                subtitle_h: 0.0,
+                footer_h: 0.0,
                 row_h: 0.0,
                 inputs: Vec::new(),
                 outputs: Vec::new(),
+                assignment_summary: None,
             });
             continue;
         }
@@ -1270,28 +1489,52 @@ pub fn render_page_canvas(
                 block,
                 rect,
                 header_h: 0.0,
+                subtitle_h: 0.0,
+                footer_h: 0.0,
                 row_h: 0.0,
                 inputs: Vec::new(),
                 outputs: Vec::new(),
+                assignment_summary: None,
             });
             continue;
         }
 
-        let (inputs, outputs) = collect_block_display_pins(block, &project.xref, show_all_pins);
+        let custom_overrides = viewport.interaction.custom_pin_visibility.get(&block.uuid);
+        let (inputs, outputs) = collect_block_display_pins_with_overrides(
+            block,
+            &project.xref,
+            show_all_pins,
+            custom_overrides,
+        );
+        let assignment_summary = loxone_core::collect_block_assigned_objects(block, project);
 
         let min_block_w = (195.0 * viewport.zoom).max(135.0);
         rect.max.x = rect.max.x.max(rect.min.x + min_block_w);
 
-        let header_h = (28.0 * viewport.zoom).clamp(20.0, 44.0);
-        let row_h = (19.0 * viewport.zoom).clamp(14.0, 28.0);
-        let body_pad = (6.0 * viewport.zoom).max(4.0);
-        let max_rows = inputs.len().max(outputs.len()).max(1);
-        let needed_h = header_h + body_pad * 2.0 + (max_rows as f32) * row_h;
-        if needed_h > rect.height() {
+        let header_h = (24.0 * viewport.zoom).clamp(18.0, 38.0);
+        let subtitle_h = (15.0 * viewport.zoom).clamp(11.0, 22.0);
+        let footer_h = if assignment_summary.is_some() {
+            (20.0 * viewport.zoom).clamp(15.0, 28.0)
+        } else {
+            0.0
+        };
+        let row_h = (17.0 * viewport.zoom).clamp(13.0, 25.0);
+        let plus_row_h = (16.0 * viewport.zoom).clamp(12.0, 22.0);
+        let body_pad = (5.0 * viewport.zoom).max(3.0);
+        let max_rows = inputs.len().max(outputs.len()).max(2);
+        let needed_h = header_h
+            + subtitle_h
+            + body_pad * 2.0
+            + (max_rows as f32) * row_h
+            + plus_row_h
+            + footer_h;
+        if loxone_core::ClimateControllerConfig::is_climate_controller_block(&block.block_type) {
+            rect.max.y = rect.min.y + needed_h.max((145.0 * viewport.zoom).max(95.0));
+        } else if needed_h > rect.height() {
             rect.max.y = rect.min.y + needed_h;
         }
 
-        let body_top = rect.min.y + header_h + body_pad;
+        let body_top = rect.min.y + header_h + subtitle_h + body_pad;
         for (i, pin) in inputs.iter().enumerate() {
             let py = body_top + (i as f32 + 0.5) * row_h;
             let anchor = Pos2::new(rect.min.x, py);
@@ -1321,9 +1564,12 @@ pub fn render_page_canvas(
             block,
             rect,
             header_h,
+            subtitle_h,
+            footer_h,
             row_h,
             inputs,
             outputs,
+            assignment_summary,
         });
     }
 
@@ -1352,6 +1598,7 @@ pub fn render_page_canvas(
         viewport.interaction.context_menu = None;
         viewport.interaction.selected_wire = None;
         viewport.interaction.inline_rename = None;
+        viewport.interaction.show_pin_values_popup = None;
         viewport.interaction.resizing_block = None;
         viewport.interaction.marquee_start = None;
         viewport.interaction.marquee_current = None;
@@ -2106,6 +2353,13 @@ pub fn render_page_canvas(
         let header_h = layout.header_h.min(rect.height());
         let header_rect =
             Rect::from_min_max(rect.min, Pos2::new(rect.max.x, rect.min.y + header_h));
+        let subtitle_rect = Rect::from_min_max(
+            Pos2::new(rect.min.x + 1.0, header_rect.max.y),
+            Pos2::new(
+                rect.max.x - 1.0,
+                (header_rect.max.y + layout.subtitle_h).min(rect.max.y),
+            ),
+        );
 
         painter.rect(
             rect,
@@ -2131,8 +2385,88 @@ pub fn render_page_canvas(
         );
         painter.rect_filled(strip, CornerRadius::same(3), accent_color);
 
+        // Header right-side circular buttons: (+), (⚙), (i)
+        let btn_r = (6.8 * viewport.zoom).clamp(5.0, 10.0);
+        let btn_gap = (3.5 * viewport.zoom).clamp(2.5, 5.5);
+        let cy = header_rect.center().y;
+        let info_center = Pos2::new(header_rect.max.x - 6.0 * viewport.zoom - btn_r, cy);
+        let gear_center = Pos2::new(info_center.x - btn_r * 2.0 - btn_gap, cy);
+        let plus_center = Pos2::new(gear_center.x - btn_r * 2.0 - btn_gap, cy);
+        let buttons_left = plus_center.x - btn_r - 4.0 * viewport.zoom;
+
+        for (center, symbol, kind) in [
+            (plus_center, "+", 0u8),
+            (gear_center, "⚙", 1u8),
+            (info_center, "i", 2u8),
+        ] {
+            let btn_rect = Rect::from_center_size(center, Vec2::splat(btn_r * 2.0));
+            let btn_hovered = hover_pos.is_some_and(|hp| btn_rect.contains(hp));
+            if btn_hovered {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+            }
+            let is_popup_open = kind == 0
+                && viewport
+                    .interaction
+                    .show_pin_values_popup
+                    .as_ref()
+                    .is_some_and(|p| p.block_uuid == block.uuid);
+            painter.circle_filled(
+                center,
+                btn_r,
+                if btn_hovered || is_popup_open {
+                    LOXONE_GREEN.gamma_multiply(0.45)
+                } else {
+                    Color32::from_rgb(0x1D, 0x22, 0x2B)
+                },
+            );
+            painter.circle_stroke(
+                center,
+                btn_r,
+                Stroke::new(
+                    1.0_f32,
+                    if btn_hovered || is_popup_open {
+                        LOXONE_GREEN
+                    } else {
+                        BORDER_SUBTLE
+                    },
+                ),
+            );
+            painter.text(
+                center,
+                Align2::CENTER_CENTER,
+                symbol,
+                FontId::proportional((9.5 * viewport.zoom).clamp(7.5, 13.5)),
+                TEXT_PRIMARY,
+            );
+            if clicked
+                && !clicked_any_pin_or_wire
+                && pointer_pos.is_some_and(|p| btn_rect.contains(p))
+            {
+                clicked_any_block = true;
+                clicked_any_pin_or_wire = true;
+                viewport.interaction.selected_blocks = vec![block.uuid.clone()];
+                match kind {
+                    0 => {
+                        opened_pin_values_popup_this_frame = true;
+                        viewport.interaction.show_pin_values_popup = Some(ShowPinValuesPopupState {
+                            screen_pos: Pos2::new(plus_center.x, header_rect.max.y + 4.0),
+                            block_uuid: block.uuid.clone(),
+                            side: Some(PinSide::Output),
+                        });
+                        action = Some(CanvasAction::SelectObject(block.uuid.clone()));
+                    }
+                    1 => {
+                        action = Some(CanvasAction::OpenObjectConfig(block.uuid.clone()));
+                    }
+                    _ => {
+                        action = Some(CanvasAction::SelectObject(block.uuid.clone()));
+                    }
+                }
+            }
+        }
+
         let block_icon = crate::icons::icon_for_block_type(&block.block_type, None);
-        let icon_sz = (16.0 * viewport.zoom).clamp(12.0, 23.0);
+        let icon_sz = (15.0 * viewport.zoom).clamp(11.5, 22.0);
         let icon_rect = Rect::from_center_size(
             Pos2::new(
                 header_rect.min.x + strip_w + 5.0 * viewport.zoom + icon_sz * 0.5,
@@ -2147,21 +2481,102 @@ pub fn render_page_canvas(
         } else {
             &block.title
         };
-        let title_max_chars = ((header_rect.max.x - title_left - 8.0 * viewport.zoom)
-            / (7.2 * viewport.zoom).max(4.5))
-        .max(8.0) as usize;
+        let title_max_chars = (((buttons_left - title_left).max(24.0))
+            / (7.0 * viewport.zoom).max(4.5))
+        .max(6.0) as usize;
         let title = truncate_text(raw_title, title_max_chars);
-        let header_clip = painter.with_clip_rect(header_rect.shrink(2.0));
+        let header_clip = painter.with_clip_rect(Rect::from_min_max(
+            header_rect.min,
+            Pos2::new(buttons_left.max(title_left + 12.0), header_rect.max.y),
+        ));
         crate::icons::paint_icon(&header_clip, icon_rect, block_icon);
         header_clip.text(
             Pos2::new(title_left, header_rect.center().y),
             Align2::LEFT_CENTER,
             title,
-            FontId::proportional((13.5 * viewport.zoom).clamp(10.5, 20.0)),
+            FontId::proportional((13.0 * viewport.zoom).clamp(10.0, 19.0)),
             TEXT_PRIMARY,
         );
 
-        let body_top = header_rect.max.y + (6.0 * viewport.zoom).max(4.0);
+        // Subtitle strip below header ("Sterownik ogrzewania i chłodzenia", "Kalkulator temperatury przepływu", etc.)
+        if subtitle_rect.height() >= 6.0 {
+            painter.rect_filled(
+                subtitle_rect,
+                CornerRadius::ZERO,
+                Color32::from_rgb(0x20, 0x24, 0x2D),
+            );
+            painter.line_segment(
+                [
+                    Pos2::new(rect.min.x, subtitle_rect.max.y),
+                    Pos2::new(rect.max.x, subtitle_rect.max.y),
+                ],
+                Stroke::new(1.0_f32, CARD_BORDER),
+            );
+            let sub_text = block_type_subtitle_label(&block.block_type);
+            let sub_max_chars =
+                ((subtitle_rect.width() - 12.0 * viewport.zoom) / (5.8 * viewport.zoom).max(4.0))
+                    .max(8.0) as usize;
+            let sub_clip = painter.with_clip_rect(subtitle_rect.shrink(1.0));
+            sub_clip.text(
+                subtitle_rect.center(),
+                Align2::CENTER_CENTER,
+                truncate_text(&sub_text, sub_max_chars),
+                FontId::proportional((10.0 * viewport.zoom).clamp(8.0, 13.5)),
+                Color32::from_rgb(0xA4, 0xB0, 0xC2),
+            );
+        }
+
+        // Center body watermark: Room & Category ("Funkcje centralne / Klimat", "Gabinet / Klimat")
+        let room_name = block
+            .room_uuid
+            .as_deref()
+            .and_then(|u| project.places.get(u))
+            .map(|p| p.title.as_str());
+        let cat_name = block
+            .category_uuid
+            .as_deref()
+            .and_then(|u| project.categories.get(u))
+            .map(|c| c.title.as_str());
+        let body_bottom = rect.max.y - layout.footer_h;
+        if (room_name.is_some() || cat_name.is_some()) && body_bottom > subtitle_rect.max.y + 24.0
+        {
+            let center_rect = Rect::from_min_max(
+                Pos2::new(rect.min.x + 28.0 * viewport.zoom, subtitle_rect.max.y + 4.0),
+                Pos2::new(rect.max.x - 28.0 * viewport.zoom, body_bottom - 4.0),
+            );
+            if center_rect.is_positive() {
+                let wm_clip = painter.with_clip_rect(center_rect);
+                let wm_font = FontId::proportional((10.0 * viewport.zoom).clamp(8.0, 13.5));
+                let wm_color = Color32::from_rgb(0x82, 0x8D, 0x9F);
+                let mid = center_rect.center();
+                match (room_name, cat_name) {
+                    (Some(r), Some(c)) => {
+                        let line_step = (6.5 * viewport.zoom).clamp(5.0, 9.5);
+                        wm_clip.text(
+                            Pos2::new(mid.x, mid.y - line_step),
+                            Align2::CENTER_CENTER,
+                            r,
+                            wm_font.clone(),
+                            wm_color,
+                        );
+                        wm_clip.text(
+                            Pos2::new(mid.x, mid.y + line_step),
+                            Align2::CENTER_CENTER,
+                            c,
+                            wm_font,
+                            wm_color,
+                        );
+                    }
+                    (Some(single), None) | (None, Some(single)) => {
+                        wm_clip.text(mid, Align2::CENTER_CENTER, single, wm_font, wm_color);
+                    }
+                    (None, None) => {}
+                }
+            }
+        }
+
+        let body_pad = (5.0 * viewport.zoom).max(3.0);
+        let body_top = header_rect.max.y + layout.subtitle_h + body_pad;
         let row_h = layout.row_h;
         let has_both_sides = !layout.inputs.is_empty() && !layout.outputs.is_empty();
         let avail_label_w = if has_both_sides {
@@ -2172,6 +2587,9 @@ pub fn render_page_canvas(
         let pin_max_chars =
             (avail_label_w / (6.4 * viewport.zoom).max(4.0)).max(5.0) as usize;
         let pin_font = FontId::monospace((11.5 * viewport.zoom).clamp(9.0, 16.5));
+        let is_climate_block =
+            loxone_core::ClimateControllerConfig::is_climate_controller_block(&block.block_type);
+        let block_custom_overrides = viewport.interaction.custom_pin_visibility.get(&block.uuid);
 
         for (i, pin) in layout.inputs.iter().enumerate() {
             let py = body_top + (i as f32 + 0.5) * row_h;
@@ -2198,6 +2616,28 @@ pub fn render_page_canvas(
                         ));
                     }
                 }
+            } else if let Some(cp) = block.pins.iter().find(|p| p.key == pin.key) {
+                let explicitly_shown = block_custom_overrides
+                    .and_then(|m| m.get(&pin.key))
+                    .copied()
+                    == Some(true);
+                if explicitly_shown || is_climate_block {
+                    let val_str = loxone_core::miniserver::loxone_pin_default_display_value(
+                        &block.block_type,
+                        &pin.key,
+                        cp.default_value.as_deref(),
+                        false,
+                    );
+                    if !val_str.is_empty() {
+                        pin_active = val_str == "Wł.";
+                        live_wire_labels.push((
+                            Pos2::new(anchor.x - 7.5 * viewport.zoom, anchor.y),
+                            Align2::RIGHT_CENTER,
+                            val_str,
+                            pin_active,
+                        ));
+                    }
+                }
             }
             let dot_color = if is_hovered {
                 ACCENT_BLUE
@@ -2208,11 +2648,8 @@ pub fn render_page_canvas(
             };
             painter.circle_filled(anchor, r, dot_color);
             painter.circle_stroke(anchor, r, Stroke::new(1.2_f32, CANVAS_BG));
-            let display_key = if live_store.is_some() {
-                loxone_core::miniserver::loxone_short_pin_label(&block.block_type, &pin.key)
-            } else {
-                pin.key.as_str()
-            };
+            let display_key =
+                loxone_core::miniserver::loxone_short_pin_label(&block.block_type, &pin.key);
             painter.text(
                 Pos2::new(rect.min.x + 8.5 * viewport.zoom, py),
                 Align2::LEFT_CENTER,
@@ -2248,6 +2685,38 @@ pub fn render_page_canvas(
                         ));
                     }
                 }
+            } else if !connected_source_pins.contains(&pin.uuid) {
+                let explicitly_shown = block_custom_overrides
+                    .and_then(|m| m.get(&pin.key))
+                    .copied()
+                    == Some(true);
+                if explicitly_shown
+                    || matches!(
+                        block.block_type.as_str(),
+                        "HVACController" | "ClimateControllerUS" | "ClimateController"
+                    )
+                {
+                    let def_opt = block
+                        .pins
+                        .iter()
+                        .find(|p| p.key == pin.key)
+                        .and_then(|p| p.default_value.as_deref());
+                    let val_str = loxone_core::miniserver::loxone_pin_default_display_value(
+                        &block.block_type,
+                        &pin.key,
+                        def_opt,
+                        true,
+                    );
+                    if !val_str.is_empty() {
+                        pin_active = val_str == "Wł.";
+                        live_wire_labels.push((
+                            Pos2::new(anchor.x + 7.5 * viewport.zoom, anchor.y),
+                            Align2::LEFT_CENTER,
+                            val_str,
+                            pin_active,
+                        ));
+                    }
+                }
             }
             let dot_color = if is_hovered {
                 ACCENT_BLUE
@@ -2258,11 +2727,8 @@ pub fn render_page_canvas(
             };
             painter.circle_filled(anchor, r, dot_color);
             painter.circle_stroke(anchor, r, Stroke::new(1.2_f32, CANVAS_BG));
-            let display_key = if live_store.is_some() {
-                loxone_core::miniserver::loxone_short_pin_label(&block.block_type, &pin.key)
-            } else {
-                pin.key.as_str()
-            };
+            let display_key =
+                loxone_core::miniserver::loxone_short_pin_label(&block.block_type, &pin.key);
             painter.text(
                 Pos2::new(rect.max.x - 8.5 * viewport.zoom, py),
                 Align2::RIGHT_CENTER,
@@ -2270,6 +2736,310 @@ pub fn render_page_canvas(
                 pin_font.clone(),
                 if is_hovered { TEXT_PRIMARY } else { pin_label_color },
             );
+        }
+
+        // Bottom-left and bottom-right green circular (+) buttons to toggle pin visibility / values
+        let plus_y = body_bottom - (9.0 * viewport.zoom).clamp(7.0, 12.5);
+        let plus_r = (5.8 * viewport.zoom).clamp(4.5, 8.2);
+        let left_plus_center =
+            Pos2::new(rect.min.x + (11.0 * viewport.zoom).clamp(8.0, 15.0), plus_y);
+        let right_plus_center =
+            Pos2::new(rect.max.x - (11.0 * viewport.zoom).clamp(8.0, 15.0), plus_y);
+        for (p_center, p_side) in [
+            (left_plus_center, PinSide::Input),
+            (right_plus_center, PinSide::Output),
+        ] {
+            if p_center.y - plus_r <= subtitle_rect.max.y + 2.0 {
+                continue;
+            }
+            let p_rect = Rect::from_center_size(p_center, Vec2::splat(plus_r * 2.2));
+            let p_hovered = hover_pos.is_some_and(|hp| p_rect.contains(hp));
+            if p_hovered {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+            }
+            painter.circle_filled(
+                p_center,
+                plus_r,
+                if p_hovered {
+                    Color32::from_rgb(0x7C, 0xD8, 0x4A)
+                } else {
+                    LIVE_ACTIVE_GREEN
+                },
+            );
+            painter.text(
+                p_center,
+                Align2::CENTER_CENTER,
+                "+",
+                FontId::proportional((10.0 * viewport.zoom).clamp(8.0, 13.5)),
+                Color32::WHITE,
+            );
+            if clicked
+                && !clicked_any_pin_or_wire
+                && pointer_pos.is_some_and(|p| p_rect.contains(p))
+            {
+                clicked_any_block = true;
+                clicked_any_pin_or_wire = true;
+                opened_pin_values_popup_this_frame = true;
+                viewport.interaction.selected_blocks = vec![block.uuid.clone()];
+                viewport.interaction.show_pin_values_popup = Some(ShowPinValuesPopupState {
+                    screen_pos: Pos2::new(p_center.x, p_center.y + plus_r + 4.0),
+                    block_uuid: block.uuid.clone(),
+                    side: Some(p_side),
+                });
+                action = Some(CanvasAction::SelectObject(block.uuid.clone()));
+            }
+        }
+
+        // Bottom footer row: "Przyporządkuj obiekty... (X/Y)" + "API ⇄" + assigned objects fan-out tree
+        if let Some(summary) = &layout.assignment_summary {
+            if layout.footer_h > 0.0 {
+                let footer_rect = Rect::from_min_max(
+                    Pos2::new(rect.min.x + 1.0, rect.max.y - layout.footer_h),
+                    Pos2::new(rect.max.x - 1.0, rect.max.y - 1.0),
+                );
+                painter.line_segment(
+                    [
+                        Pos2::new(rect.min.x, footer_rect.min.y),
+                        Pos2::new(rect.max.x, footer_rect.min.y),
+                    ],
+                    Stroke::new(1.0_f32, CARD_BORDER),
+                );
+                let footer_hovered = hover_pos.is_some_and(|hp| footer_rect.contains(hp));
+                if footer_hovered {
+                    ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                }
+                let assign_label = format!(
+                    "{} ({}/{})",
+                    crate::i18n::tr("Assign objects..."),
+                    summary.assigned.len(),
+                    summary.total_candidates
+                );
+                let footer_clip = painter.with_clip_rect(footer_rect.shrink(1.0));
+                footer_clip.text(
+                    Pos2::new(
+                        footer_rect.min.x + 7.5 * viewport.zoom,
+                        footer_rect.center().y,
+                    ),
+                    Align2::LEFT_CENTER,
+                    assign_label,
+                    FontId::proportional((9.8 * viewport.zoom).clamp(7.8, 13.5)),
+                    if footer_hovered {
+                        LOXONE_GREEN
+                    } else {
+                        TEXT_PRIMARY
+                    },
+                );
+                footer_clip.text(
+                    Pos2::new(
+                        rect.max.x - 16.0 * viewport.zoom,
+                        footer_rect.center().y,
+                    ),
+                    Align2::RIGHT_CENTER,
+                    "API",
+                    pin_font.clone(),
+                    pin_label_color,
+                );
+                let api_badge_sz = Vec2::new(
+                    (13.0 * viewport.zoom).clamp(10.0, 18.0),
+                    (11.0 * viewport.zoom).clamp(8.5, 15.0),
+                );
+                let api_badge_rect = Rect::from_center_size(
+                    Pos2::new(rect.max.x - api_badge_sz.x * 0.45, footer_rect.center().y),
+                    api_badge_sz,
+                );
+                painter.rect(
+                    api_badge_rect,
+                    CornerRadius::same(2),
+                    Color32::from_rgb(0x2B, 0x31, 0x3D),
+                    Stroke::new(1.0_f32, CARD_BORDER),
+                    egui::StrokeKind::Inside,
+                );
+                let ac = api_badge_rect.center();
+                let aw = api_badge_rect.width() * 0.28;
+                let ay = api_badge_rect.height() * 0.18;
+                let arr_stroke = Stroke::new((1.1 * viewport.zoom).clamp(0.9, 1.5), TEXT_PRIMARY);
+                painter.line_segment(
+                    [Pos2::new(ac.x - aw, ac.y - ay), Pos2::new(ac.x + aw, ac.y - ay)],
+                    arr_stroke,
+                );
+                painter.line_segment(
+                    [
+                        Pos2::new(ac.x + aw - 2.0 * viewport.zoom, ac.y - ay - 1.5 * viewport.zoom),
+                        Pos2::new(ac.x + aw, ac.y - ay),
+                    ],
+                    arr_stroke,
+                );
+                painter.line_segment(
+                    [Pos2::new(ac.x + aw, ac.y + ay), Pos2::new(ac.x - aw, ac.y + ay)],
+                    arr_stroke,
+                );
+                painter.line_segment(
+                    [
+                        Pos2::new(ac.x - aw + 2.0 * viewport.zoom, ac.y + ay + 1.5 * viewport.zoom),
+                        Pos2::new(ac.x - aw, ac.y + ay),
+                    ],
+                    arr_stroke,
+                );
+
+                if clicked
+                    && !clicked_any_pin_or_wire
+                    && pointer_pos.is_some_and(|p| footer_rect.contains(p))
+                {
+                    clicked_any_block = true;
+                    clicked_any_pin_or_wire = true;
+                    viewport.interaction.selected_blocks = vec![block.uuid.clone()];
+                    action = Some(CanvasAction::OpenObjectConfig(block.uuid.clone()));
+                }
+
+                // Draw orthogonal fan-out tree from API ⇄ to assigned object pills (e.g. Irc2: Gabinet ...)
+                if !summary.assigned.is_empty() {
+                    let api_anchor = Pos2::new(rect.max.x, footer_rect.center().y);
+                    let tree_gap = (28.0 * viewport.zoom).clamp(18.0, 42.0);
+                    let trunk_x = rect.max.x + tree_gap * 0.5;
+                    let pill_left = rect.max.x + tree_gap;
+                    let pill_w = (195.0 * viewport.zoom).clamp(140.0, 265.0);
+                    let pill_h = (18.0 * viewport.zoom).clamp(13.5, 25.0);
+                    let pill_gap = (2.5 * viewport.zoom).clamp(1.5, 4.0);
+                    let stack_top = rect.min.y + 6.0 * viewport.zoom;
+                    let tree_stroke =
+                        Stroke::new((1.3 * viewport.zoom).clamp(1.0, 2.0), CARD_BORDER);
+
+                    let first_cy = stack_top + pill_h * 0.5;
+                    let last_cy = stack_top
+                        + ((summary.assigned.len().saturating_sub(1)) as f32)
+                            * (pill_h + pill_gap)
+                        + pill_h * 0.5;
+                    let trunk_min_y = first_cy.min(api_anchor.y);
+                    let trunk_max_y = last_cy.max(api_anchor.y);
+
+                    painter.line_segment(
+                        [api_anchor, Pos2::new(trunk_x, api_anchor.y)],
+                        tree_stroke,
+                    );
+                    painter.line_segment(
+                        [
+                            Pos2::new(trunk_x, trunk_min_y),
+                            Pos2::new(trunk_x, trunk_max_y),
+                        ],
+                        tree_stroke,
+                    );
+
+                    for (idx, entry) in summary.assigned.iter().enumerate() {
+                        let py_min = stack_top + (idx as f32) * (pill_h + pill_gap);
+                        let pill_rect = Rect::from_min_size(
+                            Pos2::new(pill_left, py_min),
+                            Vec2::new(pill_w, pill_h),
+                        );
+                        let p_cy = pill_rect.center().y;
+                        painter.line_segment(
+                            [Pos2::new(trunk_x, p_cy), Pos2::new(pill_left, p_cy)],
+                            tree_stroke,
+                        );
+
+                        let pill_hovered = hover_pos.is_some_and(|hp| pill_rect.contains(hp));
+                        if pill_hovered {
+                            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                        }
+                        painter.rect(
+                            pill_rect,
+                            CornerRadius::same(8),
+                            if pill_hovered {
+                                ELEVATED_BG
+                            } else {
+                                Color32::from_rgb(0x21, 0x26, 0x2D)
+                            },
+                            Stroke::new(
+                                1.0_f32,
+                                if pill_hovered {
+                                    LOXONE_GREEN
+                                } else {
+                                    CARD_BORDER
+                                },
+                            ),
+                            egui::StrokeKind::Inside,
+                        );
+
+                        // Left cap with small input-box arrow icon (matching Loxone Config pill)
+                        let cap_w = (22.0 * viewport.zoom).clamp(16.0, 30.0);
+                        painter.line_segment(
+                            [
+                                Pos2::new(pill_rect.min.x + cap_w, pill_rect.min.y + 1.0),
+                                Pos2::new(pill_rect.min.x + cap_w, pill_rect.max.y - 1.0),
+                            ],
+                            Stroke::new(1.0_f32, BORDER_SUBTLE),
+                        );
+                        let box_sz = (6.5 * viewport.zoom).clamp(4.8, 9.0);
+                        let box_c = Pos2::new(pill_rect.min.x + cap_w * 0.52, p_cy);
+                        let box_r = Rect::from_center_size(box_c, Vec2::splat(box_sz));
+                        let sym_stroke =
+                            Stroke::new((1.1 * viewport.zoom).clamp(0.9, 1.5), TEXT_MUTED);
+                        painter.rect_stroke(
+                            box_r,
+                            CornerRadius::same(1),
+                            sym_stroke,
+                            egui::StrokeKind::Inside,
+                        );
+                        painter.line_segment(
+                            [
+                                Pos2::new(box_r.min.x - 2.5 * viewport.zoom, p_cy),
+                                Pos2::new(box_c.x, p_cy),
+                            ],
+                            sym_stroke,
+                        );
+
+                        let i_r = (5.5 * viewport.zoom).clamp(4.0, 8.0);
+                        let i_center =
+                            Pos2::new(pill_rect.max.x - 5.5 * viewport.zoom - i_r, p_cy);
+                        painter.circle_filled(
+                            i_center,
+                            i_r,
+                            Color32::from_rgb(0x18, 0x1C, 0x22),
+                        );
+                        painter.circle_stroke(
+                            i_center,
+                            i_r,
+                            Stroke::new(1.0_f32, BORDER_SUBTLE),
+                        );
+                        painter.text(
+                            i_center,
+                            Align2::CENTER_CENTER,
+                            "i",
+                            FontId::proportional((8.5 * viewport.zoom).clamp(6.8, 12.0)),
+                            TEXT_PRIMARY,
+                        );
+
+                        let lbl_left = pill_rect.min.x + cap_w + 4.0 * viewport.zoom;
+                        let lbl_right = i_center.x - i_r - 5.0 * viewport.zoom;
+                        let pill_clip = painter.with_clip_rect(Rect::from_min_max(
+                            Pos2::new(lbl_left, pill_rect.min.y),
+                            Pos2::new(lbl_right.max(lbl_left + 10.0), pill_rect.max.y),
+                        ));
+                        pill_clip.text(
+                            Pos2::new(lbl_right, p_cy),
+                            Align2::RIGHT_CENTER,
+                            truncate_text(&entry.display_label, 34),
+                            FontId::proportional((10.0 * viewport.zoom).clamp(8.0, 14.0)),
+                            TEXT_PRIMARY,
+                        );
+
+                        if clicked
+                            && !clicked_any_pin_or_wire
+                            && pointer_pos.is_some_and(|p| pill_rect.contains(p))
+                        {
+                            clicked_any_block = true;
+                            clicked_any_pin_or_wire = true;
+                            if let Some(p_idx) = entry.page_index {
+                                action = Some(CanvasAction::NavigateToBlock {
+                                    page_index: p_idx,
+                                    block_uuid: entry.uuid.clone(),
+                                });
+                            } else {
+                                action = Some(CanvasAction::SelectObject(entry.uuid.clone()));
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -3221,6 +3991,257 @@ pub fn render_page_canvas(
         }
     }
 
+    // Render active "Pokaż wartości" (+) pin visibility & value popover
+    if let Some(popup) = viewport.interaction.show_pin_values_popup.clone() {
+        let mut close_pin_popup = false;
+        if let Some(block) = page.blocks.iter().find(|b| b.uuid == popup.block_uuid) {
+            let selectable =
+                collect_block_selectable_pins(block, &project.xref, popup.side);
+            let is_climate = loxone_core::ClimateControllerConfig::is_climate_controller_block(
+                &block.block_type,
+            );
+            let area_resp = egui::Area::new(egui::Id::new("canvas_show_pin_values_popup"))
+                .order(egui::Order::Foreground)
+                .fixed_pos(popup.screen_pos)
+                .show(ui.ctx(), |ui| {
+                    egui::Frame::popup(ui.style())
+                        .fill(Color32::from_rgb(0x23, 0x26, 0x2E))
+                        .stroke(Stroke::new(1.2_f32, CARD_BORDER))
+                        .corner_radius(CornerRadius::same(6))
+                        .inner_margin(egui::Margin::same(10))
+                        .show(ui, |ui| {
+                            ui.set_min_width(370.0);
+                            ui.set_max_width(480.0);
+                            ui.horizontal(|ui| {
+                                ui.label(
+                                    egui::RichText::new(crate::i18n::tr("Show values"))
+                                        .strong()
+                                        .size(13.0)
+                                        .color(TEXT_PRIMARY),
+                                );
+                                ui.with_layout(
+                                    egui::Layout::right_to_left(egui::Align::Center),
+                                    |ui| {
+                                        if ui.small_button("×").clicked() {
+                                            close_pin_popup = true;
+                                        }
+                                    },
+                                );
+                            });
+                            ui.add_space(4.0);
+
+                            let current_overrides = viewport
+                                .interaction
+                                .custom_pin_visibility
+                                .get(&block.uuid)
+                                .cloned()
+                                .unwrap_or_default();
+
+                            let is_pin_currently_checked = |p: &ConnectorPin| -> bool {
+                                if let Some(&ov) = current_overrides.get(&p.key) {
+                                    ov
+                                } else if is_pin_connected(p, &project.xref) {
+                                    true
+                                } else if is_climate {
+                                    is_default_visible_pin(&block.block_type, &p.key)
+                                } else {
+                                    !show_all_pins && !is_internal_parameter_pin(&block.block_type, p)
+                                }
+                            };
+
+                            let all_checked = !selectable.is_empty()
+                                && selectable.iter().all(|(p, _)| is_pin_currently_checked(p));
+                            let mut select_all_val = all_checked;
+                            if ui
+                                .checkbox(
+                                    &mut select_all_val,
+                                    egui::RichText::new(crate::i18n::tr("Select all"))
+                                        .strong()
+                                        .color(TEXT_PRIMARY),
+                                )
+                                .changed()
+                            {
+                                let map = viewport
+                                    .interaction
+                                    .custom_pin_visibility
+                                    .entry(block.uuid.clone())
+                                    .or_default();
+                                for (p, _) in &selectable {
+                                    map.insert(p.key.clone(), select_all_val);
+                                }
+                            }
+                            ui.separator();
+
+                            egui::ScrollArea::vertical()
+                                .max_height(320.0)
+                                .show(ui, |ui| {
+                                    for (pin, side) in &selectable {
+                                        let is_out = *side == PinSide::Output;
+                                        let short_lbl =
+                                            loxone_core::miniserver::loxone_short_pin_label(
+                                                &block.block_type,
+                                                &pin.key,
+                                            );
+                                        let meta = loxone_core::miniserver::loxone_pin_metadata(
+                                            &block.block_type,
+                                            &pin.key,
+                                            is_out,
+                                        );
+                                        let val_str = if let Some(store) = live_store {
+                                            store
+                                                .resolve_pin_signal(block, pin, page, project)
+                                                .formatted
+                                        } else {
+                                            loxone_core::miniserver::loxone_pin_default_display_value(
+                                                &block.block_type,
+                                                &pin.key,
+                                                pin.default_value.as_deref(),
+                                                is_out,
+                                            )
+                                        };
+                                        let mut checked = is_pin_currently_checked(pin);
+                                        let row_resp = ui.horizontal(|ui| {
+                                            if ui.checkbox(&mut checked, "").changed() {
+                                                viewport
+                                                    .interaction
+                                                    .custom_pin_visibility
+                                                    .entry(block.uuid.clone())
+                                                    .or_default()
+                                                    .insert(pin.key.clone(), checked);
+                                            }
+                                            let badge_color = if meta.connector_badge == "⇄" {
+                                                Color32::from_rgb(0x88, 0x94, 0xA6)
+                                            } else if meta.is_analog {
+                                                WIRE_ANALOG
+                                            } else {
+                                                LIVE_ACTIVE_GREEN
+                                            };
+                                            ui.label(
+                                                egui::RichText::new(format!(
+                                                    "[{}]",
+                                                    meta.connector_badge
+                                                ))
+                                                .monospace()
+                                                .size(11.0)
+                                                .color(badge_color),
+                                            );
+                                            ui.label(
+                                                egui::RichText::new(format!("{:<4}", short_lbl))
+                                                    .monospace()
+                                                    .strong()
+                                                    .size(11.5)
+                                                    .color(TEXT_PRIMARY),
+                                            );
+                                            if !val_str.is_empty() {
+                                                let val_col = if val_str == "Wł." {
+                                                    LIVE_ACTIVE_GREEN
+                                                } else {
+                                                    Color32::from_rgb(0xB4, 0xBF, 0xD0)
+                                                };
+                                                ui.label(
+                                                    egui::RichText::new(format!("{:<6}", val_str))
+                                                        .monospace()
+                                                        .size(11.0)
+                                                        .color(val_col),
+                                                );
+                                            }
+                                            ui.label(
+                                                egui::RichText::new(meta.full_name)
+                                                    .size(11.5)
+                                                    .color(TEXT_MUTED),
+                                            );
+                                        });
+                                        let kind_lbl = if meta.is_analog {
+                                            crate::i18n::tr("Analog")
+                                        } else {
+                                            crate::i18n::tr("Digital")
+                                        };
+                                        row_resp.response.on_hover_ui(|ui| {
+                                            ui.label(
+                                                egui::RichText::new(format!(
+                                                    "{} - {} [{}]",
+                                                    short_lbl, meta.full_name, kind_lbl
+                                                ))
+                                                .strong()
+                                                .color(TEXT_PRIMARY),
+                                            );
+                                            ui.label(
+                                                egui::RichText::new(meta.description)
+                                                    .size(11.0)
+                                                    .color(TEXT_MUTED),
+                                            );
+                                        });
+                                    }
+                                });
+                        });
+                });
+            if clicked
+                && !opened_pin_values_popup_this_frame
+                && !area_resp.response.rect.contains(pointer_pos.unwrap_or_default())
+            {
+                close_pin_popup = true;
+            }
+        } else {
+            close_pin_popup = true;
+        }
+        if close_pin_popup {
+            viewport.interaction.show_pin_values_popup = None;
+        }
+    }
+
+    // Render two-line Loxone-style tooltip when hovering a pin on the canvas
+    if let Some((b_uuid, p_key)) = &viewport.interaction.hovered_pin {
+        if let Some(block) = page.blocks.iter().find(|b| &b.uuid == b_uuid) {
+            if !block.is_ref_bar() {
+                let is_out = block
+                    .pins
+                    .iter()
+                    .find(|p| &p.key == p_key)
+                    .map(|p| classify_pin_side(block, p, &project.xref) == PinSide::Output)
+                    .unwrap_or(false);
+                let short_lbl =
+                    loxone_core::miniserver::loxone_short_pin_label(&block.block_type, p_key);
+                let meta =
+                    loxone_core::miniserver::loxone_pin_metadata(&block.block_type, p_key, is_out);
+                let kind_lbl = if meta.is_analog {
+                    crate::i18n::tr("Analog")
+                } else {
+                    crate::i18n::tr("Digital")
+                };
+                if let Some(hp) = hover_pos {
+                    egui::Area::new(egui::Id::new("canvas_hovered_pin_tooltip"))
+                        .order(egui::Order::Tooltip)
+                        .fixed_pos(Pos2::new(hp.x + 14.0, hp.y + 16.0))
+                        .interactable(false)
+                        .show(ui.ctx(), |ui| {
+                            egui::Frame::popup(ui.style())
+                                .fill(Color32::from_rgb(0x1E, 0x22, 0x2A))
+                                .stroke(Stroke::new(1.0_f32, CARD_BORDER))
+                                .corner_radius(CornerRadius::same(5))
+                                .inner_margin(egui::Margin::same(8))
+                                .show(ui, |ui| {
+                                    ui.set_max_width(340.0);
+                                    ui.label(
+                                        egui::RichText::new(format!(
+                                            "{} - {} [{}]",
+                                            short_lbl, meta.full_name, kind_lbl
+                                        ))
+                                        .strong()
+                                        .size(11.5)
+                                        .color(TEXT_PRIMARY),
+                                    );
+                                    ui.label(
+                                        egui::RichText::new(meta.description)
+                                            .size(11.0)
+                                            .color(TEXT_MUTED),
+                                    );
+                                });
+                        });
+                }
+            }
+        }
+    }
+
     if (block_click || clicked) && !clicked_any_block && !clicked_any_pin_or_wire {
         viewport.interaction.last_clicked_block_uuid = None;
         viewport.interaction.selected_wire = None;
@@ -3664,5 +4685,109 @@ mod tests {
         for (_, _, new_py) in &top_moves {
             assert!((new_py - min_py).abs() < 0.01);
         }
+    }
+
+    #[test]
+    fn test_climate_blocks_compact_pins_pin_values_popover_and_subtitles() {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../Sample.Loxone");
+        let project = load_loxone_file(&path).expect("Sample.Loxone should parse");
+        let page = project
+            .pages
+            .iter()
+            .find(|p| p.title == "Funkcje centralne Ogrzewanie")
+            .expect("Funkcje centralne Ogrzewanie page should exist");
+
+        let hvac = page
+            .blocks
+            .iter()
+            .find(|b| b.block_type == "HVACController")
+            .expect("HVACController should exist");
+        let heatmixer = page
+            .blocks
+            .iter()
+            .find(|b| b.block_type == "Heatmixer2")
+            .expect("Heatmixer2 should exist");
+        let cc_us = page
+            .blocks
+            .iter()
+            .find(|b| b.block_type == "ClimateControllerUS")
+            .expect("ClimateControllerUS should exist");
+
+        // 1. Default compact pins exclude Def="..." parameters and match Loxone Config layout
+        let (hvac_in, hvac_out) =
+            collect_block_display_pins_with_overrides(hvac, &project.xref, false, None);
+        let hvac_in_keys: Vec<&str> = hvac_in.iter().map(|p| p.key.as_str()).collect();
+        let hvac_out_keys: Vec<&str> = hvac_out.iter().map(|p| p.key.as_str()).collect();
+        assert_eq!(
+            hvac_in_keys,
+            vec!["Temp", "Stop", "CoolAvailable", "HeatAvailable", "Mode"]
+        );
+        assert_eq!(hvac_out_keys, vec!["OutHeat1", "OutCool1", "OutFan"]);
+
+        let (hm_in, hm_out) =
+            collect_block_display_pins_with_overrides(heatmixer, &project.xref, false, None);
+        let hm_in_keys: Vec<&str> = hm_in.iter().map(|p| p.key.as_str()).collect();
+        let hm_out_keys: Vec<&str> = hm_out.iter().map(|p| p.key.as_str()).collect();
+        assert_eq!(hm_in_keys, vec!["Outer", "Stop"]);
+        assert_eq!(hm_out_keys, vec!["AQt", "Qp"]);
+
+        let (cc_in, cc_out) =
+            collect_block_display_pins_with_overrides(cc_us, &project.xref, false, None);
+        let cc_in_keys: Vec<&str> = cc_in.iter().map(|p| p.key.as_str()).collect();
+        let cc_out_keys: Vec<&str> = cc_out.iter().map(|p| p.key.as_str()).collect();
+        assert_eq!(
+            cc_in_keys,
+            vec!["Temp", "Stop", "CoolAvailable", "HeatAvailable", "Mode"]
+        );
+        assert_eq!(
+            cc_out_keys,
+            vec!["OutHeat1", "OutCompressor", "OutFan", "OutHeat2", "OutHumid"]
+        );
+
+        // 2. Toggling extra pins via custom overrides (as in "Pokaż wartości" popover) shows them
+        let mut overrides = std::collections::HashMap::new();
+        overrides.insert("OutHeat2".to_string(), true);
+        overrides.insert("OutAverageTemp".to_string(), true);
+        let (_, hvac_out_custom) = collect_block_display_pins_with_overrides(
+            hvac,
+            &project.xref,
+            false,
+            Some(&overrides),
+        );
+        let custom_keys: Vec<&str> = hvac_out_custom.iter().map(|p| p.key.as_str()).collect();
+        assert!(custom_keys.contains(&"OutHeat2"));
+        assert!(custom_keys.contains(&"OutAverageTemp"));
+
+        // 3. Subtitles match Loxone Config
+        crate::i18n::set_language(crate::i18n::Language::Pl);
+        assert_eq!(
+            block_type_subtitle_label("HVACController"),
+            "Sterownik ogrzewania i chłodzenia"
+        );
+        assert_eq!(
+            block_type_subtitle_label("Heatmixer2"),
+            "Kalkulator temperatury przepływu"
+        );
+
+        // 4. Headless render of Funkcje centralne Ogrzewanie with "Pokaż wartości" popover and pin tooltip
+        let page_idx = project
+            .pages
+            .iter()
+            .position(|p| p.title == "Funkcje centralne Ogrzewanie")
+            .unwrap();
+        let mut vp = CanvasViewport::default();
+        vp.fit_to_page(page, Vec2::new(1400.0, 900.0));
+        vp.interaction.show_pin_values_popup = Some(ShowPinValuesPopupState {
+            screen_pos: Pos2::new(320.0, 220.0),
+            block_uuid: hvac.uuid.clone(),
+            side: Some(PinSide::Output),
+        });
+        vp.interaction.hovered_pin = Some((hvac.uuid.clone(), "OutError".to_string()));
+        let ctx = egui::Context::default();
+        let _ = ctx.run(egui::RawInput::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                let _ = render_page_canvas(ui, &project, page_idx, &mut vp, None, None);
+            });
+        });
     }
 }

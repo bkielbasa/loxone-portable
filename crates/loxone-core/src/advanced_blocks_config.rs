@@ -446,8 +446,161 @@ impl AudioZoneConfig {
 }
 
 // ============================================================================
-// 3. CLIMATE CONTROLLER (`Heatmixer2`, `ClimateControllerUS`, `ClimateController`)
+// 3. CLIMATE CONTROLLER (`HVACController`, `Heatmixer2`, `ClimateControllerUS`, `ClimateController`)
 // ============================================================================
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AssignedObjectEntry {
+    pub uuid: String,
+    pub badge_prefix: String,
+    pub title: String,
+    pub display_label: String,
+    pub page_index: Option<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BlockObjectAssignmentSummary {
+    pub assigned: Vec<AssignedObjectEntry>,
+    pub total_candidates: usize,
+}
+
+fn polish_sort_key(s: &str) -> String {
+    s.chars()
+        .map(|c| match c {
+            'ą' | 'Ą' => 'a',
+            'ć' | 'Ć' => 'c',
+            'ę' | 'Ę' => 'e',
+            'ł' | 'Ł' => 'l',
+            'ń' | 'Ń' => 'n',
+            'ó' | 'Ó' => 'o',
+            'ś' | 'Ś' => 's',
+            'ź' | 'Ź' | 'ż' | 'Ż' => 'z',
+            other => other.to_ascii_lowercase(),
+        })
+        .collect()
+}
+
+fn short_assigned_object_prefix(block_type: &str) -> &'static str {
+    match block_type {
+        "HeatIRoomController2" => "Irc2",
+        "HeatIRoomController" => "Irc",
+        "LightController2" | "LightController" => "Lico",
+        "Jalousie" | "AutoJalousie" | "RoofWindowShading" => "Shd",
+        "MusicPlayer" | "AudioZone" => "Aud",
+        "Gate" | "Door" => "Gate",
+        _ => "Obj",
+    }
+}
+
+/// Resolves the assigned objects and total candidate count for blocks that display
+/// `Przyporządkuj obiekty... (X/Y)` and the `API ⇄` fan-out tree on the canvas.
+pub fn collect_block_assigned_objects(
+    block: &PageBlock,
+    project: &LoxoneProject,
+) -> Option<BlockObjectAssignmentSummary> {
+    if ClimateControllerConfig::is_climate_controller_block(&block.block_type) {
+        let candidates = collect_irc_candidates(project);
+        let total_candidates = candidates.len();
+        let cfg = ClimateControllerConfig::from_block_with_project(block, Some(project));
+        let mut assigned = Vec::new();
+        for uuid in &cfg.assigned_irc_uuids {
+            if let Some((page_idx, irc_block)) =
+                project.pages.iter().enumerate().find_map(|(idx, p)| {
+                    p.blocks
+                        .iter()
+                        .find(|b| &b.uuid == uuid)
+                        .map(|b| (idx, b))
+                })
+            {
+                let prefix = short_assigned_object_prefix(&irc_block.block_type).to_string();
+                let title = if !irc_block.title.trim().is_empty() {
+                    irc_block.title.clone()
+                } else {
+                    irc_block
+                        .room_uuid
+                        .as_deref()
+                        .and_then(|u| project.places.get(u))
+                        .map(|r| r.title.clone())
+                        .unwrap_or_else(|| irc_block.block_type.clone())
+                };
+                let display_label = format!("{prefix}: {title}");
+                assigned.push(AssignedObjectEntry {
+                    uuid: irc_block.uuid.clone(),
+                    badge_prefix: prefix,
+                    title,
+                    display_label,
+                    page_index: Some(page_idx),
+                });
+            }
+        }
+        assigned.sort_by(|a, b| polish_sort_key(&a.title).cmp(&polish_sort_key(&b.title)));
+        return Some(BlockObjectAssignmentSummary {
+            assigned,
+            total_candidates,
+        });
+    }
+
+    if CentralBlockConfig::is_central_block(&block.block_type) {
+        let candidates = collect_central_candidates(project, &block.block_type);
+        let total_candidates = candidates.len();
+        let cfg = CentralBlockConfig::from_block(block);
+        let mut assigned = Vec::new();
+        for uuid in &cfg.selected_uuids {
+            if let Some((page_idx, target_block)) =
+                project.pages.iter().enumerate().find_map(|(idx, p)| {
+                    p.blocks
+                        .iter()
+                        .find(|b| &b.uuid == uuid)
+                        .map(|b| (idx, b))
+                })
+            {
+                let prefix = short_assigned_object_prefix(&target_block.block_type).to_string();
+                let title = if !target_block.title.trim().is_empty() {
+                    target_block.title.clone()
+                } else {
+                    target_block.block_type.clone()
+                };
+                let display_label = format!("{prefix}: {title}");
+                assigned.push(AssignedObjectEntry {
+                    uuid: target_block.uuid.clone(),
+                    badge_prefix: prefix,
+                    title,
+                    display_label,
+                    page_index: Some(page_idx),
+                });
+            }
+        }
+        return Some(BlockObjectAssignmentSummary {
+            assigned,
+            total_candidates,
+        });
+    }
+
+    if AudioZoneConfig::is_audio_zone_block(&block.block_type) {
+        let candidates = collect_audio_out_channels(project);
+        let total_candidates = candidates.len();
+        let cfg = AudioZoneConfig::from_block(block, project);
+        let mut assigned = Vec::new();
+        for uuid in &cfg.assigned_channel_uuids {
+            if let Some(ch) = candidates.iter().find(|c| &c.uuid == uuid) {
+                let display_label = format!("Aud: {}", ch.title);
+                assigned.push(AssignedObjectEntry {
+                    uuid: ch.uuid.clone(),
+                    badge_prefix: "Aud".to_string(),
+                    title: ch.title.clone(),
+                    display_label,
+                    page_index: None,
+                });
+            }
+        }
+        return Some(BlockObjectAssignmentSummary {
+            assigned,
+            total_candidates,
+        });
+    }
+
+    None
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IrcCandidate {
@@ -485,6 +638,7 @@ pub fn collect_irc_candidates(project: &LoxoneProject) -> Vec<IrcCandidate> {
             }
         }
     }
+    out.sort_by(|a, b| polish_sort_key(&a.title).cmp(&polish_sort_key(&b.title)));
     out
 }
 
@@ -518,11 +672,15 @@ impl ClimateControllerConfig {
     pub fn is_climate_controller_block(block_type: &str) -> bool {
         matches!(
             block_type,
-            "Heatmixer2" | "ClimateControllerUS" | "ClimateController"
+            "HVACController" | "Heatmixer2" | "ClimateControllerUS" | "ClimateController"
         )
     }
 
     pub fn from_block(block: &PageBlock) -> Self {
+        Self::from_block_with_project(block, None)
+    }
+
+    pub fn from_block_with_project(block: &PageBlock, project: Option<&LoxoneProject>) -> Self {
         let is_heatmixer = block.block_type == "Heatmixer2";
         let controller_mode = find_attr(&block.raw_attributes, "ControllerMode")
             .and_then(|v| v.parse::<u32>().ok())
@@ -531,13 +689,34 @@ impl ClimateControllerConfig {
             .and_then(|v| v.parse::<u32>().ok())
             .unwrap_or(2);
         let use_hvac = find_attr(&block.raw_attributes, "UseHVAc") == Some("1");
-        let assigned_irc_uuids = find_attr(&block.raw_attributes, "Irr")
+        let mut assigned_irc_uuids: Vec<String> = find_attr(&block.raw_attributes, "Irr")
             .unwrap_or_default()
             .split(',')
             .map(str::trim)
             .filter(|s| !s.is_empty())
             .map(str::to_string)
             .collect();
+        if let Some(proj) = project {
+            for page in &proj.pages {
+                for cand in &page.blocks {
+                    if matches!(
+                        cand.block_type.as_str(),
+                        "HeatIRoomController2" | "HeatIRoomController"
+                    ) {
+                        if let Some(objs) = find_attr(&cand.raw_attributes, "Objects") {
+                            if objs
+                                .split(',')
+                                .map(str::trim)
+                                .any(|u| u == block.uuid.as_str())
+                                && !assigned_irc_uuids.contains(&cand.uuid)
+                            {
+                                assigned_irc_uuids.push(cand.uuid.clone());
+                            }
+                        }
+                    }
+                }
+            }
+        }
         let capabilities = find_attr(&block.raw_attributes, "cCap")
             .and_then(|v| v.parse::<u32>().ok())
             .unwrap_or(3);
@@ -583,7 +762,16 @@ impl ClimateControllerConfig {
         }
     }
 
-    pub fn to_project_edit(&self, _page_uuid: &str, block_uuid: &str) -> ProjectEdit {
+    pub fn to_project_edit(&self, page_uuid: &str, block_uuid: &str) -> ProjectEdit {
+        self.to_project_edit_with_project(page_uuid, block_uuid, None)
+    }
+
+    pub fn to_project_edit_with_project(
+        &self,
+        _page_uuid: &str,
+        block_uuid: &str,
+        project: Option<&LoxoneProject>,
+    ) -> ProjectEdit {
         let mut edits = Vec::new();
         if self.is_heatmixer {
             let irr_str = self.assigned_irc_uuids.join(",");
@@ -645,6 +833,43 @@ impl ClimateControllerConfig {
                 },
             ]);
         } else {
+            if let Some(proj) = project {
+                for page in &proj.pages {
+                    for cand in &page.blocks {
+                        if matches!(
+                            cand.block_type.as_str(),
+                            "HeatIRoomController2" | "HeatIRoomController"
+                        ) {
+                            let mut current_objs: Vec<String> =
+                                find_attr(&cand.raw_attributes, "Objects")
+                                    .unwrap_or_default()
+                                    .split(',')
+                                    .map(str::trim)
+                                    .filter(|s| !s.is_empty())
+                                    .map(str::to_string)
+                                    .collect();
+                            let want = self.is_irc_assigned(&cand.uuid);
+                            let has = current_objs.iter().any(|u| u == block_uuid);
+                            if want && !has {
+                                current_objs.push(block_uuid.to_string());
+                                edits.push(ProjectEdit::SetControlAttr {
+                                    control_uuid: cand.uuid.clone(),
+                                    attr_name: "Objects".to_string(),
+                                    value: Some(current_objs.join(",")),
+                                });
+                            } else if !want && has {
+                                current_objs.retain(|u| u != block_uuid);
+                                edits.push(ProjectEdit::SetControlAttr {
+                                    control_uuid: cand.uuid.clone(),
+                                    attr_name: "Objects".to_string(),
+                                    value: (!current_objs.is_empty())
+                                        .then(|| current_objs.join(",")),
+                                });
+                            }
+                        }
+                    }
+                }
+            }
             edits.extend([
                 ProjectEdit::SetControlAttr {
                     control_uuid: block_uuid.to_string(),
@@ -980,5 +1205,106 @@ mod tests {
         assert_eq!(seq_cfg.steps.len(), 2);
         seq_cfg.add_step();
         assert_eq!(seq_cfg.steps.len(), 3);
+    }
+
+    #[test]
+    fn test_hvac_and_climate_controllers_resolve_assigned_irc2_objects_and_short_labels() {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../Sample.Loxone");
+        let proj = load_loxone_file(&path).expect("load Sample.Loxone");
+
+        // HVACController ("Sterownik klimatu"), Heatmixer2 ("Inteligentny sterownik temperatury"),
+        // and ClimateControllerUS ("HVAC Controller") on "Funkcje centralne Ogrzewanie"
+        for uuid in [
+            "19eb19aa-03bc-4048-ffff51535bcccc04",
+            "19eb19ab-001b-406d-ffff51535bcccc04",
+            "19f5278e-0184-ed04-ffff51535bcccc04",
+        ] {
+            let block = proj
+                .pages
+                .iter()
+                .flat_map(|p| &p.blocks)
+                .find(|b| b.uuid == uuid)
+                .expect("climate block should exist");
+            assert!(
+                ClimateControllerConfig::is_climate_controller_block(&block.block_type),
+                "{} should be recognized as climate controller block",
+                block.block_type
+            );
+            let summary = collect_block_assigned_objects(block, &proj)
+                .expect("climate block should have object assignment summary");
+            assert_eq!(summary.assigned.len(), 7);
+            assert_eq!(summary.total_candidates, 7);
+            assert_eq!(summary.assigned[0].display_label, "Irc2: Gabinet");
+            assert_eq!(summary.assigned[6].display_label, "Irc2: Wiatrołap");
+        }
+
+        assert_eq!(
+            crate::miniserver::loxone_short_pin_label("HVACController", "Temp"),
+            "ϑo"
+        );
+        assert_eq!(
+            crate::miniserver::loxone_short_pin_label("HVACController", "Stop"),
+            "Off"
+        );
+        assert_eq!(
+            crate::miniserver::loxone_short_pin_label("HVACController", "CoolAvailable"),
+            "Ec"
+        );
+        assert_eq!(
+            crate::miniserver::loxone_short_pin_label("HVACController", "HeatAvailable"),
+            "Eh"
+        );
+        assert_eq!(
+            crate::miniserver::loxone_short_pin_label("HVACController", "OutHeat1"),
+            "H"
+        );
+        assert_eq!(
+            crate::miniserver::loxone_short_pin_label("HVACController", "OutHeat2"),
+            "H2"
+        );
+        assert_eq!(
+            crate::miniserver::loxone_short_pin_label("HVACController", "OutCool1"),
+            "C"
+        );
+        assert_eq!(
+            crate::miniserver::loxone_short_pin_label("HVACController", "OutCool2"),
+            "C2"
+        );
+        assert_eq!(
+            crate::miniserver::loxone_short_pin_label("HVACController", "OutSecHeat"),
+            "Ah"
+        );
+        assert_eq!(
+            crate::miniserver::loxone_short_pin_label("HVACController", "OutValve"),
+            "Sv"
+        );
+        assert_eq!(
+            crate::miniserver::loxone_short_pin_label("HVACController", "OutFan"),
+            "F"
+        );
+        assert_eq!(
+            crate::miniserver::loxone_short_pin_label("HVACController", "OutFilter"),
+            "Fc"
+        );
+        assert_eq!(
+            crate::miniserver::loxone_short_pin_label("HVACController", "OutAverageTemp"),
+            "ϑoa"
+        );
+        assert_eq!(
+            crate::miniserver::loxone_short_pin_label("HVACController", "OutputAPI"),
+            "API"
+        );
+        assert_eq!(
+            crate::miniserver::loxone_short_pin_label("ClimateControllerUS", "OutCompressor"),
+            "C"
+        );
+        assert_eq!(
+            crate::miniserver::loxone_short_pin_label("ClimateControllerUS", "OutHumid"),
+            "G"
+        );
+        assert_eq!(
+            crate::miniserver::loxone_short_pin_label("Heatmixer2", "Outer"),
+            "ϑo"
+        );
     }
 }

@@ -1213,12 +1213,94 @@ fn parse_numeric_prefix(s: &str) -> Option<f64> {
 }
 
 /// Maps Loxone XML `<Co K="...">` pin keys to the compact Loxone Config schematic symbol
-/// shown in `live.png` (e.g., `Temp` -> `ϑc`, `InHumid` -> `H`, `Brightness` -> `Br`,
-/// `Presence` -> `P`, `Move` -> `M`, `Sel1`/`Gesture` -> `T5`, `OutputAPI` -> `SMA`,
-/// `Stop` -> `Dwc`, `Reset` -> `R`, `H1` -> `V1`, `H2` -> `V2`, `Dem` -> `H`, `Cool` -> `C`).
+/// shown in `live.png` and `sterownik ogrzewanai i chłodzenia.png`.
 pub fn loxone_short_pin_label<'a>(block_type: &str, pin_key: &'a str) -> &'a str {
     match (block_type, pin_key) {
+        (
+            "HVACController" | "ClimateControllerUS" | "ClimateController",
+            "Temp" | "Outer",
+        ) => "ϑo",
+        (
+            "HVACController" | "ClimateControllerUS" | "ClimateController" | "Heatmixer2",
+            "Stop",
+        ) => "Off",
+        (
+            "HVACController" | "ClimateControllerUS" | "ClimateController",
+            "CoolAvailable",
+        ) => "Ec",
+        (
+            "HVACController" | "ClimateControllerUS" | "ClimateController",
+            "HeatAvailable",
+        ) => "Eh",
+        (
+            "HVACController" | "ClimateControllerUS" | "ClimateController",
+            "OutHeat1",
+        ) => "H",
+        (
+            "HVACController" | "ClimateControllerUS" | "ClimateController",
+            "OutHeat2",
+        ) => "H2",
+        (
+            "HVACController" | "ClimateControllerUS" | "ClimateController",
+            "OutCool1" | "OutCompressor",
+        ) => "C",
+        (
+            "HVACController" | "ClimateControllerUS" | "ClimateController",
+            "OutCool2",
+        ) => "C2",
+        (
+            "HVACController" | "ClimateControllerUS" | "ClimateController",
+            "OutSecHeat" | "OutEmergency",
+        ) => "Ah",
+        (
+            "HVACController" | "ClimateControllerUS" | "ClimateController",
+            "OutValve",
+        ) => "Sv",
+        (
+            "HVACController" | "ClimateControllerUS" | "ClimateController",
+            "OutFan",
+        ) => "F",
+        (
+            "HVACController" | "ClimateControllerUS" | "ClimateController",
+            "OutFilter",
+        ) => "Fc",
+        (
+            "HVACController" | "ClimateControllerUS" | "ClimateController",
+            "OutAverageTemp",
+        ) => "ϑoa",
+        (
+            "HVACController" | "ClimateControllerUS" | "ClimateController",
+            "OutHumid",
+        ) => "G",
+        (
+            "HVACController" | "ClimateControllerUS" | "ClimateController",
+            "OutError",
+        ) => "Err",
+        (
+            "HVACController"
+            | "ClimateControllerUS"
+            | "ClimateController"
+            | "Heatmixer2"
+            | "CentralLight"
+            | "CentralShade"
+            | "CentralMusic"
+            | "CentralGate"
+            | "AudioZone"
+            | "MusicPlayer",
+            "OutputAPI",
+        ) => "API",
+        ("Heatmixer2", "Outer" | "Temp") => "ϑo",
+        ("Heatmixer2", "AQt") => "ϑt",
+        ("Heatmixer2", "Qp") => "P",
+        ("Heatmixer2", "TxQr") => "ϑr",
+        ("Heatmixer2", "AQf") => "Mf",
+        ("Heatmixer2", "AQb") => "Mb",
+        ("Heatmixer2", "AQr") => "Mr",
+        ("Heatmixer2", "AQl") => "Ml",
+        ("Heatmixer2", "AQi") => "Mi",
+        ("Heatmixer2", "Qe") => "Err",
         (_, "Temp") => "ϑc",
+        (_, "TempO") | (_, "Outer") => "ϑo",
         (_, "InHumid") | (_, "Humid") => "H",
         (_, "Brightness") => "Br",
         (_, "Presence") => "P",
@@ -1235,6 +1317,283 @@ pub fn loxone_short_pin_label<'a>(block_type: &str, pin_key: &'a str) -> &'a str
         ("HeatIRoomController2", "AQh") | ("HeatIRoomController2", "H1") => "V1",
         ("HeatIRoomController2", "AQc") | ("HeatIRoomController2", "H2") => "V2",
         _ => pin_key,
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LoxonePinMetadata {
+    pub connector_badge: &'static str,
+    pub is_analog: bool,
+    pub full_name: &'static str,
+    pub description: &'static str,
+}
+
+pub fn loxone_pin_metadata(
+    block_type: &str,
+    pin_key: &str,
+    is_output: bool,
+) -> LoxonePinMetadata {
+    if pin_key == "OutputAPI" {
+        return LoxonePinMetadata {
+            connector_badge: "⇄",
+            is_analog: false,
+            full_name: "API Connector",
+            description: "Złącze systemowe API do powiązanych obiektów i rozszerzeń.",
+        };
+    }
+
+    match (block_type, pin_key) {
+        (
+            "HVACController" | "ClimateControllerUS" | "ClimateController" | "Heatmixer2",
+            "Temp" | "Outer",
+        ) => LoxonePinMetadata {
+            connector_badge: "AI",
+            is_analog: true,
+            full_name: "Temperatura zewnętrzna",
+            description: "Aktualna temperatura zewnętrzna (w °C).",
+        },
+        ("HVACController" | "ClimateControllerUS" | "ClimateController", "TempAvg") => {
+            LoxonePinMetadata {
+                connector_badge: "AI",
+                is_analog: true,
+                full_name: "Średnia temperatura zewnętrzna",
+                description: "Średnia temperatura zewnętrzna do blokady granic grzania/chłodzenia.",
+            }
+        }
+        (
+            "HVACController" | "ClimateControllerUS" | "ClimateController" | "Heatmixer2",
+            "Boost",
+        ) => LoxonePinMetadata {
+            connector_badge: "I",
+            is_analog: false,
+            full_name: "Boost",
+            description: "Aktywuje tryb szybkiego nagrzewania / chłodzenia.",
+        },
+        (
+            "HVACController" | "ClimateControllerUS" | "ClimateController" | "Heatmixer2",
+            "Stop",
+        ) => LoxonePinMetadata {
+            connector_badge: "I",
+            is_analog: false,
+            full_name: "Wyłączenie (Off)",
+            description: "Dezaktywuje sterownik ogrzewania i chłodzenia (np. przy alarmie technicznym).",
+        },
+        (
+            "HVACController" | "ClimateControllerUS" | "ClimateController",
+            "CoolAvailable",
+        ) => LoxonePinMetadata {
+            connector_badge: "I",
+            is_analog: false,
+            full_name: "Enable Cooling",
+            description: "Zezwala na tryb chłodzenia, gdy wejście jest aktywne.",
+        },
+        (
+            "HVACController" | "ClimateControllerUS" | "ClimateController",
+            "HeatAvailable",
+        ) => LoxonePinMetadata {
+            connector_badge: "I",
+            is_analog: false,
+            full_name: "Enable Heating",
+            description: "Zezwala na tryb ogrzewania, gdy wejście jest aktywne.",
+        },
+        ("HVACController" | "ClimateControllerUS" | "ClimateController", "Mode") => {
+            LoxonePinMetadata {
+                connector_badge: "AI",
+                is_analog: true,
+                full_name: "Operating Mode",
+                description: "Wybór trybu pracy (0 = Auto, 1 = Ogrzewanie, 2 = Chłodzenie).",
+            }
+        }
+        ("HVACController" | "ClimateControllerUS" | "ClimateController", "OutHeat1") => {
+            LoxonePinMetadata {
+                connector_badge: "Q",
+                is_analog: false,
+                full_name: "Heating",
+                description: "Ogrzewanie",
+            }
+        }
+        ("HVACController" | "ClimateControllerUS" | "ClimateController", "OutHeat2") => {
+            LoxonePinMetadata {
+                connector_badge: "Q",
+                is_analog: false,
+                full_name: "Heating stage 2",
+                description: "Wyjście aktywne dla drugiego stopnia ogrzewania.",
+            }
+        }
+        (
+            "HVACController" | "ClimateControllerUS" | "ClimateController",
+            "OutCool1" | "OutCompressor",
+        ) => LoxonePinMetadata {
+            connector_badge: "Q",
+            is_analog: false,
+            full_name: "Cooling",
+            description: "Wyjście aktywne podczas zapotrzebowania na chłodzenie (stopień 1).",
+        },
+        ("HVACController" | "ClimateControllerUS" | "ClimateController", "OutCool2") => {
+            LoxonePinMetadata {
+                connector_badge: "Q",
+                is_analog: false,
+                full_name: "Cooling stage 2",
+                description: "Wyjście aktywne dla drugiego stopnia chłodzenia.",
+            }
+        }
+        (
+            "HVACController" | "ClimateControllerUS" | "ClimateController",
+            "OutSecHeat" | "OutEmergency",
+        ) => LoxonePinMetadata {
+            connector_badge: "Q",
+            is_analog: false,
+            full_name: "Auxiliary heating / heat source",
+            description: "Dodatkowe / awaryjne źródło ciepła.",
+        },
+        ("HVACController" | "ClimateControllerUS" | "ClimateController", "OutValve") => {
+            LoxonePinMetadata {
+                connector_badge: "Q",
+                is_analog: false,
+                full_name: "Switchover Valve",
+                description: "Zawór przełączający ogrzewanie / chłodzenie.",
+            }
+        }
+        ("HVACController" | "ClimateControllerUS" | "ClimateController", "OutFan") => {
+            LoxonePinMetadata {
+                connector_badge: "Q",
+                is_analog: false,
+                full_name: "Fan",
+                description: "Wyjście sterowania wentylatorem lub pompą obiegową.",
+            }
+        }
+        ("HVACController" | "ClimateControllerUS" | "ClimateController", "OutFilter") => {
+            LoxonePinMetadata {
+                connector_badge: "Q",
+                is_analog: false,
+                full_name: "Filter change",
+                description: "Sygnalizacja konieczności wymiany filtra.",
+            }
+        }
+        ("HVACController" | "ClimateControllerUS" | "ClimateController", "OutAverageTemp") => {
+            LoxonePinMetadata {
+                connector_badge: "AQ",
+                is_analog: true,
+                full_name: "Średnia temperatura z inteligentnych regulatorów pomieszczeniowych",
+                description: "Średnia temperatura obliczona ze wszystkich przyporządkowanych regulatorów pomieszczeniowych.",
+            }
+        }
+        ("HVACController" | "ClimateControllerUS" | "ClimateController", "OutHumid") => {
+            LoxonePinMetadata {
+                connector_badge: "Q",
+                is_analog: false,
+                full_name: "Humidifier / Dehumidifier",
+                description: "Wyjście sterowania nawilżaniem / osuszaniem.",
+            }
+        }
+        ("HVACController" | "ClimateControllerUS" | "ClimateController", "OutError") => {
+            LoxonePinMetadata {
+                connector_badge: "Q",
+                is_analog: false,
+                full_name: "Excessive Temperature",
+                description: "Aktywne przy nadmiernej temperaturze w co najmniej jednym powiązanym z nim inteligentnym regulatorze pokojowym.",
+            }
+        }
+        ("Heatmixer2", "AQt") => LoxonePinMetadata {
+            connector_badge: "AQ",
+            is_analog: true,
+            full_name: "Target flow temperature",
+            description: "Obliczona docelowa temperatura zasilania (w °C).",
+        },
+        ("Heatmixer2", "Qp") => LoxonePinMetadata {
+            connector_badge: "Q",
+            is_analog: false,
+            full_name: "Circulation pump",
+            description: "Wyjście sterowania pompą obiegową.",
+        },
+        ("Heatmixer2", "Qe") => LoxonePinMetadata {
+            connector_badge: "Q",
+            is_analog: false,
+            full_name: "Excessive Temperature",
+            description: "Aktywne przy przekroczeniu temperatury granicznej.",
+        },
+        _ => {
+            let is_analog = pin_key.starts_with("AI")
+                || pin_key.starts_with("AQ")
+                || pin_key.contains("Temp")
+                || pin_key.contains("Humid")
+                || pin_key.contains("Bright")
+                || matches!(pin_key, "Mode" | "Outer" | "AQt" | "Min" | "Max" | "Gain");
+            let connector_badge = match (is_output, is_analog) {
+                (false, true) => "AI",
+                (false, false) => "I",
+                (true, true) => "AQ",
+                (true, false) => "Q",
+            };
+            let full_name = match pin_key {
+                "Temp" => "Temperatura",
+                "Stop" => "Stop / Off",
+                "Reset" => "Reset",
+                _ => "Pin sygnałowy",
+            };
+            LoxonePinMetadata {
+                connector_badge,
+                is_analog,
+                full_name,
+                description: "Wejście/wyjście sygnałowe bloku funkcyjnego.",
+            }
+        }
+    }
+}
+
+/// Returns the formatted default/static pin value shown next to visible pins and inside the
+/// „Pokaż wartości” popover in Loxone Config (`100.0`, `1.0`, `Wł.`, `Wył.`, `0.0`).
+pub fn loxone_pin_default_display_value(
+    block_type: &str,
+    pin_key: &str,
+    default_value: Option<&str>,
+    is_output: bool,
+) -> String {
+    if pin_key == "OutputAPI" {
+        return String::new();
+    }
+    if matches!(pin_key, "Temp" | "Outer" | "TempO") && default_value == Some("-1000") {
+        return "100.0".to_string();
+    }
+    if matches!(
+        block_type,
+        "HVACController" | "ClimateControllerUS" | "ClimateController"
+    ) {
+        match pin_key {
+            "Mode" => return "1.0".to_string(),
+            "Stop" | "CoolAvailable" | "HeatAvailable" => return "Wył.".to_string(),
+            "OutHeat1" | "OutFan" | "OutHumid" => return "Wł.".to_string(),
+            "OutAverageTemp" => return "0.0".to_string(),
+            _ => {}
+        }
+    }
+    if block_type == "Heatmixer2" {
+        match pin_key {
+            "AQt" | "TxQr" | "AQf" | "AQb" | "AQr" | "AQl" | "AQi" => return "0.0".to_string(),
+            "Qp" | "Qe" => return "Wył.".to_string(),
+            _ => {}
+        }
+    }
+
+    let meta = loxone_pin_metadata(block_type, pin_key, is_output);
+    if let Some(def) = default_value.map(str::trim).filter(|s| !s.is_empty()) {
+        if let Ok(num) = def.parse::<f64>() {
+            if meta.is_analog {
+                return format!("{:.1}", num);
+            }
+            return if num.abs() > 1e-6 {
+                "Wł.".to_string()
+            } else {
+                "Wył.".to_string()
+            };
+        }
+        return def.to_string();
+    }
+
+    if meta.is_analog {
+        "0.0".to_string()
+    } else {
+        "Wył.".to_string()
     }
 }
 

@@ -54,7 +54,7 @@ impl AdvancedBlocksModalState {
             )))
         } else if ClimateControllerConfig::is_climate_controller_block(&block.block_type) {
             Some(ActiveAdvancedModal::Climate(
-                ClimateControllerConfig::from_block(block),
+                ClimateControllerConfig::from_block_with_project(block, Some(project)),
             ))
         } else if SequenceConfig::is_sequence_block(&block.block_type) {
             Some(ActiveAdvancedModal::Sequence(SequenceConfig::from_block(
@@ -250,7 +250,11 @@ pub fn render_advanced_blocks_modal(
                                     cfg.to_project_edit(&page_uuid, &block_uuid, &channels)
                                 }
                                 ActiveAdvancedModal::Climate(cfg) => {
-                                    cfg.to_project_edit(&page_uuid, &block_uuid)
+                                    cfg.to_project_edit_with_project(
+                                        &page_uuid,
+                                        &block_uuid,
+                                        Some(proj),
+                                    )
                                 }
                                 ActiveAdvancedModal::Sequence(cfg) => {
                                     cfg.to_project_edit(&page_uuid, &block_uuid)
@@ -697,80 +701,139 @@ fn render_climate_body(
                 });
         });
     } else {
-        egui::Frame::NONE
-            .fill(CARD_BG)
-            .stroke(Stroke::new(1.0_f32, BORDER_SUBTLE))
-            .corner_radius(CornerRadius::same(8))
-            .inner_margin(egui::Margin::same(14))
-            .show(ui, |ui| {
-                ui.label(
-                    RichText::new("HVAC CLIMATE CONTROLLER SETTINGS")
-                        .size(11.5)
+        let ircs = collect_irc_candidates(project);
+        ui.columns(2, |cols| {
+            egui::Frame::NONE
+                .fill(CARD_BG)
+                .stroke(Stroke::new(1.0_f32, BORDER_SUBTLE))
+                .corner_radius(CornerRadius::same(8))
+                .inner_margin(egui::Margin::same(14))
+                .show(&mut cols[0], |ui| {
+                    ui.label(
+                        RichText::new("HVAC CLIMATE CONTROLLER SETTINGS")
+                            .size(11.5)
+                            .strong()
+                            .color(LOXONE_GREEN),
+                    );
+                    ui.add_space(8.0);
+                    egui::Grid::new("climate_us_grid")
+                        .num_columns(2)
+                        .spacing([24.0, 10.0])
+                        .show(ui, |ui| {
+                            ui.label("Capabilities Bitmask (cCap):");
+                            ui.add(DragValue::new(&mut cfg.capabilities).range(1..=15));
+                            ui.end_row();
+
+                            ui.label("Device Type (DType):");
+                            ui.add(DragValue::new(&mut cfg.device_type).range(0..=10));
+                            ui.end_row();
+
+                            ui.label("Cooling Outdoor Limit (TempLimitC):");
+                            ui.add(
+                                DragValue::new(&mut cfg.temp_limit_c)
+                                    .speed(0.5)
+                                    .suffix(" °C"),
+                            );
+                            ui.end_row();
+
+                            ui.label("Heating Outdoor Limit (TempLimitH):");
+                            ui.add(
+                                DragValue::new(&mut cfg.temp_limit_h)
+                                    .speed(0.5)
+                                    .suffix(" °C"),
+                            );
+                            ui.end_row();
+
+                            ui.label("Activation Threshold (OnThreshold):");
+                            ui.add(
+                                DragValue::new(&mut cfg.on_threshold)
+                                    .speed(1.0)
+                                    .suffix(" %"),
+                            );
+                            ui.end_row();
+
+                            ui.label("Target Humidity (HTarget):");
+                            ui.add(
+                                DragValue::new(&mut cfg.humid_target)
+                                    .speed(1.0)
+                                    .suffix(" %"),
+                            );
+                            ui.end_row();
+
+                            ui.label("Pump Off Delay (TimeOffPump):");
+                            ui.add(DragValue::new(&mut cfg.time_off_pump).suffix(" s"));
+                            ui.end_row();
+
+                            ui.label("Fan Delay (FanDelay):");
+                            ui.add(DragValue::new(&mut cfg.fan_delay).suffix(" s"));
+                            ui.end_row();
+
+                            ui.label("Min Setpoint (TPMin):");
+                            ui.add(DragValue::new(&mut cfg.tp_min).speed(0.5).suffix(" °C"));
+                            ui.end_row();
+
+                            ui.label("Max Setpoint (TPMax):");
+                            ui.add(DragValue::new(&mut cfg.tp_max).speed(0.5).suffix(" °C"));
+                            ui.end_row();
+                        });
+                });
+
+            egui::Frame::NONE
+                .fill(CARD_BG)
+                .stroke(Stroke::new(1.0_f32, BORDER_SUBTLE))
+                .corner_radius(CornerRadius::same(8))
+                .inner_margin(egui::Margin::same(12))
+                .show(&mut cols[1], |ui| {
+                    ui.label(
+                        RichText::new(format!(
+                            "ASSIGNED ROOM CONTROLLERS ({}/{})",
+                            cfg.assigned_irc_uuids.len(),
+                            ircs.len()
+                        ))
+                        .size(11.0)
                         .strong()
                         .color(LOXONE_GREEN),
-                );
-                ui.add_space(8.0);
-                egui::Grid::new("climate_us_grid")
-                    .num_columns(2)
-                    .spacing([24.0, 10.0])
-                    .show(ui, |ui| {
-                        ui.label("Capabilities Bitmask (cCap):");
-                        ui.add(DragValue::new(&mut cfg.capabilities).range(1..=15));
-                        ui.end_row();
-
-                        ui.label("Device Type (DType):");
-                        ui.add(DragValue::new(&mut cfg.device_type).range(0..=10));
-                        ui.end_row();
-
-                        ui.label("Cooling Outdoor Limit (TempLimitC):");
-                        ui.add(
-                            DragValue::new(&mut cfg.temp_limit_c)
-                                .speed(0.5)
-                                .suffix(" °C"),
-                        );
-                        ui.end_row();
-
-                        ui.label("Heating Outdoor Limit (TempLimitH):");
-                        ui.add(
-                            DragValue::new(&mut cfg.temp_limit_h)
-                                .speed(0.5)
-                                .suffix(" °C"),
-                        );
-                        ui.end_row();
-
-                        ui.label("Activation Threshold (OnThreshold):");
-                        ui.add(
-                            DragValue::new(&mut cfg.on_threshold)
-                                .speed(1.0)
-                                .suffix(" %"),
-                        );
-                        ui.end_row();
-
-                        ui.label("Target Humidity (HTarget):");
-                        ui.add(
-                            DragValue::new(&mut cfg.humid_target)
-                                .speed(1.0)
-                                .suffix(" %"),
-                        );
-                        ui.end_row();
-
-                        ui.label("Pump Off Delay (TimeOffPump):");
-                        ui.add(DragValue::new(&mut cfg.time_off_pump).suffix(" s"));
-                        ui.end_row();
-
-                        ui.label("Fan Delay (FanDelay):");
-                        ui.add(DragValue::new(&mut cfg.fan_delay).suffix(" s"));
-                        ui.end_row();
-
-                        ui.label("Min Setpoint (TPMin):");
-                        ui.add(DragValue::new(&mut cfg.tp_min).speed(0.5).suffix(" °C"));
-                        ui.end_row();
-
-                        ui.label("Max Setpoint (TPMax):");
-                        ui.add(DragValue::new(&mut cfg.tp_max).speed(0.5).suffix(" °C"));
-                        ui.end_row();
-                    });
-            });
+                    );
+                    ui.add_space(6.0);
+                    ui.add(
+                        TextEdit::singleline(search_filter)
+                            .hint_text("🔍 Filter room controllers...")
+                            .desired_width(240.0),
+                    );
+                    ui.add_space(6.0);
+                    let q = search_filter.trim().to_lowercase();
+                    ScrollArea::vertical()
+                        .id_salt("hvac_irc_scroll")
+                        .max_height(310.0)
+                        .show(ui, |ui| {
+                            for irc in &ircs {
+                                if !q.is_empty()
+                                    && !irc.title.to_lowercase().contains(&q)
+                                    && !irc.room_name.to_lowercase().contains(&q)
+                                {
+                                    continue;
+                                }
+                                let mut assigned = cfg.is_irc_assigned(&irc.uuid);
+                                ui.horizontal(|ui| {
+                                    if ui.checkbox(&mut assigned, "").changed() {
+                                        cfg.toggle_irc(&irc.uuid);
+                                    }
+                                    ui.label(
+                                        RichText::new(&irc.title)
+                                            .size(12.0)
+                                            .strong()
+                                            .color(TEXT_PRIMARY),
+                                    );
+                                    ui.label(
+                                        RichText::new(format!("({})", irc.room_name))
+                                            .size(11.0)
+                                            .color(TEXT_MUTED),
+                                    );
+                                });
+                            }
+                        });
+                });
+        });
     }
 }
 

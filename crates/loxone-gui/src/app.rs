@@ -249,6 +249,8 @@ impl LoxonePortableApp {
             app.load_file(&path);
         }
         if let Some(cfg) = auto_screenshot {
+            app.language = crate::i18n::Language::Pl;
+            crate::i18n::set_language(app.language);
             if let Some(tab) = cfg.tab {
                 app.left_tab = tab;
             }
@@ -280,6 +282,27 @@ impl LoxonePortableApp {
                 Some("users") => app.execute_top_bar_action(TopBarAction::OpenUserManagement),
                 Some("modes") => app.execute_top_bar_action(TopBarAction::OpenOperatingModes),
                 Some("network") => app.execute_top_bar_action(TopBarAction::OpenNetworkSearch),
+                Some("pins") => {
+                    if let Some(proj) = &app.project {
+                        if let Some(page) = proj.pages.get(app.active_page_index) {
+                            if let Some(blk) = page
+                                .blocks
+                                .iter()
+                                .find(|b| b.block_type == "HVACController")
+                                .or_else(|| page.blocks.first())
+                            {
+                                app.viewport.interaction.show_pin_values_popup =
+                                    Some(crate::canvas::ShowPinValuesPopupState {
+                                        screen_pos: egui::pos2(540.0, 250.0),
+                                        block_uuid: blk.uuid.clone(),
+                                        side: Some(crate::canvas::PinSide::Output),
+                                    });
+                                app.viewport.interaction.hovered_pin =
+                                    Some((blk.uuid.clone(), "OutHeat1".to_string()));
+                            }
+                        }
+                    }
+                }
                 _ => {}
             }
             app.auto_screenshot = Some(cfg);

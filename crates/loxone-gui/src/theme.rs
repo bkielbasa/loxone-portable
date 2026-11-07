@@ -28,6 +28,37 @@ pub const ACCENT_AMBER: Color32 = WIRE_ANALOG;
 pub const TEXT_SECONDARY: Color32 = TEXT_MUTED;
 
 pub fn apply_minimalist_theme(ctx: &Context) {
+    let mut fonts = egui::FontDefinitions::default();
+    for (idx, path) in [
+        "/System/Library/Fonts/Supplemental/Arial.ttf",
+        "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
+        "C:\\Windows\\Fonts\\arial.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    ]
+    .iter()
+    .enumerate()
+    {
+        if let Ok(bytes) = std::fs::read(path) {
+            let font_name = format!("sys_unicode_fallback_{}", idx);
+            fonts.font_data.insert(
+                font_name.clone(),
+                egui::FontData::from_owned(bytes).into(),
+            );
+            fonts
+                .families
+                .entry(egui::FontFamily::Proportional)
+                .or_default()
+                .push(font_name.clone());
+            fonts
+                .families
+                .entry(egui::FontFamily::Monospace)
+                .or_default()
+                .push(font_name);
+            break;
+        }
+    }
+    ctx.set_fonts(fonts);
+
     let mut visuals = Visuals::dark();
     visuals.panel_fill = PANEL_BG;
     visuals.window_fill = CARD_BG;
