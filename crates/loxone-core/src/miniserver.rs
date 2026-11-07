@@ -113,6 +113,8 @@ pub fn parse_prog_listing(listing: &str) -> Vec<BackupSnapshot> {
 
         let size_bytes = if tokens.len() >= 9 {
             tokens[4].parse::<u64>().ok()
+        } else if tokens.len() == 6 {
+            tokens[1].parse::<u64>().ok()
         } else {
             None
         };
@@ -3203,5 +3205,22 @@ mod tests {
         assert!(fsput_count.load(std::sync::atomic::Ordering::SeqCst) >= 1);
 
         let _ = server_handle.join();
+    }
+
+    #[test]
+    fn test_parse_prog_listing_gen2_six_column_format() {
+        let listing = "\
+- 201042 Nov 07 00:10 sps_0274_20261107001057.zip
+- 988829 Nov 06 23:46 sps0.LoxCC
+- 155168 Apr 25 18:26 sps_0267_20260425182642.LoxCC
+";
+        let snaps = parse_prog_listing(listing);
+        assert_eq!(snaps.len(), 3);
+        assert_eq!(snaps[0].filename, "sps_0274_20261107001057.zip");
+        assert_eq!(snaps[0].size_bytes, Some(201_042));
+        assert_eq!(snaps[1].filename, "sps_0267_20260425182642.LoxCC");
+        assert_eq!(snaps[1].size_bytes, Some(155_168));
+        assert_eq!(snaps[2].filename, "sps0.LoxCC");
+        assert_eq!(snaps[2].size_bytes, Some(988_829));
     }
 }
