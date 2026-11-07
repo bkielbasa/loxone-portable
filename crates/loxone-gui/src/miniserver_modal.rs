@@ -2,16 +2,20 @@ use egui::{Align2, Color32, Context, Frame, Id, Key, Margin, Order, RichText, Sc
 use loxone_core::merge::ServerVersionConflict;
 use loxone_core::miniserver::{
     BackupSnapshot, ConnectionProfile, ConnectionStatus, MiniserverCredentials,
+    MiniserverSystemDiagnostics,
 };
 use loxone_core::model::LoxoneProject;
 
-use crate::theme::{ACCENT_BLUE, BORDER_SUBTLE, CARD_BG, PANEL_BG, TEXT_MUTED, TEXT_PRIMARY};
+use crate::theme::{
+    ACCENT_BLUE, BORDER_SUBTLE, CARD_BG, LOXONE_GREEN, PANEL_BG, TEXT_MUTED, TEXT_PRIMARY,
+};
 use crate::top_bar::{paint_status_indicator, status_badge_visuals_localized};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MiniserverModalAction {
     TestConnection(MiniserverCredentials),
     RefreshBackups(MiniserverCredentials),
+    FetchDiagnostics(MiniserverCredentials),
     DownloadLatest(MiniserverCredentials),
     DownloadSnapshot {
         creds: MiniserverCredentials,
@@ -34,9 +38,12 @@ pub struct MiniserverModalState {
     pub remember_password: bool,
     pub show_backups_browser: bool,
     pub show_upload_panel: bool,
+    pub show_diagnostics_panel: bool,
     pub confirm_upload: bool,
     pub restart_sps_after_upload: bool,
     pub snapshots: Vec<BackupSnapshot>,
+    pub diagnostics: Option<MiniserverSystemDiagnostics>,
+    pub diagnostics_filter: String,
     pub status_message: Option<String>,
     pub pending_conflict: Option<ServerVersionConflict>,
 }
@@ -51,9 +58,12 @@ impl Default for MiniserverModalState {
             remember_password: false,
             show_backups_browser: false,
             show_upload_panel: false,
+            show_diagnostics_panel: false,
             confirm_upload: false,
             restart_sps_after_upload: true,
             snapshots: Vec::new(),
+            diagnostics: None,
+            diagnostics_filter: String::new(),
             status_message: None,
             pending_conflict: None,
         }
@@ -74,9 +84,12 @@ impl MiniserverModalState {
             remember_password: profile.remember_password,
             show_backups_browser: false,
             show_upload_panel: false,
+            show_diagnostics_panel: false,
             confirm_upload: false,
             restart_sps_after_upload: true,
             snapshots: Vec::new(),
+            diagnostics: None,
+            diagnostics_filter: String::new(),
             status_message: None,
             pending_conflict: None,
         }
@@ -345,6 +358,31 @@ pub fn render_miniserver_modal(
                             state.show_upload_panel = !state.show_upload_panel;
                             if !state.show_upload_panel {
                                 state.confirm_upload = false;
+                            }
+                        }
+
+                        let diag_label = if state.show_diagnostics_panel {
+                            crate::i18n::tr("▾ Hide Diagnostics")
+                        } else {
+                            crate::i18n::tr("🩺 Diagnostics & Logs…")
+                        };
+                        if ui
+                            .add_enabled(
+                                can_submit,
+                                egui::Button::new(
+                                    RichText::new(diag_label).size(11.5).color(LOXONE_GREEN),
+                                ),
+                            )
+                            .on_hover_text(crate::i18n::tr(
+                                "Inspect live Miniserver CPU, heap, SPS cycle rate, online hardware monitors, and def.log",
+                            ))
+                            .clicked()
+                        {
+                            state.show_diagnostics_panel = !state.show_diagnostics_panel;
+                            if state.show_diagnostics_panel && state.diagnostics.is_none() {
+                                action = Some(MiniserverModalAction::FetchDiagnostics(
+                                    state.credentials(),
+                                ));
                             }
                         }
                     });
@@ -648,6 +686,270 @@ pub fn render_miniserver_modal(
                                 ui.add_space(4.0);
                             }
                         });
+                    }
+
+                    // Expandable Live Diagnostics & Logs Panel
+                    if state.show_diagnostics_panel {
+                        ui.add_space(10.0);
+                        ui.separator();
+                        ui.add_space(6.0);
+
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                RichText::new(crate::i18n::tr(
+                                    "🩺 Live Miniserver Diagnostics & Online Monitors",
+                                ))
+                                .size(12.0)
+                                .color(LOXONE_GREEN)
+                                .strong(),
+                            );
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    if ui
+                                        .add_enabled(
+                                            can_submit,
+                                            egui::Button::new(
+                                                RichText::new(crate::i18n::tr(
+                                                    "↻ Refresh Diagnostics",
+                                                ))
+                                                .size(11.0)
+                                                .color(TEXT_PRIMARY),
+                                            ),
+                                        )
+                                        .clicked()
+                                    {
+                                        action = Some(MiniserverModalAction::FetchDiagnostics(
+                                            state.credentials(),
+                                        ));
+                                    }
+                                },
+                            );
+                        });
+
+                        ui.add_space(6.0);
+                        if let Some(diag) = &state.diagnostics {
+                            Frame::new()
+                                .fill(CARD_BG)
+                                .stroke(Stroke::new(1.0_f32, BORDER_SUBTLE))
+                                .corner_radius(6)
+                                .inner_margin(Margin::symmetric(10, 8))
+                                .show(ui, |ui| {
+                                    ui.set_width(512.0);
+                                    egui::Grid::new("miniserver_diag_metrics_grid")
+                                        .num_columns(4)
+                                        .spacing([14.0, 6.0])
+                                        .show(ui, |ui| {
+                                            ui.label(
+                                                RichText::new(crate::i18n::tr("Firmware:"))
+                                                    .size(11.0)
+                                                    .color(TEXT_MUTED),
+                                            );
+                                            ui.label(
+                                                RichText::new(&diag.firmware_version)
+                                                    .monospace()
+                                                    .size(11.5)
+                                                    .strong()
+                                                    .color(TEXT_PRIMARY),
+                                            );
+                                            ui.label(
+                                                RichText::new(crate::i18n::tr("MAC Address:"))
+                                                    .size(11.0)
+                                                    .color(TEXT_MUTED),
+                                            );
+                                            ui.label(
+                                                RichText::new(&diag.mac_address)
+                                                    .monospace()
+                                                    .size(11.5)
+                                                    .strong()
+                                                    .color(TEXT_PRIMARY),
+                                            );
+                                            ui.end_row();
+
+                                            ui.label(
+                                                RichText::new(crate::i18n::tr("SPS Status:"))
+                                                    .size(11.0)
+                                                    .color(TEXT_MUTED),
+                                            );
+                                            ui.label(
+                                                RichText::new(&diag.sps_status)
+                                                    .monospace()
+                                                    .size(11.5)
+                                                    .strong()
+                                                    .color(LOXONE_GREEN),
+                                            );
+                                            ui.label(
+                                                RichText::new(crate::i18n::tr("CPU Load:"))
+                                                    .size(11.0)
+                                                    .color(TEXT_MUTED),
+                                            );
+                                            ui.label(
+                                                RichText::new(&diag.cpu_load)
+                                                    .monospace()
+                                                    .size(11.5)
+                                                    .strong()
+                                                    .color(TEXT_PRIMARY),
+                                            );
+                                            ui.end_row();
+
+                                            ui.label(
+                                                RichText::new(crate::i18n::tr("Heap Memory:"))
+                                                    .size(11.0)
+                                                    .color(TEXT_MUTED),
+                                            );
+                                            ui.label(
+                                                RichText::new(&diag.heap_usage)
+                                                    .monospace()
+                                                    .size(11.5)
+                                                    .color(TEXT_PRIMARY),
+                                            );
+                                            ui.label(
+                                                RichText::new(crate::i18n::tr("Active Tasks:"))
+                                                    .size(11.0)
+                                                    .color(TEXT_MUTED),
+                                            );
+                                            ui.label(
+                                                RichText::new(format!(
+                                                    "{} • TX {}",
+                                                    diag.num_tasks, diag.lan_tx_packets
+                                                ))
+                                                .monospace()
+                                                .size(11.5)
+                                                .color(TEXT_PRIMARY),
+                                            );
+                                            ui.end_row();
+                                        });
+                                });
+
+                            if !diag.online_devices.is_empty() {
+                                ui.add_space(6.0);
+                                let online_count = diag
+                                    .online_devices
+                                    .iter()
+                                    .filter(|d| d.is_online)
+                                    .count();
+                                ui.horizontal(|ui| {
+                                    ui.label(
+                                        RichText::new(format!(
+                                            "{}: {} / {}",
+                                            crate::i18n::tr("Online Hardware Monitors"),
+                                            online_count,
+                                            diag.online_devices.len()
+                                        ))
+                                        .size(11.5)
+                                        .strong()
+                                        .color(LOXONE_GREEN),
+                                    );
+                                    ui.add(
+                                        egui::TextEdit::singleline(&mut state.diagnostics_filter)
+                                            .hint_text(crate::i18n::tr("🔍 Filter devices…"))
+                                            .desired_width(220.0),
+                                    );
+                                });
+                                ui.add_space(4.0);
+                                let q = state.diagnostics_filter.trim().to_lowercase();
+                                ScrollArea::vertical()
+                                    .id_salt("miniserver_online_monitors_scroll")
+                                    .max_height(130.0)
+                                    .show(ui, |ui| {
+                                        for item in &diag.online_devices {
+                                            if !q.is_empty()
+                                                && !item.monitor.title.to_lowercase().contains(&q)
+                                                && !item
+                                                    .monitor
+                                                    .parent_title
+                                                    .to_lowercase()
+                                                    .contains(&q)
+                                                && !item
+                                                    .monitor
+                                                    .serial_number
+                                                    .to_lowercase()
+                                                    .contains(&q)
+                                            {
+                                                continue;
+                                            }
+                                            ui.horizontal(|ui| {
+                                                let badge_text = if item.is_online {
+                                                    "🟢 Online"
+                                                } else {
+                                                    "🔴 Offline"
+                                                };
+                                                let badge_col = if item.is_online {
+                                                    LOXONE_GREEN
+                                                } else {
+                                                    Color32::from_rgb(235, 87, 87)
+                                                };
+                                                ui.label(
+                                                    RichText::new(badge_text)
+                                                        .size(11.0)
+                                                        .strong()
+                                                        .color(badge_col),
+                                                );
+                                                ui.label(
+                                                    RichText::new(&item.monitor.parent_title)
+                                                        .size(11.5)
+                                                        .strong()
+                                                        .color(TEXT_PRIMARY),
+                                                );
+                                                if !item.monitor.serial_number.is_empty() {
+                                                    ui.label(
+                                                        RichText::new(format!(
+                                                            "[{}]",
+                                                            item.monitor.serial_number
+                                                        ))
+                                                        .monospace()
+                                                        .size(10.5)
+                                                        .color(TEXT_MUTED),
+                                                    );
+                                                }
+                                            });
+                                        }
+                                    });
+                            }
+
+                            if !diag.recent_log_lines.is_empty() {
+                                ui.add_space(6.0);
+                                ui.label(
+                                    RichText::new(format!(
+                                        "{} ({})",
+                                        crate::i18n::tr("System Log (/log/def.log)"),
+                                        diag.recent_log_lines.len()
+                                    ))
+                                    .size(11.0)
+                                    .strong()
+                                    .color(TEXT_MUTED),
+                                );
+                                Frame::new()
+                                    .fill(CARD_BG)
+                                    .stroke(Stroke::new(1.0_f32, BORDER_SUBTLE))
+                                    .corner_radius(6)
+                                    .inner_margin(Margin::symmetric(8, 6))
+                                    .show(ui, |ui| {
+                                        ui.set_width(512.0);
+                                        ScrollArea::vertical()
+                                            .id_salt("miniserver_def_log_scroll")
+                                            .max_height(110.0)
+                                            .show(ui, |ui| {
+                                                for line in &diag.recent_log_lines {
+                                                    ui.label(
+                                                        RichText::new(line)
+                                                            .monospace()
+                                                            .size(10.0)
+                                                            .color(TEXT_PRIMARY),
+                                                    );
+                                                }
+                                            });
+                                    });
+                            }
+                        } else {
+                            ui.label(
+                                RichText::new(crate::i18n::tr(
+                                    "Click 'Refresh Diagnostics' to query Miniserver CPU, heap, online devices, and def.log.",
+                                ))
+                                .size(11.0)
+                                .color(TEXT_MUTED),
+                            );
+                        }
                     }
                 });
         });

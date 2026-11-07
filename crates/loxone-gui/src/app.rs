@@ -71,6 +71,10 @@ pub enum MiniserverWorkerEvent {
         uuid: String,
         result: Result<String, String>,
     },
+    DiagnosticsFetched {
+        host: String,
+        result: Result<loxone_core::miniserver::MiniserverSystemDiagnostics, String>,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -589,6 +593,30 @@ impl LoxonePortableApp {
                     let _ = tx.send(MiniserverWorkerEvent::BackupsListed { host, result });
                 });
             }
+            MiniserverModalAction::FetchDiagnostics(creds) => {
+                self.persist_profile_best_effort();
+                let host = creds.host.clone();
+                let monitors = self
+                    .project
+                    .as_ref()
+                    .map(loxone_core::miniserver::extract_online_monitors)
+                    .unwrap_or_default();
+                self.connection_status = ConnectionStatus::Connecting {
+                    host: host.clone(),
+                    message: "Fetching live diagnostics & logs…".to_string(),
+                };
+                self.miniserver_modal.status_message = Some(format!(
+                    "Fetching system diagnostics & {} online monitor(s) from {}…",
+                    monitors.len(),
+                    host
+                ));
+                let tx = self.worker_tx.clone();
+                std::thread::spawn(move || {
+                    let result = MiniserverClient::fetch_system_diagnostics(&creds, &monitors)
+                        .map_err(|e| e.to_string());
+                    let _ = tx.send(MiniserverWorkerEvent::DiagnosticsFetched { host, result });
+                });
+            }
             MiniserverModalAction::DownloadLatest(creds) => {
                 if self.is_dirty {
                     self.pending_dirty_action = Some(PendingDirtyAction::DownloadLatest(creds));
@@ -886,6 +914,37 @@ impl LoxonePortableApp {
                         });
                     }
                 }
+                MiniserverWorkerEvent::DiagnosticsFetched { host, result } => match result {
+                    Ok(diag) => {
+                        let online_cnt =
+                            diag.online_devices.iter().filter(|d| d.is_online).count();
+                        let summary = format!(
+                            "FW {} · {} · CPU {} · {}/{} online",
+                            diag.firmware_version,
+                            diag.sps_status,
+                            diag.cpu_load,
+                            online_cnt,
+                            diag.online_devices.len()
+                        );
+                        for dev in &diag.online_devices {
+                            self.live_store
+                                .set_control_value(&dev.monitor.online_uuid, &dev.raw_value);
+                        }
+                        self.connection_status = ConnectionStatus::Connected {
+                            host,
+                            server_info: summary.clone(),
+                        };
+                        self.miniserver_modal.diagnostics = Some(diag);
+                        self.miniserver_modal.status_message = Some(summary);
+                    }
+                    Err(err) => {
+                        self.connection_status = ConnectionStatus::Error {
+                            host,
+                            error: err.clone(),
+                        };
+                        self.miniserver_modal.status_message = Some(err);
+                    }
+                },
             }
         }
     }
