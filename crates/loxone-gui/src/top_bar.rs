@@ -159,6 +159,14 @@ pub enum TopBarAction {
     OpenNetworkSearch,
     ExportPageSvg,
     ExportDocumentation,
+    NewProject,
+    SaveFileAs,
+    CloseProject,
+    OpenMyMiniservers,
+    OpenManualConnect,
+    ToggleQuickSearch,
+    OpenWebInterface,
+    ToggleInspectorDockSide,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1250,7 +1258,7 @@ fn render_ribbon_row_1(
     ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
         ui.spacing_mut().item_spacing.x = 6.0;
 
-        // 1. Encore-style Left Header Identity (Green Cube Badge + Page/Project Title + Quick Actions)
+        // 1. Loxone Config 17 Title Bar: Green Cube + Hamburger Menu (≡) + Quick Access + CTitleBarTabs
         let cube_resp = paint_encore_green_cube_badge(ui, 24.0).on_hover_text(crate::i18n::tr(
             "Click to switch project / show project list",
         ));
@@ -1258,74 +1266,121 @@ fn render_ribbon_row_1(
             action = Some(TopBarAction::ShowProjectLauncher);
         }
 
-        let proj_title = project
-            .map(|p| {
-                if p.metadata.title.trim().is_empty() {
-                    crate::i18n::tr("Project")
-                } else {
-                    p.metadata.title.as_str()
+        // Hamburger Main Menu (≡) as in Loxone Config 17 CLxTitleBar
+        let main_menu_resp = ui.menu_button(
+            RichText::new("≡").size(15.0).color(TEXT_PRIMARY).strong(),
+            |ui| {
+                ui.set_min_width(230.0);
+                if ui
+                    .button(format!("📄  {}  (Ctrl+N)", crate::i18n::tr("New Project")))
+                    .clicked()
+                {
+                    action = Some(TopBarAction::NewProject);
+                    ui.close_menu();
                 }
-            })
-            .unwrap_or("Loxone Portable");
-        let dirty_suffix = if is_dirty { " *" } else { "" };
-
-        if let Some(proj) = project {
-            let page_name = proj
-                .pages
-                .get(active_page_index)
-                .map(|pg| pg.title.as_str())
-                .unwrap_or_else(|| crate::i18n::tr("No Page"));
-            let page_resp = ui
-                .label(
-                    RichText::new(truncate_tab_title(page_name, 22))
-                        .size(13.5)
-                        .color(Color32::WHITE)
-                        .strong(),
-                )
-                .interact(Sense::click())
-                .on_hover_text(crate::i18n::tr(
-                    "Click to switch page or jump (⌘K / Ctrl+K)",
-                ));
-            if page_resp.clicked() {
-                action = Some(TopBarAction::OpenCommandPalette);
-            }
-        } else {
-            ui.label(
-                RichText::new(format!("{}{}", proj_title, dirty_suffix))
-                    .size(13.5)
-                    .color(Color32::WHITE)
-                    .strong(),
-            );
-        }
-
-        // Encore-style subtle dark status pill next to title
-        let proj_pill_resp = Frame::new()
-            .fill(Color32::from_rgb(0x1C, 0x1C, 0x1C))
-            .stroke(Stroke::new(1.0_f32, BORDER_SUBTLE))
-            .corner_radius(CornerRadius::same(5))
-            .inner_margin(Margin::symmetric(6, 2))
-            .show(ui, |ui| {
-                ui.spacing_mut().item_spacing.x = 4.0;
-                ui.label(
-                    RichText::new(format!("{}{}", truncate_tab_title(proj_title, 18), dirty_suffix))
-                        .size(10.8)
-                        .color(TEXT_MUTED),
-                );
-            })
+                if ui
+                    .button(format!(
+                        "📂  {}  (Ctrl+O)",
+                        crate::i18n::tr("Open .Loxone…")
+                    ))
+                    .clicked()
+                {
+                    action = Some(TopBarAction::OpenFile);
+                    ui.close_menu();
+                }
+                if ui
+                    .add_enabled(
+                        can_save,
+                        egui::Button::new(format!(
+                            "💾  {}  (Ctrl+S)",
+                            crate::i18n::tr("Save .Loxone")
+                        )),
+                    )
+                    .clicked()
+                {
+                    action = Some(TopBarAction::SaveFile);
+                    ui.close_menu();
+                }
+                if ui
+                    .add_enabled(
+                        can_save,
+                        egui::Button::new(format!(
+                            "💾  {}  (Ctrl+Shift+S)",
+                            crate::i18n::tr("Save Project As…")
+                        )),
+                    )
+                    .clicked()
+                {
+                    action = Some(TopBarAction::SaveFileAs);
+                    ui.close_menu();
+                }
+                ui.separator();
+                if ui
+                    .button(format!(
+                        "🖧  {}",
+                        crate::i18n::tr("Connect to Miniserver")
+                    ))
+                    .clicked()
+                {
+                    action = Some(TopBarAction::OpenMiniserverModal);
+                    ui.close_menu();
+                }
+                if ui
+                    .button(format!("⭐  {}", crate::i18n::tr("My Miniservers")))
+                    .clicked()
+                {
+                    action = Some(TopBarAction::OpenMyMiniservers);
+                    ui.close_menu();
+                }
+                if ui
+                    .button(format!("📡  {}", crate::i18n::tr("Search Network")))
+                    .clicked()
+                {
+                    action = Some(TopBarAction::OpenNetworkSearch);
+                    ui.close_menu();
+                }
+                ui.separator();
+                if ui
+                    .add_enabled(
+                        project.is_some(),
+                        egui::Button::new(format!(
+                            "🖼  {}",
+                            crate::i18n::tr("Export Page")
+                        )),
+                    )
+                    .clicked()
+                {
+                    action = Some(TopBarAction::ExportPageSvg);
+                    ui.close_menu();
+                }
+                if ui
+                    .add_enabled(
+                        project.is_some(),
+                        egui::Button::new(format!(
+                            "📑  {}",
+                            crate::i18n::tr("Documentation")
+                        )),
+                    )
+                    .clicked()
+                {
+                    action = Some(TopBarAction::ExportDocumentation);
+                    ui.close_menu();
+                }
+                ui.separator();
+                if ui
+                    .button(format!("🏠  {}", crate::i18n::tr("Switch Project")))
+                    .clicked()
+                {
+                    action = Some(TopBarAction::ShowProjectLauncher);
+                    ui.close_menu();
+                }
+            },
+        );
+        main_menu_resp
             .response
-            .interact(Sense::click());
-        if proj_pill_resp.clicked() && project.is_some() {
-            action = Some(TopBarAction::ShowProjectLauncher);
-        }
-        if let Some(loaded) = loaded_path {
-            proj_pill_resp.on_hover_text(format!(
-                "{}\n{}",
-                loaded.display(),
-                crate::i18n::tr("Click to switch project / show project list")
-            ));
-        }
+            .on_hover_text(crate::i18n::tr("Main Menu"));
 
-        // Compact quick-access capsule (Sidebar, Save, Undo, Redo)
+        // Quick-access capsule (Sidebar, New, Open, Save, Undo, Redo)
         Frame::new()
             .fill(CAPSULE_BG)
             .stroke(Stroke::new(1.0_f32, BORDER_SUBTLE))
@@ -1346,6 +1401,34 @@ fn render_ribbon_row_1(
                 .clicked()
                 {
                     action = Some(TopBarAction::ToggleLeftPanel);
+                }
+                if render_vector_button(
+                    ui,
+                    ToolbarIcon::AddBlock,
+                    "",
+                    None,
+                    "Create a new blank Loxone project (⌘N / Ctrl+N)",
+                    true,
+                    false,
+                    false,
+                )
+                .clicked()
+                {
+                    action = Some(TopBarAction::NewProject);
+                }
+                if render_vector_button(
+                    ui,
+                    ToolbarIcon::OpenFolder,
+                    "",
+                    None,
+                    "Open a .Loxone project file from disk (⌘O / Ctrl+O)",
+                    true,
+                    false,
+                    false,
+                )
+                .clicked()
+                {
+                    action = Some(TopBarAction::OpenFile);
                 }
                 if render_vector_button(
                     ui,
@@ -1394,7 +1477,103 @@ fn render_ribbon_row_1(
                 }
             });
 
-        // 2. Encore Segmented Pill Tab Control
+        // CTitleBarTabs: Home tab + Active Project Document tab with [✕]
+        let proj_title = project
+            .map(|p| {
+                if p.metadata.title.trim().is_empty() {
+                    crate::i18n::tr("Project")
+                } else {
+                    p.metadata.title.as_str()
+                }
+            })
+            .unwrap_or("Loxone Portable");
+        let dirty_suffix = if is_dirty { " *" } else { "" };
+
+        Frame::new()
+            .fill(Color32::from_rgb(0x16, 0x16, 0x16))
+            .stroke(Stroke::new(1.0_f32, BORDER_SUBTLE))
+            .corner_radius(CornerRadius::same(6))
+            .inner_margin(Margin::symmetric(3, 2))
+            .show(ui, |ui| {
+                ui.spacing_mut().item_spacing.x = 3.0;
+                let home_btn = ui
+                    .add(
+                        egui::Button::new(
+                            RichText::new("🏠")
+                                .size(11.5)
+                                .color(if project.is_none() {
+                                    LOXONE_GREEN
+                                } else {
+                                    TEXT_MUTED
+                                }),
+                        )
+                        .fill(if project.is_none() {
+                            CARD_BG
+                        } else {
+                            Color32::TRANSPARENT
+                        })
+                        .corner_radius(CornerRadius::same(4)),
+                    )
+                    .on_hover_text(crate::i18n::tr(
+                        "Click to switch project / show project list",
+                    ));
+                if home_btn.clicked() {
+                    action = Some(TopBarAction::ShowProjectLauncher);
+                }
+
+                if let Some(proj) = project {
+                    let page_name = proj
+                        .pages
+                        .get(active_page_index)
+                        .map(|pg| pg.title.as_str())
+                        .unwrap_or_else(|| crate::i18n::tr("No Page"));
+                    Frame::new()
+                        .fill(CARD_BG)
+                        .stroke(Stroke::new(1.0_f32, LOXONE_GREEN.gamma_multiply(0.45)))
+                        .corner_radius(CornerRadius::same(4))
+                        .inner_margin(Margin::symmetric(6, 2))
+                        .show(ui, |ui| {
+                            ui.spacing_mut().item_spacing.x = 4.0;
+                            let tab_label = format!(
+                                "📄 {}{} · {}",
+                                truncate_tab_title(proj_title, 14),
+                                dirty_suffix,
+                                truncate_tab_title(page_name, 14)
+                            );
+                            let tab_resp = ui
+                                .label(
+                                    RichText::new(tab_label)
+                                        .size(11.0)
+                                        .color(Color32::WHITE)
+                                        .strong(),
+                                )
+                                .interact(Sense::click());
+                            if let Some(loaded) = loaded_path {
+                                tab_resp.clone().on_hover_text(format!(
+                                    "{}\n{}",
+                                    loaded.display(),
+                                    crate::i18n::tr("Click to switch page or jump (⌘K / Ctrl+K)")
+                                ));
+                            }
+                            if tab_resp.clicked() {
+                                action = Some(TopBarAction::OpenCommandPalette);
+                            }
+                            let close_resp = ui
+                                .add(
+                                    egui::Button::new(
+                                        RichText::new("✕").size(10.0).color(TEXT_MUTED),
+                                    )
+                                    .frame(false),
+                                )
+                                .on_hover_text(crate::i18n::tr("Close Project"));
+                            if close_resp.clicked() {
+                                action = Some(TopBarAction::CloseProject);
+                            }
+                        });
+                }
+            });
+
+        // 2. QuickSearch (🔍 F5) + Segmented Pill Tab Control (CRibbonTabBar)
         Frame::new()
             .fill(Color32::from_rgb(0x16, 0x16, 0x16))
             .stroke(Stroke::new(1.0_f32, BORDER_SUBTLE))
@@ -1402,6 +1581,24 @@ fn render_ribbon_row_1(
             .inner_margin(Margin::symmetric(3, 2))
             .show(ui, |ui| {
                 ui.spacing_mut().item_spacing.x = 2.0;
+                // Loxone Config 17 QuickSearch button on the left of the ribbon tab strip
+                let qs_btn = ui
+                    .add(
+                        egui::Button::new(
+                            RichText::new("🔍")
+                                .size(11.5)
+                                .color(Color32::from_rgb(0x0B, 0x16, 0x08))
+                                .strong(),
+                        )
+                        .fill(LOXONE_GREEN)
+                        .corner_radius(CornerRadius::same(5)),
+                    )
+                    .on_hover_text(crate::i18n::tr("Quick Search (F5)"));
+                if qs_btn.clicked() {
+                    action = Some(TopBarAction::ToggleQuickSearch);
+                }
+                render_capsule_divider(ui);
+
                 let mut seen_contextual = false;
                 for &tab in visible_tabs {
                     if tab.is_contextual() && !seen_contextual {
@@ -1444,6 +1641,21 @@ fn render_ribbon_row_1(
                     .clicked()
                     {
                         action = Some(TopBarAction::ToggleRightPanel);
+                    }
+
+                    let dock_btn = ui
+                        .add(
+                            egui::Button::new(
+                                RichText::new("⇄").size(12.0).color(TEXT_PRIMARY),
+                            )
+                            .fill(Color32::TRANSPARENT)
+                            .corner_radius(CornerRadius::same(4)),
+                        )
+                        .on_hover_text(crate::i18n::tr(
+                            "Switch Property Inspector Dock Side (Left beside Tree / Right Split)",
+                        ));
+                    if dock_btn.clicked() {
+                        action = Some(TopBarAction::ToggleInspectorDockSide);
                     }
 
                     render_capsule_divider(ui);
@@ -1502,6 +1714,16 @@ fn render_ribbon_row_1(
                                 .clicked()
                             {
                                 action = Some(TopBarAction::ToggleRightPanel);
+                                ui.close_menu();
+                            }
+                            if ui
+                                .button(format!(
+                                    "⇄ {}",
+                                    crate::i18n::tr("Switch Inspector Dock Side")
+                                ))
+                                .clicked()
+                            {
+                                action = Some(TopBarAction::ToggleInspectorDockSide);
                                 ui.close_menu();
                             }
                         },
@@ -1595,7 +1817,78 @@ fn render_ribbon_row_2(
     ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
         ui.spacing_mut().item_spacing.x = 6.0;
 
-        // Left Pinned LIVE tile button (as in Loxone Config ribbon)
+        // Left Pinned Loxone Config 17 CMiniserverStateWidget tile + LIVE tile button
+        Frame::new()
+            .fill(CAPSULE_BG)
+            .stroke(Stroke::new(
+                1.0_f32,
+                status_visuals.dot_color.gamma_multiply(0.50),
+            ))
+            .corner_radius(CornerRadius::same(7))
+            .inner_margin(Margin::symmetric(5, 2))
+            .show(ui, |ui| {
+                ui.spacing_mut().item_spacing.x = 3.0;
+                paint_status_indicator(ui, status_visuals);
+                let main_label = if matches!(connection_status, ConnectionStatus::Disconnected) {
+                    crate::i18n::tr("Connect to Miniserver")
+                } else {
+                    status_visuals.label.as_str()
+                };
+                let main_btn = ui
+                    .add(
+                        egui::Button::new(
+                            RichText::new(truncate_tab_title(main_label, 18))
+                                .size(11.0)
+                                .color(Color32::WHITE)
+                                .strong(),
+                        )
+                        .fill(Color32::TRANSPARENT)
+                        .corner_radius(CornerRadius::same(4)),
+                    )
+                    .on_hover_text(&status_visuals.tooltip);
+                if main_btn.clicked() {
+                    action = Some(TopBarAction::OpenMiniserverModal);
+                }
+
+                render_capsule_divider(ui);
+
+                if ui
+                    .add(
+                        egui::Button::new(RichText::new("📡").size(11.0).color(ACCENT_BLUE))
+                            .fill(Color32::TRANSPARENT)
+                            .corner_radius(CornerRadius::same(4)),
+                    )
+                    .on_hover_text(crate::i18n::tr(
+                        "Search the local network for Miniservers (UDP broadcast)",
+                    ))
+                    .clicked()
+                {
+                    action = Some(TopBarAction::OpenNetworkSearch);
+                }
+                if ui
+                    .add(
+                        egui::Button::new(RichText::new("⭐").size(11.0).color(LOXONE_GREEN))
+                            .fill(Color32::TRANSPARENT)
+                            .corner_radius(CornerRadius::same(4)),
+                    )
+                    .on_hover_text(crate::i18n::tr("My Miniservers"))
+                    .clicked()
+                {
+                    action = Some(TopBarAction::OpenMyMiniservers);
+                }
+                if ui
+                    .add(
+                        egui::Button::new(RichText::new("⌨").size(11.0).color(TEXT_MUTED))
+                            .fill(Color32::TRANSPARENT)
+                            .corner_radius(CornerRadius::same(4)),
+                    )
+                    .on_hover_text(crate::i18n::tr("Connect Manually"))
+                    .clicked()
+                {
+                    action = Some(TopBarAction::OpenManualConnect);
+                }
+            });
+
         let live_item = build_live_view_toolbar_item(has_project, live_view_active);
         if let Some(act) = render_toolbar_capsule(ui, std::slice::from_ref(&live_item)) {
             action = Some(act);
@@ -2166,8 +2459,31 @@ fn render_ribbon_row_2(
             }
         }
 
-        // Right-aligned Pinned Zoom & Fit Capsule across all tabs
+        // Right-aligned Pinned Web Interface + Zoom & Fit Capsule across all tabs
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            let web_btn = Frame::new()
+                .fill(CAPSULE_BG)
+                .stroke(Stroke::new(1.0_f32, BORDER_SUBTLE))
+                .corner_radius(CornerRadius::same(7))
+                .inner_margin(Margin::symmetric(6, 3))
+                .show(ui, |ui| {
+                    ui.spacing_mut().item_spacing.x = 4.0;
+                    ui.label(RichText::new("🌐").size(11.5).color(LOXONE_GREEN));
+                    ui.label(
+                        RichText::new(crate::i18n::tr("Web Interface"))
+                            .size(11.0)
+                            .color(TEXT_PRIMARY),
+                    );
+                })
+                .response
+                .interact(Sense::click())
+                .on_hover_text(crate::i18n::tr(
+                    "Open Miniserver Web Interface in Browser",
+                ));
+            if web_btn.clicked() {
+                action = Some(TopBarAction::OpenWebInterface);
+            }
+
             Frame::new()
                 .fill(CAPSULE_BG)
                 .stroke(Stroke::new(1.0_f32, BORDER_SUBTLE))

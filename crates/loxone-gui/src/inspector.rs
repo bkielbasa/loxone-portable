@@ -74,9 +74,18 @@ pub fn render_right_inspector(
                     ui.allocate_exact_size(egui::vec2(7.0, 7.0), egui::Sense::hover());
                 ui.painter()
                     .circle_filled(dot_rect.center(), 3.2, LOXONE_GREEN);
+                let header_label = if let Some(summary) = resolved_summary {
+                    format!(
+                        "{} ({})",
+                        tr("Properties"),
+                        crate::i18n::block_display_name(&summary.object_type)
+                    )
+                } else {
+                    tr("INSPECTOR").to_string()
+                };
                 ui.label(
-                    RichText::new(tr("INSPECTOR"))
-                        .size(11.0)
+                    RichText::new(header_label)
+                        .size(11.2)
                         .color(egui::Color32::WHITE)
                         .strong(),
                 );
@@ -100,7 +109,23 @@ pub fn render_right_inspector(
                 }
             });
         });
-    ui.add_space(8.0);
+    ui.add_space(4.0);
+    let filter_id = egui::Id::new("loxone_inspector_prop_filter");
+    let mut prop_filter = ui
+        .ctx()
+        .data_mut(|d| d.get_temp::<String>(filter_id).unwrap_or_default());
+    if ui
+        .add(
+            TextEdit::singleline(&mut prop_filter)
+                .hint_text(tr("Filter…"))
+                .desired_width(f32::INFINITY),
+        )
+        .changed()
+    {
+        ui.ctx()
+            .data_mut(|d| d.insert_temp(filter_id, prop_filter.clone()));
+    }
+    ui.add_space(6.0);
 
     let Some(uuid) = selected_uuid else {
         egui::Frame::new()
@@ -1000,11 +1025,48 @@ fn render_general_and_visu_section(
                 }
             });
 
-            ui.horizontal(|ui| {
+            // Loxone Config 17 9-dot Color Palette + custom RGB picker
+            const LOXONE_COLOR_PALETTE: [[u8; 3]; 9] = [
+                [0x69, 0xC3, 0x50], // Loxone Green
+                [0x5E, 0x9C, 0xDB], // Blue
+                [0x52, 0xB7, 0x88], // Teal
+                [0xE4, 0xB3, 0x3B], // Yellow/Amber
+                [0xD9, 0x6C, 0x43], // Orange
+                [0xCC, 0x4B, 0x4B], // Red
+                [0x9B, 0x72, 0xCF], // Purple
+                [0xD8, 0x6B, 0xA8], // Magenta
+                [0x8B, 0x97, 0xA8], // Slate Gray
+            ];
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing.x = 4.0;
                 ui.label(RichText::new(tr("Color (Cl):")).size(11.0).color(TEXT_MUTED));
                 let mut rgb = get_raw_attr(raw_attributes, "Cl")
                     .and_then(parse_rgb_color)
                     .unwrap_or([0x5E, 0x81, 0xFF]);
+                for preset in LOXONE_COLOR_PALETTE {
+                    let is_active_color = rgb == preset;
+                    let (dot_rect, dot_resp) =
+                        ui.allocate_exact_size(egui::vec2(13.0, 13.0), egui::Sense::click());
+                    let c32 = egui::Color32::from_rgb(preset[0], preset[1], preset[2]);
+                    ui.painter().circle_filled(dot_rect.center(), 5.2, c32);
+                    if is_active_color {
+                        ui.painter().circle_stroke(
+                            dot_rect.center(),
+                            6.2,
+                            Stroke::new(1.4_f32, egui::Color32::WHITE),
+                        );
+                    }
+                    if dot_resp
+                        .on_hover_text(format!("RGB({}, {}, {})", preset[0], preset[1], preset[2]))
+                        .clicked()
+                    {
+                        edits.push(ProjectEdit::SetControlAttr {
+                            control_uuid: control_uuid.to_string(),
+                            attr_name: "Cl".to_string(),
+                            value: Some(format!("{},{},{}", preset[0], preset[1], preset[2])),
+                        });
+                    }
+                }
                 if ui.color_edit_button_srgb(&mut rgb).changed() {
                     edits.push(ProjectEdit::SetControlAttr {
                         control_uuid: control_uuid.to_string(),
@@ -1012,12 +1074,44 @@ fn render_general_and_visu_section(
                         value: Some(format!("{},{},{}", rgb[0], rgb[1], rgb[2])),
                     });
                 }
+            });
 
+            // Loxone Config 17 10-Star Rating Selector
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing.x = 2.0;
                 ui.label(RichText::new(tr("Rating:")).size(11.0).color(TEXT_MUTED));
                 let mut rating: i32 = get_raw_attr(raw_attributes, "Rating")
                     .and_then(|s| s.parse().ok())
                     .unwrap_or(0);
-                if ui.add(DragValue::new(&mut rating).range(0..=5)).changed() {
+                for star_idx in 1..=10 {
+                    let filled = star_idx <= rating;
+                    let star_glyph = if filled { "★" } else { "☆" };
+                    let star_color = if filled {
+                        egui::Color32::from_rgb(0xE4, 0xB3, 0x3B)
+                    } else {
+                        TEXT_MUTED
+                    };
+                    if ui
+                        .add(
+                            egui::Button::new(RichText::new(star_glyph).size(11.5).color(star_color))
+                                .frame(false),
+                        )
+                        .on_hover_text(format!("{star_idx}/10"))
+                        .clicked()
+                    {
+                        let next_rating = if rating == star_idx { 0 } else { star_idx };
+                        edits.push(ProjectEdit::SetControlAttr {
+                            control_uuid: control_uuid.to_string(),
+                            attr_name: "Rating".to_string(),
+                            value: if next_rating > 0 {
+                                Some(next_rating.to_string())
+                            } else {
+                                None
+                            },
+                        });
+                    }
+                }
+                if ui.add(DragValue::new(&mut rating).range(0..=10)).changed() {
                     edits.push(ProjectEdit::SetControlAttr {
                         control_uuid: control_uuid.to_string(),
                         attr_name: "Rating".to_string(),

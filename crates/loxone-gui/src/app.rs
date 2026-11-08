@@ -77,6 +77,13 @@ pub enum MiniserverWorkerEvent {
     },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum InspectorDockSide {
+    #[default]
+    LeftBesideTree,
+    RightSplit,
+}
+
 #[derive(Debug, Clone)]
 pub enum PendingDirtyAction {
     OpenFile,
@@ -153,6 +160,10 @@ pub struct LoxonePortableApp {
     pub tree_filter: String,
     pub show_left_panel: bool,
     pub show_right_panel: bool,
+    pub inspector_dock_side: InspectorDockSide,
+    pub quick_search_open: bool,
+    pub quick_search_query: String,
+    pub pending_open_url: Option<String>,
     pub viewport: CanvasViewport,
     pub palette: CommandPaletteState,
     pub needs_initial_fit: bool,
@@ -221,6 +232,10 @@ impl Default for LoxonePortableApp {
             tree_filter: String::new(),
             show_left_panel: true,
             show_right_panel: true,
+            inspector_dock_side: InspectorDockSide::LeftBesideTree,
+            quick_search_open: false,
+            quick_search_query: String::new(),
+            pending_open_url: None,
             viewport: CanvasViewport::default(),
             palette: CommandPaletteState::default(),
             needs_initial_fit: true,
@@ -320,6 +335,10 @@ impl LoxonePortableApp {
                 record_recent_project(path);
                 self.project_launcher.refresh();
                 self.miniserver_modal.apply_project_fallback_host(Some(&proj));
+                self.miniserver_modal.keychain.upsert_from_project(&proj);
+                if let Some(kp) = loxone_core::miniserver::MiniserverKeychain::default_config_path() {
+                    let _ = self.miniserver_modal.keychain.save_to_path(&kp);
+                }
                 self.miniserver_modal.pending_conflict = None;
                 self.live_store = LiveValueStore::default();
                 self.live_store.seed_project_defaults(&proj);
@@ -342,7 +361,7 @@ impl LoxonePortableApp {
                 self.room_controller_modal.is_schedule_open = false;
                 self.advanced_blocks_modal.is_open = false;
                 self.periphery_modal.close();
-        self.admin_modals.close();
+                self.admin_modals.close();
                 self.identifying_devices.clear();
                 self.simulator = OfflineSimulator::default();
                 self.viewport.interaction = Default::default();
@@ -365,6 +384,10 @@ impl LoxonePortableApp {
     ) -> Result<(), String> {
         let proj = parse_loxone_xml(xml).map_err(|e| format!("Failed to parse XML: {}", e))?;
         self.miniserver_modal.apply_project_fallback_host(Some(&proj));
+        self.miniserver_modal.keychain.upsert_from_project(&proj);
+        if let Some(kp) = loxone_core::miniserver::MiniserverKeychain::default_config_path() {
+            let _ = self.miniserver_modal.keychain.save_to_path(&kp);
+        }
         self.miniserver_modal.pending_conflict = None;
         self.live_store = LiveValueStore::default();
         self.live_store.seed_project_defaults(&proj);
@@ -1114,6 +1137,73 @@ impl LoxonePortableApp {
         }
     }
 
+    pub fn create_new_blank_project(&mut self) {
+        let blank_xml = r#"<?xml version="1.0" encoding="utf-8"?>
+<ControlList Version="1">
+	<C Type="Document" Title="New Project" U="00000001-0000-0000-0000-000000000001" ConfigVersion="17021021" SL="1">
+		<C Type="PlaceCaption" Title="Rooms" U="00000001-0000-0000-0000-000000000002">
+			<C Type="Place" Title="Living Room" U="00000001-0000-0000-0000-000000000003"/>
+		</C>
+		<C Type="CategoryCaption" Title="Categories" U="00000001-0000-0000-0000-000000000004">
+			<C Type="Category" Title="Lighting" CatGroup="lights" U="00000001-0000-0000-0000-000000000005"/>
+		</C>
+		<C Type="MemoryCaption" Title="Memory Flags" U="00000001-0000-0000-0000-000000000006"/>
+		<C Type="LoxLIVE" Title="Miniserver" U="00000001-0000-0000-0000-000000000007">
+			<C Type="VirtualInCaption" Title="Virtual Inputs" U="00000001-0000-0000-0000-000000000008"/>
+			<C Type="VirtualOutCaption" Title="Virtual Outputs" U="00000001-0000-0000-0000-000000000009"/>
+		</C>
+		<C Type="Program" Title="New Project" U="00000001-0000-0000-0000-000000000010">
+			<C Type="Page" Title="Page 1" U="00000001-0000-0000-0000-000000000011"/>
+		</C>
+	</C>
+</ControlList>"#;
+        if let Ok(proj) = parse_loxone_xml(blank_xml) {
+            self.live_store = LiveValueStore::default();
+            self.live_store.seed_project_defaults(&proj);
+            self.base_project = Some(proj.clone());
+            self.last_synced_remote_xml = None;
+            self.project = Some(proj);
+            self.loaded_path = None;
+            self.is_dirty = false;
+            self.undo_stack.clear();
+            self.redo_stack.clear();
+            self.active_page_index = 0;
+            self.selected_uuid = None;
+            self.needs_initial_fit = true;
+            self.error_banner = None;
+        }
+    }
+
+    pub fn save_file_as_dialog(&mut self) {
+        if self.project.as_ref().and_then(|p| p.raw_xml.as_ref()).is_none() {
+            return;
+        }
+        let default_name = self
+            .project
+            .as_ref()
+            .map(|p| {
+                let base = p.metadata.title.trim();
+                if base.is_empty() {
+                    "Project.Loxone".to_string()
+                } else if base.ends_with(".Loxone") || base.ends_with(".loxone") {
+                    base.to_string()
+                } else {
+                    format!("{}.Loxone", base)
+                }
+            })
+            .unwrap_or_else(|| "Project.Loxone".to_string());
+
+        if let Some(path) = rfd::FileDialog::new()
+            .set_file_name(&default_name)
+            .add_filter("Loxone Project", &["Loxone", "loxone", "xml"])
+            .save_file()
+        {
+            if let Err(err) = self.save_xml_to_path(&path) {
+                self.error_banner = Some(err);
+            }
+        }
+    }
+
     pub fn execute_top_bar_action(&mut self, action: TopBarAction) {
         match action {
             TopBarAction::ToggleLeftPanel => {
@@ -1122,14 +1212,58 @@ impl LoxonePortableApp {
             TopBarAction::ToggleRightPanel => {
                 self.show_right_panel = !self.show_right_panel;
             }
-            TopBarAction::ShowProjectLauncher => {
+            TopBarAction::ShowProjectLauncher | TopBarAction::CloseProject => {
                 self.show_project_launcher();
+            }
+            TopBarAction::NewProject => {
+                self.create_new_blank_project();
             }
             TopBarAction::OpenFile => {
                 self.execute_palette_action(PaletteAction::OpenFile);
             }
             TopBarAction::SaveFile => {
                 self.execute_palette_action(PaletteAction::SaveFile);
+            }
+            TopBarAction::SaveFileAs => {
+                self.save_file_as_dialog();
+            }
+            TopBarAction::OpenMyMiniservers => {
+                self.miniserver_modal.open_my_miniservers(self.project.as_ref());
+            }
+            TopBarAction::OpenManualConnect => {
+                self.miniserver_modal.open_manual_connect(self.project.as_ref());
+            }
+            TopBarAction::ToggleQuickSearch => {
+                self.quick_search_open = !self.quick_search_open;
+            }
+            TopBarAction::OpenWebInterface => {
+                let host = if !self.miniserver_modal.host.trim().is_empty() {
+                    Some(self.miniserver_modal.host.trim().to_string())
+                } else {
+                    self.project.as_ref().and_then(|p| {
+                        p.metadata
+                            .miniserver_ip
+                            .clone()
+                            .or_else(|| p.metadata.miniserver_hostname.clone())
+                    })
+                };
+                if let Some(h) = host {
+                    let url = if h.starts_with("http://") || h.starts_with("https://") {
+                        h
+                    } else {
+                        format!("http://{}", h)
+                    };
+                    self.pending_open_url = Some(url);
+                } else {
+                    self.miniserver_modal.open_manual_connect(self.project.as_ref());
+                }
+            }
+            TopBarAction::ToggleInspectorDockSide => {
+                self.inspector_dock_side = match self.inspector_dock_side {
+                    InspectorDockSide::LeftBesideTree => InspectorDockSide::RightSplit,
+                    InspectorDockSide::RightSplit => InspectorDockSide::LeftBesideTree,
+                };
+                self.show_right_panel = true;
             }
             TopBarAction::AddBlock => {
                 if self.project.is_some() {
@@ -2108,6 +2242,26 @@ impl LoxonePortableApp {
             self.redo();
         }
 
+        if ctx.input(|i| i.key_pressed(Key::F5)) || (cmd_or_ctrl && ctx.input(|i| i.key_pressed(Key::F))) {
+            self.quick_search_open = !self.quick_search_open;
+        }
+        if cmd_or_ctrl && ctx.input(|i| i.key_pressed(Key::N)) {
+            self.create_new_blank_project();
+        }
+        if cmd_or_ctrl && ctx.input(|i| i.key_pressed(Key::PageUp)) {
+            if self.active_page_index > 0 {
+                self.active_page_index -= 1;
+                self.needs_initial_fit = true;
+            }
+        }
+        if cmd_or_ctrl && ctx.input(|i| i.key_pressed(Key::PageDown)) {
+            if let Some(proj) = &self.project {
+                if self.active_page_index + 1 < proj.pages.len() {
+                    self.active_page_index += 1;
+                    self.needs_initial_fit = true;
+                }
+            }
+        }
         if cmd_or_ctrl && ctx.input(|i| i.key_pressed(Key::B)) {
             self.show_left_panel = !self.show_left_panel;
         }
@@ -2118,7 +2272,11 @@ impl LoxonePortableApp {
             self.execute_palette_action(PaletteAction::OpenFile);
         }
         if cmd_or_ctrl && ctx.input(|i| i.key_pressed(Key::S)) {
-            self.execute_palette_action(PaletteAction::SaveFile);
+            if shift {
+                self.save_file_as_dialog();
+            } else {
+                self.execute_palette_action(PaletteAction::SaveFile);
+            }
         }
 
         if !ctx.wants_keyboard_input() {
@@ -2389,7 +2547,11 @@ impl eframe::App for LoxonePortableApp {
             }
         }
 
-        // Right Inspector Panel
+        // Property Inspector Panel (docks Left beside Project Trees by default like Loxone Config 17, or Right Split)
+        if let Some(url) = self.pending_open_url.take() {
+            ctx.open_url(egui::OpenUrl::new_tab(url));
+        }
+
         if self.show_right_panel {
             let mut insp_out = crate::inspector::InspectorOutput::default();
             let live_opt = if self.live_view_enabled {
@@ -2400,22 +2562,38 @@ impl eframe::App for LoxonePortableApp {
                 None
             };
             if let Some(proj) = &self.project {
-                egui::SidePanel::right("right_inspector")
-                    .default_width(300.0)
-                    .frame(
-                        egui::Frame::new()
-                            .fill(PANEL_BG)
-                            .stroke(Stroke::new(1.0_f32, BORDER_SUBTLE))
-                            .inner_margin(egui::Margin::symmetric(10, 6)),
-                    )
-                    .show(ctx, |ui| {
-                        insp_out = render_right_inspector(
-                            ui,
-                            proj,
-                            self.selected_uuid.as_deref(),
-                            live_opt,
-                        );
-                    });
+                let panel_frame = egui::Frame::new()
+                    .fill(PANEL_BG)
+                    .stroke(Stroke::new(1.0_f32, BORDER_SUBTLE))
+                    .inner_margin(egui::Margin::symmetric(10, 6));
+                match self.inspector_dock_side {
+                    InspectorDockSide::LeftBesideTree => {
+                        egui::SidePanel::left("left_inspector_dock")
+                            .default_width(290.0)
+                            .frame(panel_frame)
+                            .show(ctx, |ui| {
+                                insp_out = render_right_inspector(
+                                    ui,
+                                    proj,
+                                    self.selected_uuid.as_deref(),
+                                    live_opt,
+                                );
+                            });
+                    }
+                    InspectorDockSide::RightSplit => {
+                        egui::SidePanel::right("right_inspector")
+                            .default_width(300.0)
+                            .frame(panel_frame)
+                            .show(ctx, |ui| {
+                                insp_out = render_right_inspector(
+                                    ui,
+                                    proj,
+                                    self.selected_uuid.as_deref(),
+                                    live_opt,
+                                );
+                            });
+                    }
+                }
             }
 
             for edit in insp_out.edits {
@@ -2456,6 +2634,134 @@ impl eframe::App for LoxonePortableApp {
                         self.open_object_config_modal(&block_uuid);
                     }
                 }
+            }
+        }
+
+        // Loxone Config 17 Bottom Page Sheet Tab Bar (Afx:TabWnd: |<  <  >  >|  ☰  +  [Page Tabs...])
+        if let Some(proj) = &self.project {
+            let page_count = proj.pages.len();
+            let page_titles: Vec<String> = proj.pages.iter().map(|p| p.title.clone()).collect();
+            let mut next_page_idx: Option<usize> = None;
+            let mut create_new_page = false;
+
+            egui::TopBottomPanel::bottom("bottom_page_sheet_tabs")
+                .exact_height(28.0)
+                .frame(
+                    egui::Frame::new()
+                        .fill(PANEL_BG)
+                        .stroke(Stroke::new(1.0_f32, BORDER_SUBTLE))
+                        .inner_margin(egui::Margin::symmetric(8, 3)),
+                )
+                .show(ctx, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 3.0;
+                        let can_prev = self.active_page_index > 0;
+                        let can_next = self.active_page_index + 1 < page_count;
+
+                        if ui
+                            .add_enabled(can_prev, egui::Button::new("⏮").small())
+                            .on_hover_text(crate::i18n::tr("First Page"))
+                            .clicked()
+                        {
+                            next_page_idx = Some(0);
+                        }
+                        if ui
+                            .add_enabled(can_prev, egui::Button::new("◀").small())
+                            .on_hover_text(crate::i18n::tr("Previous Page (Ctrl+PageUp)"))
+                            .clicked()
+                        {
+                            next_page_idx = Some(self.active_page_index.saturating_sub(1));
+                        }
+                        if ui
+                            .add_enabled(can_next, egui::Button::new("▶").small())
+                            .on_hover_text(crate::i18n::tr("Next Page (Ctrl+PageDown)"))
+                            .clicked()
+                        {
+                            next_page_idx = Some((self.active_page_index + 1).min(page_count.saturating_sub(1)));
+                        }
+                        if ui
+                            .add_enabled(can_next, egui::Button::new("⏭").small())
+                            .on_hover_text(crate::i18n::tr("Last Page"))
+                            .clicked()
+                        {
+                            next_page_idx = Some(page_count.saturating_sub(1));
+                        }
+
+                        ui.menu_button("☰", |ui| {
+                            ui.set_min_width(210.0);
+                            egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| {
+                                for (idx, title) in page_titles.iter().enumerate() {
+                                    let is_cur = idx == self.active_page_index;
+                                    if ui
+                                        .selectable_label(is_cur, format!("{}. {}", idx + 1, title))
+                                        .clicked()
+                                    {
+                                        next_page_idx = Some(idx);
+                                        ui.close_menu();
+                                    }
+                                }
+                            });
+                        })
+                        .response
+                        .on_hover_text(crate::i18n::tr("All Pages Menu"));
+
+                        if ui
+                            .add(
+                                egui::Button::new(
+                                    egui::RichText::new("+")
+                                        .color(crate::theme::LOXONE_GREEN)
+                                        .strong(),
+                                )
+                                .small(),
+                            )
+                            .on_hover_text(crate::i18n::tr("Create a new schematic page"))
+                            .clicked()
+                        {
+                            create_new_page = true;
+                        }
+
+                        ui.separator();
+
+                        egui::ScrollArea::horizontal()
+                            .id_salt("bottom_sheet_tabs_scroll")
+                            .auto_shrink([false, false])
+                            .show(ui, |ui| {
+                                ui.horizontal(|ui| {
+                                    ui.spacing_mut().item_spacing.x = 3.0;
+                                    for (idx, title) in page_titles.iter().enumerate() {
+                                        let is_active = idx == self.active_page_index;
+                                        let tab_btn = egui::Button::new(
+                                            egui::RichText::new(title)
+                                                .size(11.0)
+                                                .color(if is_active {
+                                                    egui::Color32::from_rgb(0x0B, 0x16, 0x08)
+                                                } else {
+                                                    crate::theme::TEXT_PRIMARY
+                                                })
+                                                .strong(),
+                                        )
+                                        .fill(if is_active {
+                                            crate::theme::LOXONE_GREEN
+                                        } else {
+                                            crate::theme::CARD_BG
+                                        })
+                                        .corner_radius(egui::CornerRadius::same(4));
+                                        if ui.add(tab_btn).clicked() {
+                                            next_page_idx = Some(idx);
+                                        }
+                                    }
+                                });
+                            });
+                    });
+                });
+
+            if let Some(idx) = next_page_idx {
+                self.active_page_index = idx;
+                self.viewport.interaction.selected_blocks.clear();
+                self.needs_initial_fit = true;
+            }
+            if create_new_page {
+                self.handle_tree_action(TreeAction::CreatePage);
             }
         }
 
@@ -2633,6 +2939,110 @@ impl eframe::App for LoxonePortableApp {
         // Ctrl+K / Cmd+K Command Palette Modal Overlay
         if let Some(palette_act) = self.palette.show(ctx, self.project.as_ref()) {
             self.execute_palette_action(palette_act);
+        }
+
+        // Loxone Config 17 Floating QuickSearch Ribbon Overlay (F5 / 🔍 button)
+        if self.quick_search_open {
+            if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+                self.quick_search_open = false;
+            } else {
+                let mut qs_nav: Option<PaletteAction> = None;
+                let mut close_qs = false;
+                egui::Window::new(format!("🔍 {}", crate::i18n::tr("Quick Search (F5)")))
+                    .id(egui::Id::new("loxone_quick_search_ribbon_popup"))
+                    .order(egui::Order::Foreground)
+                    .collapsible(false)
+                    .resizable(false)
+                    .fixed_size([460.0, 320.0])
+                    .anchor(egui::Align2::CENTER_TOP, [0.0, 96.0])
+                    .show(ctx, |ui| {
+                        ui.horizontal(|ui| {
+                            let resp = ui.add(
+                                egui::TextEdit::singleline(&mut self.quick_search_query)
+                                    .hint_text(crate::i18n::tr(
+                                        "Search pages, function blocks, rooms, or hardware…",
+                                    ))
+                                    .desired_width(390.0),
+                            );
+                            resp.request_focus();
+                            if ui.small_button("✕").clicked() {
+                                close_qs = true;
+                            }
+                        });
+                        ui.separator();
+                        let q = self.quick_search_query.trim().to_lowercase();
+                        egui::ScrollArea::vertical()
+                            .max_height(245.0)
+                            .auto_shrink([false, false])
+                            .show(ui, |ui| {
+                                if let Some(proj) = &self.project {
+                                    let mut shown = 0usize;
+                                    for (idx, page) in proj.pages.iter().enumerate() {
+                                        if q.is_empty() || page.title.to_lowercase().contains(&q) {
+                                            if ui
+                                                .selectable_label(
+                                                    false,
+                                                    format!("📄 {} ({})", page.title, crate::i18n::tr("Page")),
+                                                )
+                                                .clicked()
+                                            {
+                                                qs_nav = Some(PaletteAction::NavigateToPage(idx));
+                                                close_qs = true;
+                                            }
+                                            shown += 1;
+                                        }
+                                        for block in &page.blocks {
+                                            if !block.has_position || block.title.is_empty() {
+                                                continue;
+                                            }
+                                            if (!q.is_empty()
+                                                && (block.title.to_lowercase().contains(&q)
+                                                    || block.block_type.to_lowercase().contains(&q)))
+                                                || (q.is_empty() && shown < 20)
+                                            {
+                                                if ui
+                                                    .selectable_label(
+                                                        false,
+                                                        format!(
+                                                            "⚙ {} [{}] — {}",
+                                                            block.title, block.block_type, page.title
+                                                        ),
+                                                    )
+                                                    .clicked()
+                                                {
+                                                    qs_nav = Some(PaletteAction::NavigateToBlock {
+                                                        page_index: idx,
+                                                        block_uuid: block.uuid.clone(),
+                                                    });
+                                                    close_qs = true;
+                                                }
+                                                shown += 1;
+                                                if shown >= 50 {
+                                                    break;
+                                                }
+                                            }
+                                        }
+                                        if shown >= 50 {
+                                            break;
+                                        }
+                                    }
+                                } else {
+                                    ui.label(
+                                        egui::RichText::new(crate::i18n::tr(
+                                            "Open a project to search pages, blocks, and periphery.",
+                                        ))
+                                        .color(crate::theme::TEXT_MUTED),
+                                    );
+                                }
+                            });
+                    });
+                if let Some(act) = qs_nav {
+                    self.execute_palette_action(act);
+                }
+                if close_qs {
+                    self.quick_search_open = false;
+                }
+            }
         }
 
         // Unsaved Changes Confirmation Modal
@@ -3758,6 +4168,59 @@ mod tests {
         let (tree_target, _, _) = &app.identifying_devices[&tree_dev.uuid];
         assert_eq!(tree_target.bus_kind, loxone_core::DeviceBusKind::Tree);
         assert_eq!(tree_target.serial, tree_dev.serial);
+    }
+
+    #[test]
+    fn test_stage1_workspace_dock_quick_search_and_my_miniservers() {
+        let mut app = LoxonePortableApp::default();
+        assert_eq!(app.inspector_dock_side, InspectorDockSide::LeftBesideTree);
+        assert!(!app.quick_search_open);
+
+        // 1. Toggle Inspector Dock Side
+        app.execute_top_bar_action(TopBarAction::ToggleInspectorDockSide);
+        assert_eq!(app.inspector_dock_side, InspectorDockSide::RightSplit);
+        app.execute_top_bar_action(TopBarAction::ToggleInspectorDockSide);
+        assert_eq!(app.inspector_dock_side, InspectorDockSide::LeftBesideTree);
+
+        // 2. Toggle QuickSearch
+        app.execute_top_bar_action(TopBarAction::ToggleQuickSearch);
+        assert!(app.quick_search_open);
+        app.execute_top_bar_action(TopBarAction::ToggleQuickSearch);
+        assert!(!app.quick_search_open);
+
+        // 3. Create New Project
+        app.execute_top_bar_action(TopBarAction::NewProject);
+        assert!(app.project.is_some());
+        assert_eq!(app.project.as_ref().unwrap().pages.len(), 1);
+
+        // 4. Close Project returns to Home Screen
+        app.execute_top_bar_action(TopBarAction::CloseProject);
+        assert!(app.project.is_none());
+
+        // 5. Loading Sample.Loxone auto-populates My Miniservers keychain
+        app.load_file(std::path::Path::new("../../Sample.Loxone"));
+        assert!(app.project.is_some());
+        assert!(app
+            .miniserver_modal
+            .keychain
+            .entries
+            .iter()
+            .any(|e| e.name == "Sample" && e.internal_address == "127.0.0.1"));
+
+        // 6. Open My Miniservers and Manual Connect tabs
+        app.execute_top_bar_action(TopBarAction::OpenMyMiniservers);
+        assert!(app.miniserver_modal.is_open);
+        assert_eq!(
+            app.miniserver_modal.active_tab,
+            crate::miniserver_modal::MiniserverModalTab::MyMiniservers
+        );
+
+        app.execute_top_bar_action(TopBarAction::OpenManualConnect);
+        assert!(app.miniserver_modal.is_open);
+        assert_eq!(
+            app.miniserver_modal.active_tab,
+            crate::miniserver_modal::MiniserverModalTab::ConnectManually
+        );
     }
 }
 

@@ -226,6 +226,289 @@ impl ConnectionProfile {
     }
 }
 
+fn default_save_locally() -> bool {
+    true
+}
+
+/// Formats a 12-hex-character Loxone serial number (`504F94A0ECAD`) with colons (`50:4F:94:A0:EC:AD`),
+/// matching Loxone Config 17's `My Miniservers` (`MiniserverKeychain`) table.
+pub fn format_serial_colon(raw: &str) -> String {
+    let hex_only: String = raw
+        .trim()
+        .chars()
+        .filter(|c| c.is_ascii_hexdigit())
+        .map(|c| c.to_ascii_uppercase())
+        .collect();
+    if hex_only.len() == 12 {
+        format!(
+            "{}:{}:{}:{}:{}:{}",
+            &hex_only[0..2],
+            &hex_only[2..4],
+            &hex_only[4..6],
+            &hex_only[6..8],
+            &hex_only[8..10],
+            &hex_only[10..12]
+        )
+    } else {
+        raw.trim().to_string()
+    }
+}
+
+/// Formats a Loxone Cloud external DNS address (`connect.loxonecloud.com/<12-HEX-SERIAL>`) when a valid
+/// 12-character hex serial is available.
+pub fn default_cloud_external_address(serial: &str) -> String {
+    let hex_only: String = serial
+        .trim()
+        .chars()
+        .filter(|c| c.is_ascii_hexdigit())
+        .map(|c| c.to_ascii_uppercase())
+        .collect();
+    if hex_only.len() == 12 && hex_only.chars().any(|c| c != '0') {
+        format!("connect.loxonecloud.com/{}", hex_only)
+    } else {
+        String::new()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SavedMiniserverEntry {
+    pub name: String,
+    pub project_name: String,
+    pub user: String,
+    pub serial: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub password: Option<String>,
+    pub internal_address: String,
+    pub external_address: String,
+    #[serde(default = "default_save_locally")]
+    pub save_locally: bool,
+}
+
+impl Default for SavedMiniserverEntry {
+    fn default() -> Self {
+        Self {
+            name: "Miniserver".to_string(),
+            project_name: String::new(),
+            user: "admin".to_string(),
+            serial: String::new(),
+            password: None,
+            internal_address: "192.168.1.100".to_string(),
+            external_address: String::new(),
+            save_locally: true,
+        }
+    }
+}
+
+impl SavedMiniserverEntry {
+    pub fn preferred_host(&self) -> &str {
+        if !self.internal_address.trim().is_empty() {
+            self.internal_address.trim()
+        } else {
+            self.external_address.trim()
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct MiniserverKeychain {
+    pub entries: Vec<SavedMiniserverEntry>,
+}
+
+impl MiniserverKeychain {
+    pub fn default_config_path() -> Option<PathBuf> {
+        let home = std::env::var_os("HOME")?;
+        Some(
+            PathBuf::from(home)
+                .join(".config")
+                .join("loxone-portable")
+                .join("miniservers.json"),
+        )
+    }
+
+    pub fn load_from_path(path: &Path) -> Result<Self, MiniserverError> {
+        let raw = std::fs::read_to_string(path)?;
+        let mut kc: Self = serde_json::from_str(&raw)?;
+        for entry in &mut kc.entries {
+            if !entry.save_locally {
+                entry.password = None;
+            }
+        }
+        Ok(kc)
+    }
+
+    pub fn save_to_path(&self, path: &Path) -> Result<(), MiniserverError> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let mut sanitized = self.clone();
+        for entry in &mut sanitized.entries {
+            if !entry.save_locally {
+                entry.password = None;
+            }
+        }
+        let json = serde_json::to_string_pretty(&sanitized)?;
+        std::fs::write(path, json)?;
+        Ok(())
+    }
+
+    /// Extracts Miniserver connection details from a parsed `.Loxone` project (`<C Type="LoxLIVE">`),
+    /// enabling automatic migration from Loxone Config projects without manual re-entry.
+    pub fn extract_from_project(
+        project: &crate::model::LoxoneProject,
+    ) -> Option<SavedMiniserverEntry> {
+        let ms_node = project
+            .periphery_tree
+            .iter()
+            .find(|n| n.control_type == "LoxLIVE" || n.control_type == "Miniserver");
+
+        let raw_serial = ms_node
+            .and_then(|n| n.attr("Serial"))
+            .or(project.metadata.miniserver_serial.as_deref())
+            .unwrap_or_default()
+            .trim();
+        let int_addr = ms_node
+            .and_then(|n| n.attr("IntAddr"))
+            .or(project.metadata.miniserver_ip.as_deref())
+            .or_else(|| ms_node.and_then(|n| n.attr("HoN")))
+            .or(project.metadata.miniserver_hostname.as_deref())
+            .unwrap_or_default()
+            .trim();
+        let ext_addr_raw = ms_node
+            .and_then(|n| n.attr("ExtAddr"))
+            .unwrap_or_default()
+            .trim();
+
+        let name = ms_node
+            .map(|n| n.title.trim())
+            .filter(|t| !t.is_empty())
+            .or_else(|| {
+                let t = project.metadata.title.trim();
+                (!t.is_empty()).then_some(t)
+            })?;
+        let project_name = if project.metadata.title.trim().is_empty() {
+            name.to_string()
+        } else {
+            project.metadata.title.trim().to_string()
+        };
+
+        let serial = format_serial_colon(raw_serial);
+        let external_address = if !ext_addr_raw.is_empty() && ext_addr_raw != int_addr {
+            ext_addr_raw.to_string()
+        } else {
+            let cloud = default_cloud_external_address(raw_serial);
+            if !cloud.is_empty() {
+                cloud
+            } else {
+                ext_addr_raw.to_string()
+            }
+        };
+
+        // Pick primary admin user from UserCaption if present, otherwise default to "admin"
+        let detected_user = project
+            .system_tree
+            .iter()
+            .flat_map(|n| n.children.iter())
+            .flat_map(|c| c.children.iter())
+            .find(|u| u.control_type == "User" && u.attr("Main") == Some("true"))
+            .map(|u| u.title.trim())
+            .filter(|t| !t.is_empty())
+            .unwrap_or("admin")
+            .to_string();
+
+        Some(SavedMiniserverEntry {
+            name: name.to_string(),
+            project_name,
+            user: detected_user,
+            serial,
+            password: None,
+            internal_address: int_addr.to_string(),
+            external_address,
+            save_locally: true,
+        })
+    }
+
+    pub fn upsert_entry(&mut self, incoming: SavedMiniserverEntry) {
+        let norm_serial = format_serial_colon(&incoming.serial);
+        let existing_pos = self.entries.iter().position(|e| {
+            (!norm_serial.is_empty()
+                && norm_serial != "00000000"
+                && format_serial_colon(&e.serial) == norm_serial)
+                || (!incoming.name.trim().is_empty()
+                    && e.name.eq_ignore_ascii_case(incoming.name.trim())
+                    && e.project_name
+                        .eq_ignore_ascii_case(incoming.project_name.trim()))
+        });
+
+        if let Some(idx) = existing_pos {
+            let cur = &mut self.entries[idx];
+            if !incoming.name.trim().is_empty() {
+                cur.name = incoming.name;
+            }
+            if !incoming.project_name.trim().is_empty() {
+                cur.project_name = incoming.project_name;
+            }
+            if !incoming.user.trim().is_empty() {
+                cur.user = incoming.user;
+            }
+            if !norm_serial.is_empty() {
+                cur.serial = norm_serial;
+            }
+            if incoming.password.is_some() {
+                cur.password = incoming.password;
+            }
+            if !incoming.internal_address.trim().is_empty() {
+                cur.internal_address = incoming.internal_address;
+            }
+            if !incoming.external_address.trim().is_empty() {
+                cur.external_address = incoming.external_address;
+            }
+            cur.save_locally = incoming.save_locally;
+        } else {
+            let mut entry = incoming;
+            entry.serial = norm_serial;
+            self.entries.push(entry);
+        }
+    }
+
+    /// Upserts a Miniserver entry extracted from `project`, preserving any existing saved credentials.
+    pub fn upsert_from_project(&mut self, project: &crate::model::LoxoneProject) -> bool {
+        let Some(extracted) = Self::extract_from_project(project) else {
+            return false;
+        };
+        let norm_serial = format_serial_colon(&extracted.serial);
+        let existing_pos = self.entries.iter().position(|e| {
+            (!norm_serial.is_empty()
+                && norm_serial != "00000000"
+                && format_serial_colon(&e.serial) == norm_serial)
+                || e.name.eq_ignore_ascii_case(&extracted.name)
+                || (!extracted.internal_address.is_empty()
+                    && e.internal_address == extracted.internal_address
+                    && e.project_name.eq_ignore_ascii_case(&extracted.project_name))
+        });
+
+        if let Some(idx) = existing_pos {
+            let cur = &mut self.entries[idx];
+            if cur.project_name.trim().is_empty() {
+                cur.project_name = extracted.project_name;
+            }
+            if (cur.serial.trim().is_empty() || cur.serial == "00000000") && !norm_serial.is_empty()
+            {
+                cur.serial = norm_serial;
+            }
+            if cur.internal_address.trim().is_empty() && !extracted.internal_address.is_empty() {
+                cur.internal_address = extracted.internal_address;
+            }
+            if cur.external_address.trim().is_empty() && !extracted.external_address.is_empty() {
+                cur.external_address = extracted.external_address;
+            }
+            false
+        } else {
+            self.entries.push(extracted);
+            true
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UploadProjectResult {
     pub backup_path: Option<PathBuf>,
@@ -4469,5 +4752,51 @@ mod tests {
                 .formatted,
             "20"
         );
+    }
+
+    #[test]
+    fn test_miniserver_keychain_serial_formatting_and_project_extraction() {
+        assert_eq!(
+            format_serial_colon("504F94A0ECAD"),
+            "50:4F:94:A0:EC:AD"
+        );
+        assert_eq!(
+            format_serial_colon("50:4f:94:a0:ec:ad"),
+            "50:4F:94:A0:EC:AD"
+        );
+        assert_eq!(
+            default_cloud_external_address("50:4F:94:A0:EC:AD"),
+            "connect.loxonecloud.com/504F94A0ECAD"
+        );
+        assert_eq!(default_cloud_external_address("00000000"), "");
+
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../Sample.Loxone");
+        let project =
+            crate::parser::load_loxone_file(&path).expect("Sample.Loxone should parse");
+        let extracted = MiniserverKeychain::extract_from_project(&project)
+            .expect("should extract Miniserver from Sample.Loxone");
+        assert_eq!(extracted.name, "Sample");
+        assert_eq!(extracted.project_name, "Sample");
+        assert_eq!(extracted.user, "user1");
+        assert_eq!(extracted.internal_address, "127.0.0.1");
+
+        let mut kc = MiniserverKeychain::default();
+        assert!(kc.upsert_from_project(&project));
+        assert_eq!(kc.entries.len(), 1);
+        assert!(!kc.upsert_from_project(&project));
+        assert_eq!(kc.entries.len(), 1);
+
+        kc.upsert_entry(SavedMiniserverEntry {
+            name: "Klimczaki".to_string(),
+            project_name: "Klimczaki".to_string(),
+            user: "bartek".to_string(),
+            serial: "504F94A0ECAD".to_string(),
+            password: Some("secret".to_string()),
+            internal_address: "192.168.1.100".to_string(),
+            external_address: "connect.loxonecloud.com/504F94A0ECAD".to_string(),
+            save_locally: true,
+        });
+        assert_eq!(kc.entries.len(), 2);
+        assert_eq!(kc.entries[1].serial, "50:4F:94:A0:EC:AD");
     }
 }

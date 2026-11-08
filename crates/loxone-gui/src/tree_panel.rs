@@ -15,6 +15,47 @@ pub enum LeftTab {
     System,
 }
 
+impl LeftTab {
+    /// Returns the Loxone Config 17 `Project Trees` dropdown label for this tree mode.
+    pub fn dropdown_label(self) -> &'static str {
+        match self {
+            Self::Periphery => "Periphery",
+            Self::Pages => "Configuration",
+            Self::Rooms => "Rooms",
+            Self::System => "Devices",
+        }
+    }
+}
+
+/// Formats the `(Room, Category)` subtitle shown next to a block in the `Configuration` tree.
+pub fn block_room_category_subtitle(
+    project: &LoxoneProject,
+    page: &loxone_core::model::Page,
+    block: &loxone_core::model::PageBlock,
+) -> Option<String> {
+    let eff_room = block
+        .room_uuid
+        .as_deref()
+        .or(page.room_uuid.as_deref())
+        .and_then(|u| project.places.get(u))
+        .map(|p| p.title.as_str())
+        .filter(|t| !t.is_empty() && *t != "Nieprzyporządkowane" && *t != "Unassigned");
+    let eff_cat = block
+        .category_uuid
+        .as_deref()
+        .or(page.category_uuid.as_deref())
+        .and_then(|u| project.categories.get(u))
+        .map(|c| c.title.as_str())
+        .filter(|t| !t.is_empty() && *t != "Nieprzyporządkowane" && *t != "Unassigned");
+
+    match (eff_room, eff_cat) {
+        (Some(r), Some(c)) => Some(format!("{}, {}", r, c)),
+        (Some(r), None) => Some(r.to_string()),
+        (None, Some(c)) => Some(c.to_string()),
+        (None, None) => None,
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TreeAction {
     SelectPage(usize),
@@ -64,30 +105,57 @@ pub fn render_left_explorer(
 ) -> Option<TreeAction> {
     let mut action = None;
 
-    // 1. Encore-style Top Workspace Header (Circular Loxone-Green LX badge + Title)
+    // 1. Loxone Config 17 Project Trees Header + 4-Mode ComboBox Dropdown
     ui.add_space(2.0);
     ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 8.0;
-        let (badge_rect, _) = ui.allocate_exact_size(Vec2::splat(22.0), Sense::hover());
+        ui.spacing_mut().item_spacing.x = 6.0;
+        let (badge_rect, _) = ui.allocate_exact_size(Vec2::splat(20.0), Sense::hover());
         ui.painter()
-            .circle_filled(badge_rect.center(), 10.5, LOXONE_GREEN);
+            .circle_filled(badge_rect.center(), 9.5, LOXONE_GREEN);
         ui.painter().text(
             badge_rect.center(),
             egui::Align2::CENTER_CENTER,
             "LX",
-            egui::FontId::proportional(9.5),
+            egui::FontId::proportional(9.0),
             Color32::from_rgb(0x0B, 0x16, 0x08),
         );
         ui.label(
-            RichText::new("Loxone")
-                .size(13.5)
+            RichText::new(crate::i18n::tr("Project Trees"))
+                .size(12.5)
                 .color(Color32::WHITE)
                 .strong(),
         );
-        ui.label(RichText::new("⌄").size(12.0).color(TEXT_MUTED));
     });
 
-    ui.add_space(6.0);
+    ui.add_space(4.0);
+
+    // 4-Mode Dropdown (Periphery, Configuration, Rooms, Devices) matching Loxone Config 17
+    egui::ComboBox::from_id_salt("loxone_project_trees_mode_combo")
+        .selected_text(
+            RichText::new(crate::i18n::tr(active_tab.dropdown_label()))
+                .size(11.8)
+                .color(Color32::WHITE)
+                .strong(),
+        )
+        .width(ui.available_width())
+        .show_ui(ui, |ui| {
+            for mode in [
+                LeftTab::Periphery,
+                LeftTab::Pages,
+                LeftTab::Rooms,
+                LeftTab::System,
+            ] {
+                let is_sel = *active_tab == mode;
+                if ui
+                    .selectable_label(is_sel, crate::i18n::tr(mode.dropdown_label()))
+                    .clicked()
+                {
+                    *active_tab = mode;
+                }
+            }
+        });
+
+    ui.add_space(4.0);
 
     // 2. Encore-style Project Switcher Card (Green rounded-square icon + Project Title)
     let proj_title = if project.metadata.title.trim().is_empty() {
@@ -99,22 +167,22 @@ pub fn render_left_explorer(
         .fill(CARD_BG)
         .stroke(Stroke::new(1.0_f32, BORDER_SUBTLE))
         .corner_radius(CornerRadius::same(6))
-        .inner_margin(Margin::symmetric(8, 6))
+        .inner_margin(Margin::symmetric(8, 5))
         .show(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 8.0;
-                let (sq_rect, _) = ui.allocate_exact_size(Vec2::splat(18.0), Sense::hover());
+                let (sq_rect, _) = ui.allocate_exact_size(Vec2::splat(16.0), Sense::hover());
                 ui.painter()
                     .rect_filled(sq_rect, CornerRadius::same(4), LOXONE_GREEN);
                 ui.painter().rect_stroke(
-                    sq_rect.shrink(4.5),
+                    sq_rect.shrink(4.0),
                     CornerRadius::same(1),
-                    Stroke::new(1.3_f32, Color32::WHITE),
+                    Stroke::new(1.2_f32, Color32::WHITE),
                     egui::StrokeKind::Middle,
                 );
                 ui.label(
                     RichText::new(proj_title)
-                        .size(12.5)
+                        .size(12.0)
                         .color(Color32::WHITE)
                         .strong(),
                 );
@@ -124,9 +192,9 @@ pub fn render_left_explorer(
             });
         });
 
-    ui.add_space(8.0);
+    ui.add_space(6.0);
 
-    // 3. Encore-style Segmented Section Pill Bar
+    // 3. Segmented Section Pill Bar (synced with 4-Mode Dropdown)
     egui::Frame::new()
         .fill(Color32::from_rgb(0x16, 0x16, 0x16))
         .stroke(Stroke::new(1.0_f32, BORDER_SUBTLE))
@@ -136,10 +204,10 @@ pub fn render_left_explorer(
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 2.0;
                 for (tab, label) in [
-                    (LeftTab::Pages, "Pages"),
                     (LeftTab::Periphery, "Periphery"),
+                    (LeftTab::Pages, "Pages"),
                     (LeftTab::Rooms, "Rooms"),
-                    (LeftTab::System, "System"),
+                    (LeftTab::System, "Devices"),
                 ] {
                     let selected = *active_tab == tab;
                     let pill_fill = if selected {
@@ -150,11 +218,11 @@ pub fn render_left_explorer(
                     let pill_resp = egui::Frame::new()
                         .fill(pill_fill)
                         .corner_radius(CornerRadius::same(4))
-                        .inner_margin(Margin::symmetric(7, 3))
+                        .inner_margin(Margin::symmetric(6, 3))
                         .show(ui, |ui| {
                             ui.label(
                                 RichText::new(crate::i18n::tr(label))
-                                    .size(11.2)
+                                    .size(11.0)
                                     .color(if selected {
                                         Color32::WHITE
                                     } else {
@@ -243,6 +311,17 @@ pub fn render_left_explorer(
         }
         LeftTab::System => {
             if ui
+                .small_button(RichText::new(crate::i18n::tr("Serials")).color(ACCENT_BLUE))
+                .on_hover_text(crate::i18n::tr(
+                    "Hardware Serial Inventory & In-Place Serial Swap",
+                ))
+                .clicked()
+            {
+                action = Some(TreeAction::OpenHardwareInventory(
+                    selected_uuid.map(str::to_string),
+                ));
+            }
+            if ui
                 .small_button(RichText::new(crate::i18n::tr("+ Flag")).color(LOXONE_GREEN))
                 .on_hover_text(crate::i18n::tr("Create a new Memory Flag (Merker)"))
                 .clicked()
@@ -260,67 +339,207 @@ pub fn render_left_explorer(
     ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
         match *active_tab {
             LeftTab::Pages => {
+                // Loxone Config 17 Configuration tree: expandable pages with visible blocks & (Room, Category) subtitles
                 for (idx, page) in project.pages.iter().enumerate() {
-                    if !q.is_empty() && !page.title.to_lowercase().contains(&q) {
+                    let page_matches =
+                        q.is_empty() || page.title.to_lowercase().contains(&q);
+                    let matching_blocks: Vec<&loxone_core::model::PageBlock> = page
+                        .blocks
+                        .iter()
+                        .filter(|b| {
+                            b.has_position
+                                && !b.title.is_empty()
+                                && (page_matches
+                                    || b.title.to_lowercase().contains(&q)
+                                    || b.block_type.to_lowercase().contains(&q))
+                        })
+                        .collect();
+                    if !page_matches && matching_blocks.is_empty() {
                         continue;
                     }
                     let is_active = idx == active_page_idx;
-                    let bg = if is_active {
-                        ELEVATED_BG
-                    } else {
-                        Color32::TRANSPARENT
-                    };
-                    let resp = egui::Frame::new()
-                        .fill(bg)
-                        .corner_radius(6)
-                        .inner_margin(egui::Margin::symmetric(8, 5))
-                        .show(ui, |ui| {
+                    let id = ui.make_persistent_id(format!("cfg_page_tree_{}", page.uuid));
+                    let state = egui::collapsing_header::CollapsingState::load_with_default_open(
+                        ui.ctx(),
+                        id,
+                        is_active || !q.is_empty(),
+                    );
+                    let header_res = state.show_header(ui, |ui| {
+                        ui_icon(ui, LoxoneIcon::Page, 15.0);
+                        let title_rt = RichText::new(&page.title).size(12.0).color(
+                            if is_active {
+                                Color32::WHITE
+                            } else {
+                                TEXT_PRIMARY
+                            },
+                        );
+                        let resp = ui.selectable_label(
+                            is_active,
+                            if is_active { title_rt.strong() } else { title_rt },
+                        );
+                        let visible_count =
+                            page.blocks.iter().filter(|b| b.has_position).count();
+                        ui.label(
+                            RichText::new(format!("({})", visible_count))
+                                .size(10.8)
+                                .color(if is_active {
+                                    LOXONE_GREEN
+                                } else {
+                                    TEXT_MUTED
+                                }),
+                        );
+                        if resp.clicked() {
+                            action = Some(TreeAction::SelectPage(idx));
+                        }
+                        resp.context_menu(|ui| {
+                            if ui.button(crate::i18n::tr("🔍 Inspect Page")).clicked() {
+                                action = Some(TreeAction::SelectObject(page.uuid.clone()));
+                                ui.close_menu();
+                            }
+                        });
+                    });
+                    header_res.body(|ui| {
+                        for block in matching_blocks {
+                            let is_sel = selected_uuid == Some(block.uuid.as_str());
                             ui.horizontal(|ui| {
-                                ui_icon(ui, LoxoneIcon::Page, 15.0);
-                                let title_rt = RichText::new(&page.title).size(12.2).color(
-                                    if is_active {
-                                        Color32::WHITE
+                                ui_icon(
+                                    ui,
+                                    icon_for_block_type(&block.block_type, None),
+                                    14.0,
+                                );
+                                let resp = ui.selectable_label(
+                                    is_sel,
+                                    RichText::new(&block.title).size(11.4).color(if is_sel {
+                                        ACCENT_BLUE
                                     } else {
-                                        TEXT_MUTED
-                                    },
+                                        TEXT_PRIMARY
+                                    }),
                                 );
-                                ui.label(if is_active { title_rt.strong() } else { title_rt });
-                                ui.with_layout(
-                                    egui::Layout::right_to_left(egui::Align::Center),
-                                    |ui| {
-                                        let visible_count =
-                                            page.blocks.iter().filter(|b| b.has_position).count();
-                                        ui.label(
-                                            RichText::new(format!("{}", visible_count))
-                                                .size(10.8)
-                                                .color(if is_active {
-                                                    LOXONE_GREEN
-                                                } else {
-                                                    TEXT_MUTED
-                                                }),
-                                        );
-                                    },
-                                );
+                                if let Some(sub) =
+                                    block_room_category_subtitle(project, page, block)
+                                {
+                                    ui.label(
+                                        RichText::new(format!("({})", sub))
+                                            .size(10.8)
+                                            .color(TEXT_MUTED),
+                                    );
+                                }
+                                if resp.clicked() {
+                                    action = Some(TreeAction::NavigateToBlock {
+                                        page_index: idx,
+                                        block_uuid: block.uuid.clone(),
+                                    });
+                                }
                             });
-                        })
-                        .response
-                        .interact(egui::Sense::click());
-                    if resp.clicked() {
-                        action = Some(TreeAction::SelectPage(idx));
-                    }
-                    resp.context_menu(|ui| {
-                        if ui.button(crate::i18n::tr("🔍 Inspect Page")).clicked() {
-                            action = Some(TreeAction::SelectObject(page.uuid.clone()));
-                            ui.close_menu();
                         }
                     });
                 }
             }
             LeftTab::Periphery => {
+                // 1. Rooms section in Periphery tree (matching Loxone Config 17)
+                if !project.places.is_empty() {
+                    let rooms_id = ui.make_persistent_id("periphery_rooms_folder");
+                    let rooms_state =
+                        egui::collapsing_header::CollapsingState::load_with_default_open(
+                            ui.ctx(),
+                            rooms_id,
+                            !q.is_empty(),
+                        );
+                    let rooms_hdr = rooms_state.show_header(ui, |ui| {
+                        ui_icon(ui, LoxoneIcon::Room, 16.0);
+                        ui.label(
+                            RichText::new(crate::i18n::tr("Rooms"))
+                                .color(TEXT_PRIMARY)
+                                .strong(),
+                        );
+                        ui.label(
+                            RichText::new(format!("({})", project.places.len()))
+                                .size(11.0)
+                                .color(TEXT_MUTED),
+                        );
+                    });
+                    rooms_hdr.body(|ui| {
+                        let mut places: Vec<_> = project.places.values().collect();
+                        places.sort_by(|a, b| a.title.cmp(&b.title));
+                        for place in places {
+                            if !q.is_empty() && !place.title.to_lowercase().contains(&q) {
+                                continue;
+                            }
+                            let is_sel = selected_uuid == Some(place.uuid.as_str());
+                            ui.horizontal(|ui| {
+                                ui_icon(ui, LoxoneIcon::Room, 14.0);
+                                if ui
+                                    .selectable_label(
+                                        is_sel,
+                                        RichText::new(&place.title).size(11.4).color(if is_sel {
+                                            ACCENT_BLUE
+                                        } else {
+                                            TEXT_PRIMARY
+                                        }),
+                                    )
+                                    .clicked()
+                                {
+                                    action = Some(TreeAction::SelectObject(place.uuid.clone()));
+                                }
+                            });
+                        }
+                    });
+                }
+
+                // 2. Categories section in Periphery tree (matching Loxone Config 17)
+                if !project.categories.is_empty() {
+                    let cats_id = ui.make_persistent_id("periphery_categories_folder");
+                    let cats_state =
+                        egui::collapsing_header::CollapsingState::load_with_default_open(
+                            ui.ctx(),
+                            cats_id,
+                            !q.is_empty(),
+                        );
+                    let cats_hdr = cats_state.show_header(ui, |ui| {
+                        ui_icon(ui, LoxoneIcon::Category(None), 16.0);
+                        ui.label(
+                            RichText::new(crate::i18n::tr("Categories"))
+                                .color(TEXT_PRIMARY)
+                                .strong(),
+                        );
+                        ui.label(
+                            RichText::new(format!("({})", project.categories.len()))
+                                .size(11.0)
+                                .color(TEXT_MUTED),
+                        );
+                    });
+                    cats_hdr.body(|ui| {
+                        let mut cats: Vec<_> = project.categories.values().collect();
+                        cats.sort_by(|a, b| a.title.cmp(&b.title));
+                        for cat in cats {
+                            if !q.is_empty() && !cat.title.to_lowercase().contains(&q) {
+                                continue;
+                            }
+                            let is_sel = selected_uuid == Some(cat.uuid.as_str());
+                            ui.horizontal(|ui| {
+                                ui_icon(ui, LoxoneIcon::Category(cat.bk_color), 14.0);
+                                if ui
+                                    .selectable_label(
+                                        is_sel,
+                                        RichText::new(&cat.title).size(11.4).color(if is_sel {
+                                            ACCENT_BLUE
+                                        } else {
+                                            TEXT_PRIMARY
+                                        }),
+                                    )
+                                    .clicked()
+                                {
+                                    action = Some(TreeAction::SelectObject(cat.uuid.clone()));
+                                }
+                            });
+                        }
+                    });
+                }
+
+                // 3. All global system_tree sections + periphery_tree hardware hierarchy
                 for node in project
                     .system_tree
                     .iter()
-                    .filter(|n| is_periphery_header_section(n))
                     .chain(project.periphery_tree.iter())
                 {
                     if let Some(a) =
@@ -435,7 +654,12 @@ pub fn render_left_explorer(
                 }
             }
             LeftTab::System => {
-                for node in &project.system_tree {
+                // Devices & System tree: Hardware hierarchy + System sections
+                for node in project
+                    .periphery_tree
+                    .iter()
+                    .chain(project.system_tree.iter())
+                {
                     if let Some(a) =
                         render_tree_node(ui, project, node, &q, selected_uuid, live_store)
                     {
@@ -462,18 +686,6 @@ fn node_matches_query(node: &TreeNode, q: &str) -> bool {
         return true;
     }
     node.children.iter().any(|c| node_matches_query(c, q))
-}
-
-fn is_periphery_header_section(node: &TreeNode) -> bool {
-    if node.control_type == "WeatherServer" {
-        return true;
-    }
-    if node.control_type == "LoxCaption" {
-        if let Some(ct) = tree_node_attr(node, "CaptionType") {
-            return matches!(ct, "28" | "6" | "14" | "19" | "33");
-        }
-    }
-    false
 }
 
 fn is_placeable_tree_node(control_type: &str) -> bool {
@@ -820,5 +1032,39 @@ mod tests {
             tree_node_subtitle(&project, audio_srv),
             Some("Salon + jadalnia".to_string())
         );
+    }
+
+    #[test]
+    fn test_four_mode_project_trees_and_block_subtitles() {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../Sample.Loxone");
+        let project = load_loxone_file(&path).expect("Sample.Loxone should parse");
+
+        assert_eq!(LeftTab::Periphery.dropdown_label(), "Periphery");
+        assert_eq!(LeftTab::Pages.dropdown_label(), "Configuration");
+        assert_eq!(LeftTab::Rooms.dropdown_label(), "Rooms");
+        assert_eq!(LeftTab::System.dropdown_label(), "Devices");
+
+        let page = &project.pages[0];
+        let has_subtitle = page
+            .blocks
+            .iter()
+            .filter(|b| b.has_position)
+            .any(|b| block_room_category_subtitle(&project, page, b).is_some());
+        assert!(has_subtitle);
+
+        let ctx = egui::Context::default();
+        for mut tab in [
+            LeftTab::Periphery,
+            LeftTab::Pages,
+            LeftTab::Rooms,
+            LeftTab::System,
+        ] {
+            let mut filter = String::new();
+            let _ = ctx.run(egui::RawInput::default(), |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    let _ = render_left_explorer(ui, &project, &mut tab, &mut filter, 0, None, None);
+                });
+            });
+        }
     }
 }
