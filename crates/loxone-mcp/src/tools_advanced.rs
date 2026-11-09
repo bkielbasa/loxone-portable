@@ -1083,6 +1083,84 @@ fn call_advanced_tool_part2(
                 }),
             )
         }
+        "project_diff" => {
+            let base_path_opt = args
+                .get("base_path")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+                .or_else(|| {
+                    session
+                        .loaded_path()
+                        .map(|p| p.display().to_string())
+                });
+            let target_path_opt = args
+                .get("target_path")
+                .and_then(Value::as_str)
+                .map(str::to_string);
+
+            let Some(base_path_str) = base_path_opt else {
+                return JsonRpcResponse::tool_err(
+                    id,
+                    "Provide 'base_path' or load a project from disk first",
+                );
+            };
+            let base_proj = match loxone_core::parser::load_loxone_file(Path::new(&base_path_str)) {
+                Ok(p) => p,
+                Err(e) => return JsonRpcResponse::tool_err(id, e.to_string()),
+            };
+
+            let owned_target;
+            let target_proj = if let Some(tp) = target_path_opt {
+                match loxone_core::parser::load_loxone_file(Path::new(&tp)) {
+                    Ok(p) => {
+                        owned_target = p;
+                        &owned_target
+                    }
+                    Err(e) => return JsonRpcResponse::tool_err(id, e.to_string()),
+                }
+            } else {
+                let Some(proj) = session.project() else {
+                    return JsonRpcResponse::tool_err(id, "No active project loaded");
+                };
+                proj
+            };
+
+            let report = loxone_core::compare_projects(&base_proj, target_proj);
+            let entries_json: Vec<Value> = report
+                .entries
+                .iter()
+                .map(|e| {
+                    json!({
+                        "change_kind": e.change_kind,
+                        "object_kind": e.object_kind,
+                        "uuid": e.uuid,
+                        "title": e.title,
+                        "object_type": e.object_type,
+                        "location": e.location,
+                        "detail": e.detail
+                    })
+                })
+                .collect();
+
+            JsonRpcResponse::tool_ok(
+                id,
+                json!({
+                    "base_title": report.base_title,
+                    "target_title": report.target_title,
+                    "added_pages": report.added_pages,
+                    "removed_pages": report.removed_pages,
+                    "modified_pages": report.modified_pages,
+                    "added_blocks": report.added_blocks,
+                    "removed_blocks": report.removed_blocks,
+                    "modified_blocks": report.modified_blocks,
+                    "added_tree_nodes": report.added_tree_nodes,
+                    "removed_tree_nodes": report.removed_tree_nodes,
+                    "modified_tree_nodes": report.modified_tree_nodes,
+                    "total_changes": entries_json.len(),
+                    "entries": entries_json
+                }),
+            )
+        }
         "wizard_auto_configure_rooms" => {
             let preview_only = args
                 .get("preview_only")

@@ -36,8 +36,9 @@ pub use linter::{
     ProjectDiagnostic,
 };
 pub use merge::{
-    check_server_newer_version, extract_prog_archive_timestamp,
-    merge_remote_project_server_priority, MergeSummary, ServerDiffSummary, ServerVersionConflict,
+    check_server_newer_version, compare_projects, extract_prog_archive_timestamp,
+    merge_remote_project_server_priority, MergeSummary, ProjectDiffEntry, ProjectDiffReport,
+    ServerDiffSummary, ServerVersionConflict,
 };
 pub use object_config::{
     build_object_config_edits, build_object_config_rows, format_room_type,

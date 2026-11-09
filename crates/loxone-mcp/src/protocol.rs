@@ -794,6 +794,17 @@ pub fn tool_definitions() -> Value {
                 }
             },
             {
+                "name": "project_diff",
+                "description": "Compares the active project against another .Loxone file on disk (or compares two .Loxone files base_path vs target_path) and returns added, removed, and modified pages, blocks, and tree nodes.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "base_path": { "type": "string", "description": "Optional path to the baseline .Loxone file (defaults to loaded_path on disk)." },
+                        "target_path": { "type": "string", "description": "Optional path to the target .Loxone file (defaults to the active in-memory project)." }
+                    }
+                }
+            },
+            {
                 "name": "wizard_auto_configure_rooms",
                 "description": "Previews or executes the Auto Configuration room logic wizard to generate standard LightController2, AutoJalousie, HeatIRoomController2, and/or AudioZone blocks across rooms.",
                 "inputSchema": {

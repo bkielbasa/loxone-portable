@@ -385,5 +385,11 @@ mod tests {
             json!({ "preview_only": true }),
         );
         assert_eq!(after_conflicts["resolved_count"], 0);
+
+        // Stage 10: Project Diff against Sample.Loxone baseline on disk
+        let diff_res = call_tool(&mut session, "project_diff", json!({}));
+        assert!(diff_res["modified_blocks"].as_u64().unwrap() >= 1);
+        assert!(diff_res["modified_tree_nodes"].as_u64().unwrap() >= 1);
+        assert!(diff_res["total_changes"].as_u64().unwrap() >= 2);
     }
 }
