@@ -27,7 +27,9 @@ use loxone_core::room_controller_config::{
     collect_energy_source_candidates, RoomControllerConfig, RoomTempMode,
 };
 use loxone_core::simulator::SimulatedDateTime;
-use loxone_core::writer::{build_page_auto_layout_edits, ProjectEdit};
+use loxone_core::writer::{
+    build_align_blocks_edits, build_page_auto_layout_edits, BlockAlignMode, ProjectEdit,
+};
 use serde_json::{json, Value};
 
 use crate::helpers::{build_auto_config_plans, compute_find_and_replace};
@@ -1625,6 +1627,87 @@ fn call_advanced_tool_part2(
                 json!({
                     "count": terminals_json.len(),
                     "terminals": terminals_json
+                }),
+            )
+        }
+        "block_pin_set_inverted" => {
+            let (Some(block_uuid), Some(pin_key), Some(inverted)) = (
+                args.get("block_uuid").and_then(Value::as_str),
+                args.get("pin_key").and_then(Value::as_str),
+                args.get("inverted").and_then(Value::as_bool),
+            ) else {
+                return JsonRpcResponse::tool_err(
+                    id,
+                    "Missing required parameters 'block_uuid', 'pin_key', and 'inverted'",
+                );
+            };
+            let edit = ProjectEdit::SetPinInverted {
+                control_uuid: block_uuid.to_string(),
+                pin_key: pin_key.to_string(),
+                inverted,
+            };
+            if let Err(e) = session.apply_edit(edit) {
+                return JsonRpcResponse::tool_err(id, e);
+            }
+            JsonRpcResponse::tool_ok(
+                id,
+                json!({
+                    "block_uuid": block_uuid,
+                    "pin_key": pin_key,
+                    "inverted": inverted
+                }),
+            )
+        }
+        "page_align_blocks" => {
+            let (Some(page_uuid), Some(mode_str)) = (
+                args.get("page_uuid").and_then(Value::as_str),
+                args.get("mode").and_then(Value::as_str),
+            ) else {
+                return JsonRpcResponse::tool_err(
+                    id,
+                    "Missing required parameters 'page_uuid' and 'mode'",
+                );
+            };
+            let Some(mode) = BlockAlignMode::from_str_name(mode_str) else {
+                return JsonRpcResponse::tool_err(
+                    id,
+                    format!("Unsupported alignment mode '{mode_str}'"),
+                );
+            };
+            let block_uuids: Vec<String> = args
+                .get("block_uuids")
+                .and_then(Value::as_array)
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(Value::as_str)
+                        .map(str::to_string)
+                        .collect()
+                })
+                .unwrap_or_default();
+
+            let align_opt = {
+                let Some(proj) = session.project() else {
+                    return JsonRpcResponse::tool_err(id, "No project loaded");
+                };
+                build_align_blocks_edits(proj, page_uuid, &block_uuids, mode)
+            };
+            let Some((moved_count, batch)) = align_opt else {
+                return JsonRpcResponse::tool_err(
+                    id,
+                    format!("Page '{page_uuid}' not found or has no matching blocks"),
+                );
+            };
+            if moved_count > 0 {
+                if let Err(e) = session.apply_edit(batch) {
+                    return JsonRpcResponse::tool_err(id, e);
+                }
+            }
+            JsonRpcResponse::tool_ok(
+                id,
+                json!({
+                    "page_uuid": page_uuid,
+                    "mode": mode_str,
+                    "moved_blocks": moved_count
                 }),
             )
         }

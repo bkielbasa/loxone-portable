@@ -267,7 +267,30 @@ mod tests {
                 "target_pin_key": "Tr"
             }),
         );
-        assert!(ap_rule["rule_uuid"].as_str().is_some());
+        let ap_rule_uuid = ap_rule["rule_uuid"].as_str().unwrap().to_string();
+
+        // Stage 12: Pin Inversion & Multi-Block Alignment
+        let inv_res = call_tool(
+            &mut session,
+            "block_pin_set_inverted",
+            json!({
+                "block_uuid": ap_rule_uuid,
+                "pin_key": "I",
+                "inverted": true
+            }),
+        );
+        assert_eq!(inv_res["inverted"], true);
+
+        let align_res = call_tool(
+            &mut session,
+            "page_align_blocks",
+            json!({
+                "page_uuid": page_uuid,
+                "mode": "align_top",
+                "block_uuids": [lc_uuid, ap_rule_uuid]
+            }),
+        );
+        assert!(align_res["moved_blocks"].as_u64().is_some());
 
         // 10. Test Undo & Redo
         let undo_res = call_tool(&mut session, "project_undo", json!({}));

@@ -906,6 +906,40 @@ pub fn tool_definitions() -> Value {
                         "wired_only": { "type": "boolean", "description": "If true, returns only terminals wired on a schematic page." }
                     }
                 }
+            },
+            {
+                "name": "block_pin_set_inverted",
+                "description": "Sets or toggles logical negation (FLG / Inv red negation dot) on an input pin of a function block.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "block_uuid": { "type": "string", "description": "UUID of the function block." },
+                        "pin_key": { "type": "string", "description": "Connector input pin key (e.g. 'I1', 'Tr', 'Dis', 'R')." },
+                        "inverted": { "type": "boolean", "description": "Whether the input pin should be logically negated." }
+                    },
+                    "required": ["block_uuid", "pin_key", "inverted"]
+                }
+            },
+            {
+                "name": "page_align_blocks",
+                "description": "Aligns, distributes, or grid-snaps selected blocks (or all blocks on a page) using 64-unit Loxone grid coordinates.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "page_uuid": { "type": "string", "description": "UUID of the schematic page." },
+                        "mode": {
+                            "type": "string",
+                            "enum": ["align_left", "align_center_h", "align_right", "align_top", "align_middle_v", "align_bottom", "distribute_h", "distribute_v", "snap_to_grid"],
+                            "description": "Alignment or distribution mode."
+                        },
+                        "block_uuids": {
+                            "type": "array",
+                            "items": { "type": "string" },
+                            "description": "Optional list of block UUIDs to align (defaults to all positioned blocks on the page)."
+                        }
+                    },
+                    "required": ["page_uuid", "mode"]
+                }
             }
         ]
     })

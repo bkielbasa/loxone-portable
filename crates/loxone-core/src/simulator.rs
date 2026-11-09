@@ -718,7 +718,27 @@ impl OfflineSimulator {
     ) -> Vec<f64> {
         let mut values = Vec::new();
         for pin in &block.pins {
+            if pin.pin_kind == crate::model::PinKind::Output {
+                continue;
+            }
+            if let Some(ov) = self
+                .live_store
+                .pin_overrides
+                .get(&(block.uuid.clone(), pin.key.clone()))
+            {
+                let raw_v = parse_signal_numeric(ov);
+                let v = if pin.inverted {
+                    if raw_v > 0.0 { 0.0 } else { 1.0 }
+                } else {
+                    raw_v
+                };
+                values.push(v);
+                continue;
+            }
             if pin.incoming_links.is_empty() {
+                if pin.inverted {
+                    values.push(1.0);
+                }
                 continue;
             }
             for link in &pin.incoming_links {
@@ -830,6 +850,9 @@ impl OfflineSimulator {
             if !def.is_empty() {
                 return Some(apply_inv(parse_signal_numeric(def)));
             }
+        }
+        if pin.inverted {
+            return Some(1.0);
         }
         None
     }
@@ -1094,5 +1117,45 @@ mod tests {
         sim.advance_seconds(&project, 16 * 3600);
         assert_eq!(sim.simulated_time.format_iso(), "2026-04-18 23:00:00");
         assert!(!sim.live_store.resolve_pin_signal(dt_blk, dt_q, page_ref, &project).is_active);
+    }
+
+    #[test]
+    fn test_inverted_input_pin_negation_in_simulator() {
+        let xml = std::fs::read_to_string("../../Sample.Loxone")
+            .expect("Sample.Loxone fixture should exist");
+        let mut project = crate::parser::parse_loxone_xml(&xml).expect("parse should succeed");
+
+        let mut page = new_page("Inversion Test Page");
+        let mut and_gate = new_page_block("And", "Safety Interlock", 128.0, 128.0);
+        // Invert input pin(s) I* so that when 0 / unconnected, AND gate outputs 1
+        let mut inv_pin_key = String::new();
+        for p in &mut and_gate.pins {
+            if p.key.starts_with('I') {
+                p.inverted = true;
+                if inv_pin_key.is_empty() {
+                    inv_pin_key = p.key.clone();
+                }
+            }
+        }
+        let and_uuid = and_gate.uuid.clone();
+        page.blocks.push(and_gate);
+        project.pages.push(page);
+        project.xref = crate::xref::XrefIndex::build(&project);
+
+        let mut sim = OfflineSimulator::new();
+        sim.start(&project);
+
+        let page_ref = project
+            .pages
+            .iter()
+            .find(|p| p.title == "Inversion Test Page")
+            .unwrap();
+        let blk = page_ref.blocks.iter().find(|b| b.uuid == and_uuid).unwrap();
+        let q_pin = blk.pins.iter().find(|p| p.key == "Q").unwrap();
+        assert!(sim.live_store.resolve_pin_signal(blk, q_pin, page_ref, &project).is_active);
+
+        // Driving the inverted input pin high (1) negates it to 0 -> AND gate output becomes 0
+        sim.apply_command(&project, &and_uuid, Some(&inv_pin_key), "1");
+        assert!(!sim.live_store.resolve_pin_signal(blk, q_pin, page_ref, &project).is_active);
     }
 }
