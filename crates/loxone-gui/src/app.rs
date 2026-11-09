@@ -1636,6 +1636,16 @@ impl LoxonePortableApp {
                     }
                 }
             }
+            TopBarAction::OpenTodoList => {
+                if let Some(proj) = &self.project {
+                    self.admin_modals.open_todo_list(proj);
+                }
+            }
+            TopBarAction::OpenAutopilotDesigner => {
+                if let Some(proj) = &self.project {
+                    self.admin_modals.open_autopilot_designer(proj);
+                }
+            }
         }
     }
 

@@ -279,6 +279,8 @@ pub enum TopBarAction {
     OpenAutoConfiguration,
     ExportComponentBomCsv,
     AutoLayoutActivePage,
+    OpenTodoList,
+    OpenAutopilotDesigner,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2394,6 +2396,20 @@ fn render_ribbon_row_2(
                                 "Automatically tidy and arrange blocks on the active page in topological signal-flow columns snapped to the 64-unit grid",
                                 LOXONE_GREEN,
                                 TopBarAction::AutoLayoutActivePage,
+                            ),
+                            (
+                                "📌",
+                                "To-Do Manager",
+                                "List, create, resolve, and jump to To-Do / Memo notes across all project pages",
+                                Color32::from_rgb(0xE4, 0xB3, 0x3B),
+                                TopBarAction::OpenTodoList,
+                            ),
+                            (
+                                "🤖",
+                                "Autopilot Designer",
+                                "Create IF / AND / OR condition → action Autopilot logic rules",
+                                ACCENT_BLUE,
+                                TopBarAction::OpenAutopilotDesigner,
                             ),
                         ];
                         for (icon, label, tip, tint, act) in admin_tiles {

@@ -18,6 +18,10 @@ use loxone_core::periphery_provisioning::{
     build_replace_device_edit, build_resolve_serial_conflicts_edit, collect_provisioned_hardware,
     detect_serial_number_conflicts,
 };
+use loxone_core::project_admin::{
+    build_add_todo_edit, build_autopilot_rule_edits, build_resolve_todo_edit,
+    collect_project_todos, AutopilotRuleSpec,
+};
 use loxone_core::room_controller_config::{
     collect_energy_source_candidates, RoomControllerConfig, RoomTempMode,
 };
@@ -903,6 +907,179 @@ fn call_advanced_tool_part2(
                 json!({
                     "page_uuid": page_uuid,
                     "moved_blocks": moved_count
+                }),
+            )
+        }
+        "todo_list" => {
+            let Some(proj) = session.project() else {
+                return JsonRpcResponse::tool_err(id, "No project loaded");
+            };
+            let todos: Vec<Value> = collect_project_todos(proj)
+                .into_iter()
+                .map(|t| {
+                    json!({
+                        "uuid": t.uuid,
+                        "page_uuid": t.page_uuid,
+                        "page_index": t.page_index,
+                        "page_title": t.page_title,
+                        "title": t.title,
+                        "text": t.text,
+                        "px": t.px,
+                        "py": t.py,
+                        "is_resolved": t.is_resolved
+                    })
+                })
+                .collect();
+            JsonRpcResponse::tool_ok(
+                id,
+                json!({
+                    "count": todos.len(),
+                    "todos": todos
+                }),
+            )
+        }
+        "todo_add" => {
+            let (Some(page_uuid), Some(title)) = (
+                args.get("page_uuid").and_then(Value::as_str),
+                args.get("title").and_then(Value::as_str),
+            ) else {
+                return JsonRpcResponse::tool_err(
+                    id,
+                    "Missing required parameters 'page_uuid' and 'title'",
+                );
+            };
+            let text = args.get("text").and_then(Value::as_str).unwrap_or("");
+            let px = args
+                .get("px")
+                .and_then(Value::as_f64)
+                .map(|v| v as f32)
+                .unwrap_or(192.0);
+            let py = args
+                .get("py")
+                .and_then(Value::as_f64)
+                .map(|v| v as f32)
+                .unwrap_or(128.0);
+            let (todo_uuid, edit) = build_add_todo_edit(page_uuid, title, text, px, py);
+            if let Err(e) = session.apply_edit(edit) {
+                return JsonRpcResponse::tool_err(id, e);
+            }
+            JsonRpcResponse::tool_ok(
+                id,
+                json!({
+                    "todo_uuid": todo_uuid,
+                    "page_uuid": page_uuid,
+                    "title": title,
+                    "text": text
+                }),
+            )
+        }
+        "todo_resolve" => {
+            let Some(todo_uuid) = args.get("todo_uuid").and_then(Value::as_str) else {
+                return JsonRpcResponse::tool_err(id, "Missing required parameter 'todo_uuid'");
+            };
+            let delete_block = args
+                .get("delete_block")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            let edit_opt = {
+                let Some(proj) = session.project() else {
+                    return JsonRpcResponse::tool_err(id, "No project loaded");
+                };
+                build_resolve_todo_edit(proj, todo_uuid, delete_block)
+            };
+            let Some(edit) = edit_opt else {
+                return JsonRpcResponse::tool_err(
+                    id,
+                    format!("To-Do block '{todo_uuid}' not found"),
+                );
+            };
+            if let Err(e) = session.apply_edit(edit) {
+                return JsonRpcResponse::tool_err(id, e);
+            }
+            JsonRpcResponse::tool_ok(
+                id,
+                json!({
+                    "todo_uuid": todo_uuid,
+                    "deleted": delete_block,
+                    "resolved": true
+                }),
+            )
+        }
+        "autopilot_rule_create" => {
+            let (Some(title), Some(page_uuid)) = (
+                args.get("title").and_then(Value::as_str),
+                args.get("page_uuid").and_then(Value::as_str),
+            ) else {
+                return JsonRpcResponse::tool_err(
+                    id,
+                    "Missing required parameters 'title' and 'page_uuid'",
+                );
+            };
+            let logic_op = args
+                .get("logic_op")
+                .and_then(Value::as_str)
+                .unwrap_or("AND")
+                .to_string();
+            let condition_source_uuids: Vec<String> = args
+                .get("condition_source_uuids")
+                .and_then(Value::as_array)
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(Value::as_str)
+                        .map(str::to_string)
+                        .collect()
+                })
+                .unwrap_or_default();
+            let target_block_uuid = args
+                .get("target_block_uuid")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            let target_pin_key = args
+                .get("target_pin_key")
+                .and_then(Value::as_str)
+                .unwrap_or("Tr")
+                .to_string();
+            let px = args
+                .get("px")
+                .and_then(Value::as_f64)
+                .map(|v| v as f32)
+                .unwrap_or(1024.0);
+            let py = args
+                .get("py")
+                .and_then(Value::as_f64)
+                .map(|v| v as f32)
+                .unwrap_or(256.0);
+
+            let spec = AutopilotRuleSpec {
+                title: title.to_string(),
+                page_uuid: page_uuid.to_string(),
+                logic_op: logic_op.clone(),
+                condition_source_uuids: condition_source_uuids.clone(),
+                target_block_uuid,
+                target_pin_key,
+                px,
+                py,
+            };
+            let rule_opt = {
+                let Some(proj) = session.project() else {
+                    return JsonRpcResponse::tool_err(id, "No project loaded");
+                };
+                build_autopilot_rule_edits(proj, &spec)
+            };
+            let Some((rule_uuid, edit)) = rule_opt else {
+                return JsonRpcResponse::tool_err(id, format!("Page '{page_uuid}' not found"));
+            };
+            if let Err(e) = session.apply_edit(edit) {
+                return JsonRpcResponse::tool_err(id, e);
+            }
+            JsonRpcResponse::tool_ok(
+                id,
+                json!({
+                    "rule_uuid": rule_uuid,
+                    "title": title,
+                    "logic_op": logic_op,
+                    "condition_count": condition_source_uuids.len()
                 }),
             )
         }

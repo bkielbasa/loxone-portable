@@ -423,6 +423,255 @@ pub fn active_modes_on(project: &LoxoneProject, month: u32, day: u32, weekday_mo
     out
 }
 
+// ---------------------------------------------------------------------------
+// Project To-Do / Memo Manager & Loxone Autopilot Rule Designer (Stage 9)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ProjectTodoItem {
+    pub uuid: String,
+    pub page_uuid: String,
+    pub page_index: usize,
+    pub page_title: String,
+    pub title: String,
+    pub text: String,
+    pub px: f32,
+    pub py: f32,
+    pub is_resolved: bool,
+}
+
+pub fn collect_project_todos(project: &LoxoneProject) -> Vec<ProjectTodoItem> {
+    let mut out = Vec::new();
+    for (page_index, page) in project.pages.iter().enumerate() {
+        for block in &page.blocks {
+            if matches!(block.block_type.as_str(), "Memo" | "Note") {
+                let done_attr = block
+                    .raw_attributes
+                    .iter()
+                    .find(|(k, _)| k == "Done")
+                    .map(|(_, v)| v == "true")
+                    .unwrap_or(false);
+                let text = block
+                    .text_content
+                    .clone()
+                    .or_else(|| {
+                        block
+                            .raw_attributes
+                            .iter()
+                            .find(|(k, _)| k == "Text" || k == "Desc")
+                            .map(|(_, v)| v.clone())
+                    })
+                    .unwrap_or_default();
+                let is_resolved = done_attr || block.title.starts_with("[DONE]");
+                out.push(ProjectTodoItem {
+                    uuid: block.uuid.clone(),
+                    page_uuid: page.uuid.clone(),
+                    page_index,
+                    page_title: page.title.clone(),
+                    title: block.title.clone(),
+                    text,
+                    px: block.px,
+                    py: block.py,
+                    is_resolved,
+                });
+            }
+        }
+    }
+    out
+}
+
+pub fn build_add_todo_edit(
+    page_uuid: &str,
+    title: &str,
+    text: &str,
+    px: f32,
+    py: f32,
+) -> (String, ProjectEdit) {
+    let mut block = crate::factory::new_page_block("Memo", title, px, py);
+    block.text_content = Some(text.to_string());
+    block
+        .raw_attributes
+        .push(("Text".to_string(), text.to_string()));
+    let uuid = block.uuid.clone();
+    (
+        uuid,
+        ProjectEdit::AddPageBlock {
+            page_uuid: page_uuid.to_string(),
+            block,
+        },
+    )
+}
+
+pub fn build_resolve_todo_edit(
+    project: &LoxoneProject,
+    todo_uuid: &str,
+    delete_block: bool,
+) -> Option<ProjectEdit> {
+    let (page_uuid, block) = project.pages.iter().find_map(|p| {
+        p.blocks
+            .iter()
+            .find(|b| b.uuid == todo_uuid)
+            .map(|b| (p.uuid.clone(), b))
+    })?;
+    if delete_block {
+        Some(ProjectEdit::RemovePageBlock {
+            page_uuid,
+            block_uuid: todo_uuid.to_string(),
+        })
+    } else {
+        let new_title = if block.title.starts_with("[DONE] ") {
+            block.title.clone()
+        } else {
+            format!("[DONE] {}", block.title)
+        };
+        Some(ProjectEdit::Batch(vec![
+            ProjectEdit::SetControlAttr {
+                control_uuid: todo_uuid.to_string(),
+                attr_name: "Done".to_string(),
+                value: Some("true".to_string()),
+            },
+            ProjectEdit::SetControlAttr {
+                control_uuid: todo_uuid.to_string(),
+                attr_name: "Title".to_string(),
+                value: Some(new_title),
+            },
+        ]))
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct AutopilotRuleSpec {
+    pub title: String,
+    pub page_uuid: String,
+    pub logic_op: String,
+    pub condition_source_uuids: Vec<String>,
+    pub target_block_uuid: String,
+    pub target_pin_key: String,
+    pub px: f32,
+    pub py: f32,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct AutopilotRuleInfo {
+    pub uuid: String,
+    pub title: String,
+    pub logic_op: String,
+    pub page_uuid: String,
+    pub page_title: String,
+    pub condition_count: usize,
+}
+
+pub fn collect_autopilot_rules(project: &LoxoneProject) -> Vec<AutopilotRuleInfo> {
+    let mut out = Vec::new();
+    for page in &project.pages {
+        for block in &page.blocks {
+            let is_ap = block
+                .raw_attributes
+                .iter()
+                .any(|(k, v)| k == "AutopilotRule" && v == "true")
+                || block.title.starts_with("[Autopilot]");
+            if is_ap {
+                let condition_count = block
+                    .pins
+                    .iter()
+                    .map(|p| p.incoming_links.len())
+                    .sum();
+                out.push(AutopilotRuleInfo {
+                    uuid: block.uuid.clone(),
+                    title: block.title.clone(),
+                    logic_op: block.block_type.clone(),
+                    page_uuid: page.uuid.clone(),
+                    page_title: page.title.clone(),
+                    condition_count,
+                });
+            }
+        }
+    }
+    out
+}
+
+pub fn build_autopilot_rule_edits(
+    project: &LoxoneProject,
+    spec: &AutopilotRuleSpec,
+) -> Option<(String, ProjectEdit)> {
+    let page = project.pages.iter().find(|p| p.uuid == spec.page_uuid)?;
+    let gate_type = if spec.logic_op.trim().eq_ignore_ascii_case("OR") {
+        "Or"
+    } else {
+        "And"
+    };
+    let rule_title = if spec.title.trim().starts_with("[Autopilot]") {
+        spec.title.trim().to_string()
+    } else {
+        format!("[Autopilot] {}", spec.title.trim())
+    };
+    let mut gate_block = crate::factory::new_page_block(gate_type, &rule_title, spec.px, spec.py);
+    gate_block
+        .raw_attributes
+        .push(("AutopilotRule".to_string(), "true".to_string()));
+    let gate_uuid = gate_block.uuid.clone();
+    let gate_out_pin_uuid = gate_block
+        .pins
+        .iter()
+        .find(|p| p.key == "Q" || p.key == "O")
+        .map(|p| p.uuid.clone())
+        .unwrap_or_else(generate_loxone_uuid);
+
+    let mut edits = vec![ProjectEdit::AddPageBlock {
+        page_uuid: spec.page_uuid.clone(),
+        block: gate_block,
+    }];
+
+    for (idx, cond_uuid) in spec.condition_source_uuids.iter().enumerate() {
+        let in_pin_key = format!("I{}", idx + 1);
+        if let Some(src_block) = page.blocks.iter().find(|b| b.uuid == *cond_uuid) {
+            if let Some(src_pin) = src_block
+                .pins
+                .iter()
+                .find(|p| matches!(p.key.as_str(), "Q" | "O" | "AQ"))
+                .or_else(|| src_block.pins.first())
+            {
+                edits.push(ProjectEdit::AddWireLink {
+                    target_block_uuid: gate_uuid.clone(),
+                    target_pin_key: in_pin_key,
+                    source_pin_uuid: src_pin.uuid.clone(),
+                });
+            }
+        } else if let Some(tree_node) = find_node_by_uuid(project, cond_uuid) {
+            let ref_block = crate::factory::new_reference_block(
+                "InputRef",
+                tree_node,
+                (spec.px - 640.0).max(128.0),
+                spec.py + (idx as f32) * 192.0,
+            );
+            let ref_out_pin_uuid = ref_block
+                .pins
+                .first()
+                .map(|p| p.uuid.clone())
+                .unwrap_or_else(generate_loxone_uuid);
+            edits.push(ProjectEdit::AddPageBlock {
+                page_uuid: spec.page_uuid.clone(),
+                block: ref_block,
+            });
+            edits.push(ProjectEdit::AddWireLink {
+                target_block_uuid: gate_uuid.clone(),
+                target_pin_key: in_pin_key,
+                source_pin_uuid: ref_out_pin_uuid,
+            });
+        }
+    }
+
+    if !spec.target_block_uuid.trim().is_empty() && !spec.target_pin_key.trim().is_empty() {
+        edits.push(ProjectEdit::AddWireLink {
+            target_block_uuid: spec.target_block_uuid.clone(),
+            target_pin_key: spec.target_pin_key.clone(),
+            source_pin_uuid: gate_out_pin_uuid,
+        });
+    }
+
+    Some((gate_uuid, ProjectEdit::Batch(edits)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

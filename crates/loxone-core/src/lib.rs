@@ -46,6 +46,11 @@ pub use object_config::{
 };
 pub use parser::parse_raw_dom;
 pub use periphery_provisioning::*;
+pub use project_admin::{
+    build_add_todo_edit, build_autopilot_rule_edits, build_resolve_todo_edit,
+    collect_autopilot_rules, collect_project_todos, AutopilotRuleInfo, AutopilotRuleSpec,
+    ProjectTodoItem,
+};
 pub use room_controller_config::{
     collect_energy_source_candidates, collect_user_operating_modes_for_timer,
     supports_room_controller_config, EnergySourceCandidate, EnergySourceGroup,
