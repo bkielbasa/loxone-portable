@@ -655,6 +655,55 @@ pub fn tool_definitions() -> Value {
                 }
             },
             {
+                "name": "config_audio_zone_get",
+                "description": "Reads AudioZone / MusicPlayer / StereoExtension / MusicPlayerGroup configuration, volume presets, assigned Audioserver AudioOut channels, player group sync, and room favorites.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "block_uuid": { "type": "string", "description": "UUID of the AudioZone / MusicPlayer block." }
+                    },
+                    "required": ["block_uuid"]
+                }
+            },
+            {
+                "name": "config_audio_zone_set",
+                "description": "Updates AudioZone / MusicPlayer / StereoExtension / MusicPlayerGroup parameters, volume presets, assigned AudioOut channels (with MxV/VOLL/Vg), player group synchronization, and room favorites.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "block_uuid": { "type": "string", "description": "UUID of the AudioZone / MusicPlayer block." },
+                        "speaker_cfg": { "type": "integer", "description": "Speaker mode (1=Mono, 2=Stereo, 4=Quad)." },
+                        "presence_enabled": { "type": "boolean" },
+                        "airplay_enabled": { "type": "boolean" },
+                        "spotify_enabled": { "type": "boolean" },
+                        "high_pass_filter": { "type": "boolean" },
+                        "default_vol": { "type": "integer" },
+                        "max_vol": { "type": "integer" },
+                        "step_vol": { "type": "integer" },
+                        "alarm_vol": { "type": "integer" },
+                        "bell_vol": { "type": "integer" },
+                        "buzzer_vol": { "type": "integer" },
+                        "tts_vol": { "type": "integer" },
+                        "assigned_channel_uuids": { "type": "array", "items": { "type": "string" } },
+                        "master_player_uuid": { "type": "string" },
+                        "grouped_player_uuids": { "type": "array", "items": { "type": "string" } },
+                        "favorites": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "slot": { "type": "integer" },
+                                    "title": { "type": "string" },
+                                    "source_uri": { "type": "string" }
+                                },
+                                "required": ["title", "source_uri"]
+                            }
+                        }
+                    },
+                    "required": ["block_uuid"]
+                }
+            },
+            {
                 "name": "wizard_auto_configure_rooms",
                 "description": "Previews or executes the Auto Configuration room logic wizard to generate standard LightController2, AutoJalousie, HeatIRoomController2, and/or AudioZone blocks across rooms.",
                 "inputSchema": {

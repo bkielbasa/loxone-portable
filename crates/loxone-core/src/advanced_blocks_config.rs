@@ -234,7 +234,7 @@ impl CentralBlockConfig {
 }
 
 // ============================================================================
-// 2. AUDIO ZONE / MUSIC PLAYER (`MusicPlayer`, `AudioZone`, `StereoExtension`)
+// 2. AUDIO ZONE / MUSIC PLAYER (`MusicPlayer`, `AudioZone`, `StereoExtension`, `MusicPlayerGroup`)
 // ============================================================================
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -245,6 +245,56 @@ pub struct AudioOutChannel {
     pub assigned_player_uuid: Option<String>,
     pub max_vol: u32,
     pub line_out_vol: u32,
+    pub gain_db: i32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AudioZoneCandidate {
+    pub uuid: String,
+    pub title: String,
+    pub block_type: String,
+    pub room_name: String,
+    pub page_title: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AudioFavoritePreset {
+    pub slot: u32,
+    pub title: String,
+    pub source_uri: String,
+}
+
+pub fn collect_audio_zone_candidates(
+    project: &LoxoneProject,
+    exclude_uuid: &str,
+) -> Vec<AudioZoneCandidate> {
+    let mut out = Vec::new();
+    for page in &project.pages {
+        for block in &page.blocks {
+            if AudioZoneConfig::is_audio_zone_block(&block.block_type) && block.uuid != exclude_uuid
+            {
+                let room_name = block
+                    .room_uuid
+                    .as_deref()
+                    .or(page.room_uuid.as_deref())
+                    .and_then(|u| project.places.get(u))
+                    .map(|r| r.title.clone())
+                    .unwrap_or_else(|| "Unassigned".to_string());
+                out.push(AudioZoneCandidate {
+                    uuid: block.uuid.clone(),
+                    title: if block.title.is_empty() {
+                        block.block_type.clone()
+                    } else {
+                        block.title.clone()
+                    },
+                    block_type: block.block_type.clone(),
+                    room_name,
+                    page_title: page.title.clone(),
+                });
+            }
+        }
+    }
+    out
 }
 
 fn collect_audio_out_recursive(
@@ -263,6 +313,9 @@ fn collect_audio_out_recursive(
         let line_out_vol = find_attr(&node.raw_attributes, "VOLL")
             .and_then(|v| v.parse::<u32>().ok())
             .unwrap_or(30);
+        let gain_db = find_attr(&node.raw_attributes, "Vg")
+            .and_then(|v| v.parse::<i32>().ok())
+            .unwrap_or(0);
         out.push(AudioOutChannel {
             uuid: node.uuid.clone(),
             title: node.title.clone(),
@@ -270,6 +323,7 @@ fn collect_audio_out_recursive(
             assigned_player_uuid,
             max_vol,
             line_out_vol,
+            gain_db,
         });
     }
     let next_parent = if matches!(
@@ -294,6 +348,47 @@ pub fn collect_audio_out_channels(project: &LoxoneProject) -> Vec<AudioOutChanne
     out
 }
 
+fn parse_favorites_attr(raw: &str) -> Vec<AudioFavoritePreset> {
+    raw.split(';')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .enumerate()
+        .map(|(idx, item)| {
+            let mut parts = item.splitn(3, '|');
+            let first = parts.next().unwrap_or_default().trim();
+            let second = parts.next().map(str::trim);
+            let third = parts.next().map(str::trim);
+            if let (Ok(slot), Some(title)) = (first.parse::<u32>(), second) {
+                AudioFavoritePreset {
+                    slot,
+                    title: title.to_string(),
+                    source_uri: third.unwrap_or("tunein://preset").to_string(),
+                }
+            } else {
+                AudioFavoritePreset {
+                    slot: (idx as u32) + 1,
+                    title: first.to_string(),
+                    source_uri: second.unwrap_or("tunein://preset").to_string(),
+                }
+            }
+        })
+        .collect()
+}
+
+fn serialize_favorites_attr(favs: &[AudioFavoritePreset]) -> String {
+    favs.iter()
+        .map(|f| {
+            format!(
+                "{}|{}|{}",
+                f.slot,
+                f.title.replace([';', '|'], " "),
+                f.source_uri.replace(';', " ")
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(";")
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AudioZoneConfig {
     pub speaker_cfg: u32,
@@ -309,11 +404,20 @@ pub struct AudioZoneConfig {
     pub buzzer_vol: u32,
     pub tts_vol: u32,
     pub assigned_channel_uuids: Vec<String>,
+    pub channel_max_vols: std::collections::BTreeMap<String, u32>,
+    pub channel_line_out_vols: std::collections::BTreeMap<String, u32>,
+    pub channel_gains: std::collections::BTreeMap<String, i32>,
+    pub master_player_uuid: Option<String>,
+    pub grouped_player_uuids: Vec<String>,
+    pub favorites: Vec<AudioFavoritePreset>,
 }
 
 impl AudioZoneConfig {
     pub fn is_audio_zone_block(block_type: &str) -> bool {
-        matches!(block_type, "MusicPlayer" | "AudioZone" | "StereoExtension")
+        matches!(
+            block_type,
+            "MusicPlayer" | "AudioZone" | "StereoExtension" | "MusicPlayerGroup"
+        )
     }
 
     pub fn from_block(block: &PageBlock, project: &LoxoneProject) -> Self {
@@ -325,11 +429,38 @@ impl AudioZoneConfig {
         let spotify_enabled = find_attr(&block.raw_attributes, "SPC") == Some("true");
         let high_pass_filter = find_attr(&block.raw_attributes, "HPF") == Some("true");
 
-        let assigned_channel_uuids = collect_audio_out_channels(project)
-            .into_iter()
-            .filter(|ch| ch.assigned_player_uuid.as_deref() == Some(block.uuid.as_str()))
-            .map(|ch| ch.uuid)
+        let all_channels = collect_audio_out_channels(project);
+        let mut assigned_channel_uuids = Vec::new();
+        let mut channel_max_vols = std::collections::BTreeMap::new();
+        let mut channel_line_out_vols = std::collections::BTreeMap::new();
+        let mut channel_gains = std::collections::BTreeMap::new();
+
+        for ch in all_channels {
+            channel_max_vols.insert(ch.uuid.clone(), ch.max_vol);
+            channel_line_out_vols.insert(ch.uuid.clone(), ch.line_out_vol);
+            channel_gains.insert(ch.uuid.clone(), ch.gain_db);
+            if ch.assigned_player_uuid.as_deref() == Some(block.uuid.as_str()) {
+                assigned_channel_uuids.push(ch.uuid);
+            }
+        }
+
+        let master_player_uuid = find_attr(&block.raw_attributes, "Mst")
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string);
+
+        let grouped_player_uuids = find_attr(&block.raw_attributes, "GrpMembers")
+            .or_else(|| find_attr(&block.raw_attributes, "rec"))
+            .unwrap_or_default()
+            .split(',')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
             .collect();
+
+        let favorites = find_attr(&block.raw_attributes, "Favs")
+            .map(parse_favorites_attr)
+            .unwrap_or_default();
 
         Self {
             speaker_cfg,
@@ -345,6 +476,12 @@ impl AudioZoneConfig {
             buzzer_vol: parse_pin_u32(block, "BuzzVol", 50),
             tts_vol: parse_pin_u32(block, "TTSVol", 40),
             assigned_channel_uuids,
+            channel_max_vols,
+            channel_line_out_vols,
+            channel_gains,
+            master_player_uuid,
+            grouped_player_uuids,
+            favorites,
         }
     }
 
@@ -364,12 +501,90 @@ impl AudioZoneConfig {
         }
     }
 
+    pub fn channel_max_vol(&self, ch: &AudioOutChannel) -> u32 {
+        self.channel_max_vols
+            .get(&ch.uuid)
+            .copied()
+            .unwrap_or(ch.max_vol)
+    }
+
+    pub fn set_channel_max_vol(&mut self, channel_uuid: &str, vol: u32) {
+        self.channel_max_vols
+            .insert(channel_uuid.to_string(), vol.clamp(1, 100));
+    }
+
+    pub fn channel_line_out_vol(&self, ch: &AudioOutChannel) -> u32 {
+        self.channel_line_out_vols
+            .get(&ch.uuid)
+            .copied()
+            .unwrap_or(ch.line_out_vol)
+    }
+
+    pub fn set_channel_line_out_vol(&mut self, channel_uuid: &str, vol: u32) {
+        self.channel_line_out_vols
+            .insert(channel_uuid.to_string(), vol.clamp(0, 100));
+    }
+
+    pub fn channel_gain(&self, ch: &AudioOutChannel) -> i32 {
+        self.channel_gains
+            .get(&ch.uuid)
+            .copied()
+            .unwrap_or(ch.gain_db)
+    }
+
+    pub fn set_channel_gain(&mut self, channel_uuid: &str, gain_db: i32) {
+        self.channel_gains
+            .insert(channel_uuid.to_string(), gain_db.clamp(-12, 12));
+    }
+
+    pub fn is_player_grouped(&self, player_uuid: &str) -> bool {
+        self.grouped_player_uuids.iter().any(|u| u == player_uuid)
+    }
+
+    pub fn toggle_grouped_player(&mut self, player_uuid: &str) {
+        if let Some(pos) = self
+            .grouped_player_uuids
+            .iter()
+            .position(|u| u == player_uuid)
+        {
+            self.grouped_player_uuids.remove(pos);
+        } else {
+            self.grouped_player_uuids.push(player_uuid.to_string());
+        }
+    }
+
+    pub fn add_favorite(&mut self, title: impl Into<String>, source_uri: impl Into<String>) {
+        let next_slot = self
+            .favorites
+            .iter()
+            .map(|f| f.slot)
+            .max()
+            .unwrap_or(0)
+            .saturating_add(1);
+        self.favorites.push(AudioFavoritePreset {
+            slot: next_slot,
+            title: title.into(),
+            source_uri: source_uri.into(),
+        });
+    }
+
+    pub fn remove_favorite(&mut self, index: usize) {
+        if index < self.favorites.len() {
+            self.favorites.remove(index);
+            for (idx, fav) in self.favorites.iter_mut().enumerate() {
+                fav.slot = (idx as u32) + 1;
+            }
+        }
+    }
+
     pub fn to_project_edit(
         &self,
         _page_uuid: &str,
         block_uuid: &str,
         all_channels: &[AudioOutChannel],
     ) -> ProjectEdit {
+        let grouped_str = self.grouped_player_uuids.join(",");
+        let favs_str = serialize_favorites_attr(&self.favorites);
         let mut edits = vec![
             ProjectEdit::SetControlAttr {
                 control_uuid: block_uuid.to_string(),
@@ -395,6 +610,25 @@ impl AudioZoneConfig {
                 control_uuid: block_uuid.to_string(),
                 attr_name: "HPF".to_string(),
                 value: self.high_pass_filter.then(|| "true".to_string()),
+            },
+            ProjectEdit::SetControlAttr {
+                control_uuid: block_uuid.to_string(),
+                attr_name: "Mst".to_string(),
+                value: self
+                    .master_player_uuid
+                    .as_ref()
+                    .filter(|s| !s.trim().is_empty())
+                    .cloned(),
+            },
+            ProjectEdit::SetControlAttr {
+                control_uuid: block_uuid.to_string(),
+                attr_name: "GrpMembers".to_string(),
+                value: (!grouped_str.is_empty()).then_some(grouped_str),
+            },
+            ProjectEdit::SetControlAttr {
+                control_uuid: block_uuid.to_string(),
+                attr_name: "Favs".to_string(),
+                value: (!favs_str.is_empty()).then_some(favs_str),
             },
             ProjectEdit::SetPinDefault {
                 control_uuid: block_uuid.to_string(),
@@ -448,6 +682,33 @@ impl AudioZoneConfig {
                     attr_name: "Ply".to_string(),
                     value: None,
                 });
+            }
+
+            if want_assigned {
+                let target_max_vol = self.channel_max_vol(ch);
+                if target_max_vol != ch.max_vol {
+                    edits.push(ProjectEdit::SetControlAttr {
+                        control_uuid: ch.uuid.clone(),
+                        attr_name: "MxV".to_string(),
+                        value: Some(target_max_vol.to_string()),
+                    });
+                }
+                let target_line_vol = self.channel_line_out_vol(ch);
+                if target_line_vol != ch.line_out_vol {
+                    edits.push(ProjectEdit::SetControlAttr {
+                        control_uuid: ch.uuid.clone(),
+                        attr_name: "VOLL".to_string(),
+                        value: Some(target_line_vol.to_string()),
+                    });
+                }
+                let target_gain = self.channel_gain(ch);
+                if target_gain != ch.gain_db {
+                    edits.push(ProjectEdit::SetControlAttr {
+                        control_uuid: ch.uuid.clone(),
+                        attr_name: "Vg".to_string(),
+                        value: Some(target_gain.to_string()),
+                    });
+                }
             }
         }
 
