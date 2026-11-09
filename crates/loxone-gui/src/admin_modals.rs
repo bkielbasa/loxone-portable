@@ -37,6 +37,7 @@ pub enum AdminModal {
     ProjectDiff,
     TechReportWizard,
     MultiplierManager,
+    SimulationScenarioRunner,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -162,6 +163,10 @@ pub struct AdminModalsState {
     pub mult_address_draft: String,
     pub mult_desc_draft: String,
     pub mult_overrides_draft: Vec<(String, String)>,
+    // Simulation Scenario Runner state (Stage 15)
+    pub sim_scenarios: Vec<loxone_core::SimulationScenario>,
+    pub sim_selected_scenario_idx: usize,
+    pub sim_scenario_reports: Vec<loxone_core::ScenarioRunReport>,
 }
 
 impl Default for AdminModalsState {
@@ -216,6 +221,9 @@ impl Default for AdminModalsState {
             mult_address_draft: String::new(),
             mult_desc_draft: String::new(),
             mult_overrides_draft: Vec::new(),
+            sim_scenarios: Vec::new(),
+            sim_selected_scenario_idx: 0,
+            sim_scenario_reports: Vec::new(),
         }
     }
 }
@@ -406,6 +414,19 @@ impl AdminModalsState {
             }
         }
         self.open = AdminModal::MultiplierManager;
+    }
+
+    pub fn open_simulation_scenario_runner(&mut self, project: &LoxoneProject) {
+        self.status = None;
+        if self.sim_scenarios.is_empty() {
+            self.sim_scenarios = loxone_core::build_default_project_scenarios(project);
+        }
+        self.sim_scenario_reports = self
+            .sim_scenarios
+            .iter()
+            .map(|sc| loxone_core::run_simulation_scenario(project, sc))
+            .collect();
+        self.open = AdminModal::SimulationScenarioRunner;
     }
 
     pub fn close(&mut self) {
@@ -649,6 +670,9 @@ pub fn render_admin_modals(
                 }
                 AdminModal::MultiplierManager => {
                     render_multiplier_manager(ctx, state, project, &mut out)
+                }
+                AdminModal::SimulationScenarioRunner => {
+                    render_simulation_scenario_runner(ctx, state, project, &mut out)
                 }
                 _ => true,
             }
@@ -3749,6 +3773,191 @@ fn render_multiplier_manager(
                             state.mult_selected_uuid = Some(saved_uuid);
                             out.push(AdminAction::Edit(edit));
                             state.status = Some("Saved Multiplier unit.".to_string());
+                        }
+                    });
+                });
+            });
+        },
+    )
+}
+
+fn render_simulation_scenario_runner(
+    ctx: &egui::Context,
+    state: &mut AdminModalsState,
+    project: &LoxoneProject,
+    out: &mut Vec<AdminAction>,
+) -> bool {
+    let status = state.status.clone();
+    modal_window(
+        ctx,
+        "admin_sim_scenario_runner",
+        "Deterministic Simulation Test Scenarios & Regression Runner",
+        [940.0, 620.0],
+        status.as_deref(),
+        |ui| {
+            let total_scenarios = state.sim_scenarios.len();
+            let passed_scenarios = state
+                .sim_scenario_reports
+                .iter()
+                .filter(|r| r.passed)
+                .count();
+
+            ui.horizontal(|ui| {
+                ui.label(
+                    RichText::new(format!(
+                        "● {passed_scenarios}/{total_scenarios} Scenarios Passing"
+                    ))
+                    .size(13.0)
+                    .strong()
+                    .color(if passed_scenarios == total_scenarios {
+                        theme::ACCENT_PRIMARY
+                    } else {
+                        egui::Color32::from_rgb(0xFF, 0x5E, 0x5E)
+                    }),
+                );
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if button(ui, "▶ Run All Scenarios", true).clicked() {
+                        if state.sim_scenarios.is_empty() {
+                            state.sim_scenarios =
+                                loxone_core::build_default_project_scenarios(project);
+                        }
+                        state.sim_scenario_reports = state
+                            .sim_scenarios
+                            .iter()
+                            .map(|sc| loxone_core::run_simulation_scenario(project, sc))
+                            .collect();
+                        state.status = Some("Executed all simulation test scenarios.".to_string());
+                    }
+                    if button(ui, "↺ Regenerate From Project", false).clicked() {
+                        state.sim_scenarios =
+                            loxone_core::build_default_project_scenarios(project);
+                        state.sim_selected_scenario_idx = 0;
+                        state.sim_scenario_reports = state
+                            .sim_scenarios
+                            .iter()
+                            .map(|sc| loxone_core::run_simulation_scenario(project, sc))
+                            .collect();
+                    }
+                });
+            });
+
+            ui.add_space(6.0);
+            ui.columns(2, |cols| {
+                cols[0].vertical(|ui| {
+                    section_label(ui, "Test Scenarios");
+                    card(ui, |ui| {
+                        egui::ScrollArea::vertical()
+                            .id_salt("sim_scenarios_list_scroll")
+                            .max_height(460.0)
+                            .show(ui, |ui| {
+                                for (idx, sc) in state.sim_scenarios.iter().enumerate() {
+                                    let is_sel = state.sim_selected_scenario_idx == idx;
+                                    let rep = state.sim_scenario_reports.get(idx);
+                                    let badge = match rep {
+                                        Some(r) if r.passed => "✓ PASS",
+                                        Some(_) => "✗ FAIL",
+                                        None => "• PENDING",
+                                    };
+                                    if ui
+                                        .selectable_label(is_sel, format!("[{badge}] {}", sc.name))
+                                        .clicked()
+                                    {
+                                        state.sim_selected_scenario_idx = idx;
+                                    }
+                                    ui.separator();
+                                }
+                            });
+                    });
+                });
+
+                cols[1].vertical(|ui| {
+                    section_label(ui, "Step-by-Step Execution & Assertion Report");
+                    card(ui, |ui| {
+                        if let Some(rep) = state
+                            .sim_scenario_reports
+                            .get(state.sim_selected_scenario_idx)
+                        {
+                            ui.label(
+                                RichText::new(&rep.scenario_name)
+                                    .size(13.0)
+                                    .strong()
+                                    .color(theme::TEXT_PRIMARY),
+                            );
+                            ui.label(
+                                RichText::new(format!(
+                                    "Steps: {} • Assertions: {}/{} passed",
+                                    rep.total_steps, rep.passed_assertions, rep.total_assertions
+                                ))
+                                .size(11.5)
+                                .color(theme::TEXT_SECONDARY),
+                            );
+                            ui.add_space(6.0);
+                            egui::ScrollArea::vertical()
+                                .id_salt("sim_scenario_steps_scroll")
+                                .max_height(410.0)
+                                .show(ui, |ui| {
+                                    for step in &rep.steps {
+                                        ui.horizontal(|ui| {
+                                            let st_badge =
+                                                if step.passed { "✓" } else { "✗" };
+                                            let st_color = if step.passed {
+                                                theme::ACCENT_PRIMARY
+                                            } else {
+                                                egui::Color32::from_rgb(0xFF, 0x5E, 0x5E)
+                                            };
+                                            ui.label(
+                                                RichText::new(format!(
+                                                    "{st_badge} Step {}: {}",
+                                                    step.step_index + 1,
+                                                    step.description
+                                                ))
+                                                .size(12.0)
+                                                .strong()
+                                                .color(st_color),
+                                            );
+                                            ui.label(
+                                                RichText::new(format!("@ {}", step.simulated_time))
+                                                    .size(10.5)
+                                                    .monospace()
+                                                    .color(theme::TEXT_MUTED),
+                                            );
+                                        });
+                                        for a in &step.assertion_results {
+                                            ui.horizontal(|ui| {
+                                                ui.add_space(14.0);
+                                                let a_color = if a.passed {
+                                                    theme::ACCENT_PRIMARY
+                                                } else {
+                                                    egui::Color32::from_rgb(0xFF, 0x5E, 0x5E)
+                                                };
+                                                let pin_suffix = a
+                                                    .pin_key
+                                                    .as_ref()
+                                                    .map(|pk| format!(":{pk}"))
+                                                    .unwrap_or_default();
+                                                ui.label(
+                                                    RichText::new(format!(
+                                                        "{}{} {} {} (actual: {})",
+                                                        a.control_title,
+                                                        pin_suffix,
+                                                        a.operator,
+                                                        a.expected_value,
+                                                        a.actual_value
+                                                    ))
+                                                    .size(11.0)
+                                                    .monospace()
+                                                    .color(a_color),
+                                                );
+                                                if ui.small_button("↗").clicked() {
+                                                    out.push(AdminAction::SelectObject(
+                                                        a.control_uuid.clone(),
+                                                    ));
+                                                }
+                                            });
+                                        }
+                                        ui.separator();
+                                    }
+                                });
                         }
                     });
                 });

@@ -1708,6 +1708,11 @@ impl LoxonePortableApp {
                     self.live_view_enabled = true;
                 }
             }
+            TopBarAction::OpenSimulationScenarioRunner => {
+                if let Some(proj) = &self.project {
+                    self.admin_modals.open_simulation_scenario_runner(proj);
+                }
+            }
             TopBarAction::NewProjectTab => {
                 if let Some(proj) = self.project.take() {
                     self.parked_tabs.push(ParkedProjectTab {

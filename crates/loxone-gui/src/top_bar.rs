@@ -286,6 +286,7 @@ pub enum TopBarAction {
     OpenTechReportWizard,
     OpenMultiplierManager,
     SetSimulationWeatherPreset(&'static str),
+    OpenSimulationScenarioRunner,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2592,6 +2593,19 @@ fn render_ribbon_row_2(
                         {
                             action = Some(TopBarAction::ResetSimulation);
                         }
+                        if render_ribbon_chip(
+                            ui,
+                            "🧪",
+                            "Test Scenarios",
+                            "Run deterministic multi-step simulation scenarios and verify pin/output assertions",
+                            has_project,
+                            LOXONE_GREEN,
+                        )
+                        .clicked()
+                            && has_project
+                        {
+                            action = Some(TopBarAction::OpenSimulationScenarioRunner);
+                        }
                     });
                 if let Some(sim_act) = render_simulation_datetime_capsule(ui, has_project) {
                     action = Some(sim_act);
@@ -2906,6 +2920,19 @@ fn render_ribbon_row_2(
                             && has_project
                         {
                             action = Some(TopBarAction::ResetSimulation);
+                        }
+                        if render_ribbon_chip(
+                            ui,
+                            "🧪",
+                            "Test Scenarios",
+                            "Run deterministic multi-step simulation scenarios and verify pin/output assertions",
+                            has_project,
+                            LOXONE_GREEN,
+                        )
+                        .clicked()
+                            && has_project
+                        {
+                            action = Some(TopBarAction::OpenSimulationScenarioRunner);
                         }
                     });
                 if let Some(sim_act) = render_simulation_datetime_capsule(ui, has_project) {

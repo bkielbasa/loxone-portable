@@ -1009,6 +1009,58 @@ pub fn tool_definitions() -> Value {
                         "relative_humidity_pct": { "type": "number", "description": "Outdoor relative humidity %." }
                     }
                 }
+            },
+            {
+                "name": "sim_run_scenario",
+                "description": "Executes a deterministic multi-step simulation test scenario (or the auto-generated project regression suite when 'steps' is omitted) and returns per-step pass/fail assertions.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "name": { "type": "string", "description": "Scenario name (default: 'MCP Test Scenario')." },
+                        "description": { "type": "string", "description": "Optional scenario description." },
+                        "steps": {
+                            "type": "array",
+                            "description": "Optional ordered list of simulation steps. If omitted, runs all auto-generated project regression scenarios.",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "label": { "type": "string", "description": "Step description." },
+                                    "set_iso_time": { "type": "string", "description": "Optional virtual timestamp 'YYYY-MM-DD HH:MM:SS'." },
+                                    "set_outdoor_temp_c": { "type": "number" },
+                                    "set_wind_speed_kmh": { "type": "number" },
+                                    "set_solar_radiation_wm2": { "type": "number" },
+                                    "set_rain_active": { "type": "boolean" },
+                                    "advance_seconds": { "type": "integer", "description": "Seconds to advance virtual clock (default: 0)." },
+                                    "inputs": {
+                                        "type": "array",
+                                        "items": {
+                                            "type": "object",
+                                            "properties": {
+                                                "control_uuid": { "type": "string" },
+                                                "pin_key": { "type": "string" },
+                                                "value": { "type": "string" }
+                                            },
+                                            "required": ["control_uuid", "value"]
+                                        }
+                                    },
+                                    "assertions": {
+                                        "type": "array",
+                                        "items": {
+                                            "type": "object",
+                                            "properties": {
+                                                "control_uuid": { "type": "string" },
+                                                "pin_key": { "type": "string" },
+                                                "comparison": { "type": "string", "enum": ["eq", "ne", "gt", "ge", "lt", "le"] },
+                                                "expected": { "type": "string" }
+                                            },
+                                            "required": ["control_uuid", "expected"]
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
             }
         ]
     })

@@ -1066,6 +1066,264 @@ fn format_compact_f64(val: f64) -> String {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Deterministic Simulation Test Scenarios & Regression Runner (Stage 15)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ScenarioAssertion {
+    pub control_uuid: String,
+    pub pin_key: Option<String>,
+    /// Comparison operator: `"=="`, `"!="`, `">"`, `">="`, `"<"`, `"<="`.
+    pub operator: String,
+    pub expected_value: String,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ScenarioStep {
+    pub description: String,
+    pub iso_time: Option<String>,
+    pub advance_seconds: Option<i64>,
+    /// Input overrides applied in this step: `(control_uuid, pin_key, value)`.
+    pub inputs: Vec<(String, Option<String>, String)>,
+    pub assertions: Vec<ScenarioAssertion>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct SimulationScenario {
+    pub name: String,
+    pub steps: Vec<ScenarioStep>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct AssertionResult {
+    pub control_uuid: String,
+    pub control_title: String,
+    pub pin_key: Option<String>,
+    pub operator: String,
+    pub expected_value: String,
+    pub actual_value: String,
+    pub passed: bool,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct StepRunReport {
+    pub step_index: usize,
+    pub description: String,
+    pub simulated_time: String,
+    pub passed: bool,
+    pub assertion_results: Vec<AssertionResult>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ScenarioRunReport {
+    pub scenario_name: String,
+    pub passed: bool,
+    pub total_steps: usize,
+    pub total_assertions: usize,
+    pub passed_assertions: usize,
+    pub failed_assertions: usize,
+    pub steps: Vec<StepRunReport>,
+}
+
+impl OfflineSimulator {
+    /// Executes a deterministic multi-step [`SimulationScenario`] against `project` and returns
+    /// a detailed [`ScenarioRunReport`] with per-step and per-assertion pass/fail results.
+    pub fn run_scenario(
+        &mut self,
+        project: &LoxoneProject,
+        scenario: &SimulationScenario,
+    ) -> ScenarioRunReport {
+        self.reset(project);
+        self.start(project);
+
+        let mut step_reports = Vec::with_capacity(scenario.steps.len());
+        let mut total_assertions = 0;
+        let mut passed_assertions = 0;
+        let mut failed_assertions = 0;
+
+        for (step_index, step) in scenario.steps.iter().enumerate() {
+            if let Some(iso) = &step.iso_time {
+                if let Some(dt) = SimulatedDateTime::parse_iso(iso) {
+                    self.set_simulated_time(project, dt);
+                }
+            }
+            for (ctrl_uuid, pin_key, val) in &step.inputs {
+                self.apply_command(project, ctrl_uuid, pin_key.as_deref(), val);
+            }
+            if let Some(secs) = step.advance_seconds {
+                if secs == 1 {
+                    self.step_tick(project);
+                } else if secs != 0 {
+                    self.advance_seconds(project, secs);
+                }
+            }
+            self.recompute(project);
+
+            let mut assertion_results = Vec::with_capacity(step.assertions.len());
+            let mut step_passed = true;
+
+            for a in &step.assertions {
+                total_assertions += 1;
+                let actual = self.read_control_or_pin_value(project, &a.control_uuid, a.pin_key.as_deref());
+                let passed = evaluate_scenario_comparison(&actual, &a.operator, &a.expected_value);
+                if passed {
+                    passed_assertions += 1;
+                } else {
+                    failed_assertions += 1;
+                    step_passed = false;
+                }
+                let control_title = project
+                    .xref
+                    .objects_by_uuid
+                    .get(&a.control_uuid)
+                    .map(|s| s.title.clone())
+                    .unwrap_or_else(|| a.control_uuid.clone());
+
+                assertion_results.push(AssertionResult {
+                    control_uuid: a.control_uuid.clone(),
+                    control_title,
+                    pin_key: a.pin_key.clone(),
+                    operator: a.operator.clone(),
+                    expected_value: a.expected_value.clone(),
+                    actual_value: actual,
+                    passed,
+                });
+            }
+
+            step_reports.push(StepRunReport {
+                step_index,
+                description: step.description.clone(),
+                simulated_time: self.simulated_time.format_iso(),
+                passed: step_passed,
+                assertion_results,
+            });
+        }
+
+        ScenarioRunReport {
+            scenario_name: scenario.name.clone(),
+            passed: failed_assertions == 0,
+            total_steps: step_reports.len(),
+            total_assertions,
+            passed_assertions,
+            failed_assertions,
+            steps: step_reports,
+        }
+    }
+
+    pub fn read_control_or_pin_value(
+        &self,
+        project: &LoxoneProject,
+        control_uuid: &str,
+        pin_key: Option<&str>,
+    ) -> String {
+        if let Some(pk) = pin_key.filter(|k| !k.is_empty()) {
+            if let Some(ov) = self
+                .live_store
+                .pin_overrides
+                .get(&(control_uuid.to_string(), pk.to_string()))
+            {
+                return ov.clone();
+            }
+            if let Some(snap) = self.live_store.controls.get(control_uuid) {
+                if let Some(v) = snap.outputs.get(pk) {
+                    return v.clone();
+                }
+            }
+            for page in &project.pages {
+                if let Some(blk) = page.blocks.iter().find(|b| b.uuid == control_uuid) {
+                    if let Some(pin) = blk.pins.iter().find(|p| p.key.eq_ignore_ascii_case(pk)) {
+                        let sig = self.live_store.resolve_pin_signal(blk, pin, page, project);
+                        return sig.raw;
+                    }
+                }
+            }
+        }
+        self.live_store
+            .controls
+            .get(control_uuid)
+            .and_then(|s| s.primary_value.clone())
+            .unwrap_or_else(|| "0".to_string())
+    }
+}
+
+pub fn evaluate_scenario_comparison(actual: &str, operator: &str, expected: &str) -> bool {
+    let act_num = parse_signal_numeric(actual);
+    let exp_num = parse_signal_numeric(expected);
+    match operator.trim() {
+        "!=" => (act_num - exp_num).abs() > 1e-5 && actual.trim() != expected.trim(),
+        ">" => act_num > exp_num,
+        ">=" => act_num >= exp_num - 1e-5,
+        "<" => act_num < exp_num,
+        "<=" => act_num <= exp_num + 1e-5,
+        _ => (act_num - exp_num).abs() <= 1e-5 || actual.trim().eq_ignore_ascii_case(expected.trim()),
+    }
+}
+
+pub fn run_simulation_scenario(
+    project: &LoxoneProject,
+    scenario: &SimulationScenario,
+) -> ScenarioRunReport {
+    let mut sim = OfflineSimulator::new();
+    sim.run_scenario(project, scenario)
+}
+
+/// Generates ready-to-run verification scenarios from the blocks present in `project`.
+pub fn build_default_project_scenarios(project: &LoxoneProject) -> Vec<SimulationScenario> {
+    let mut scenarios = Vec::new();
+
+    // Find a Switch / Pushbutton / LightController2 block to build a smoke test scenario
+    for page in &project.pages {
+        for block in &page.blocks {
+            if matches!(
+                block.block_type.as_str(),
+                "Switch"
+                    | "Pushbutton"
+                    | "StairwellLight"
+                    | "LightController2"
+                    | "LightControllerV2"
+                    | "Alarm"
+                    | "BurglarAlarm"
+            ) {
+                scenarios.push(SimulationScenario {
+                    name: format!("Smoke Test: {} ({})", block.title, page.title),
+                    steps: vec![
+                        ScenarioStep {
+                            description: format!("Activate '{}' and verify output turns ON", block.title),
+                            iso_time: Some("2026-06-21 12:00:00".to_string()),
+                            advance_seconds: Some(1),
+                            inputs: vec![(block.uuid.clone(), None, "1".to_string())],
+                            assertions: vec![ScenarioAssertion {
+                                control_uuid: block.uuid.clone(),
+                                pin_key: None,
+                                operator: ">".to_string(),
+                                expected_value: "0".to_string(),
+                            }],
+                        },
+                        ScenarioStep {
+                            description: format!("Deactivate '{}' and verify output turns OFF", block.title),
+                            iso_time: None,
+                            advance_seconds: Some(1),
+                            inputs: vec![(block.uuid.clone(), None, "0".to_string())],
+                            assertions: vec![ScenarioAssertion {
+                                control_uuid: block.uuid.clone(),
+                                pin_key: None,
+                                operator: "==".to_string(),
+                                expected_value: "0".to_string(),
+                            }],
+                        },
+                    ],
+                });
+                if scenarios.len() >= 3 {
+                    return scenarios;
+                }
+            }
+        }
+    }
+
+    scenarios
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1370,5 +1628,20 @@ mod tests {
                 .and_then(|c| c.primary_value.as_deref()),
             Some("-4.5")
         );
+    }
+
+    #[test]
+    fn test_run_simulation_scenario_and_default_scenarios() {
+        let xml = std::fs::read_to_string("../../Sample.Loxone")
+            .expect("Sample.Loxone fixture should exist");
+        let project = crate::parser::parse_loxone_xml(&xml).expect("parse should succeed");
+
+        let defaults = build_default_project_scenarios(&project);
+        assert!(!defaults.is_empty());
+
+        let report = run_simulation_scenario(&project, &defaults[0]);
+        assert!(report.passed);
+        assert_eq!(report.failed_assertions, 0);
+        assert_eq!(report.passed_assertions, 2);
     }
 }
