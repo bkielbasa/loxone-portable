@@ -430,5 +430,34 @@ mod tests {
             json!({ "wired_only": true }),
         );
         assert!(sched_res["count"].as_u64().unwrap() > 0);
+
+        // Stage 13: Multiplier Project & Unit Instantiation
+        let mult_upsert = call_tool(
+            &mut session,
+            "multiplier_unit_upsert",
+            json!({
+                "title": "Villa 04",
+                "miniserver_serial": "504f94ff0004",
+                "address": "10.0.4.10",
+                "device_serial_overrides": [
+                    { "device_uuid": first_reassigned_uuid, "serial": "B0300004" }
+                ]
+            }),
+        );
+        let unit_uuid = mult_upsert["unit_uuid"].as_str().unwrap().to_string();
+        let mult_list = call_tool(&mut session, "multiplier_units_list", json!({}));
+        assert_eq!(mult_list["is_multiplier_project"], true);
+        assert_eq!(mult_list["count"], 1);
+
+        let mult_export = call_tool(
+            &mut session,
+            "multiplier_export_unit",
+            json!({ "unit_uuid": unit_uuid }),
+        );
+        assert!(mult_export["project_title"]
+            .as_str()
+            .unwrap()
+            .contains("Villa 04"));
+        assert!(mult_export["xml"].as_str().unwrap().contains("B0300004"));
     }
 }

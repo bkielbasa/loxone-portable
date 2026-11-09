@@ -53,8 +53,10 @@ pub use object_config::{
 pub use parser::parse_raw_dom;
 pub use periphery_provisioning::*;
 pub use project_admin::{
-    build_add_todo_edit, build_autopilot_rule_edits, build_resolve_todo_edit,
-    collect_autopilot_rules, collect_project_todos, AutopilotRuleInfo, AutopilotRuleSpec,
+    build_add_todo_edit, build_autopilot_rule_edits, build_remove_multiplier_unit_edit,
+    build_resolve_todo_edit, build_upsert_multiplier_unit_edit, collect_autopilot_rules,
+    collect_multiplier_units, collect_project_todos, instantiate_multiplier_unit_project,
+    is_multiplier_project, AutopilotRuleInfo, AutopilotRuleSpec, MultiplierUnitEntry,
     ProjectTodoItem,
 };
 pub use room_controller_config::{

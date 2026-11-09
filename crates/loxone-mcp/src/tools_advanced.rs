@@ -21,7 +21,9 @@ use loxone_core::periphery_provisioning::{
 };
 use loxone_core::project_admin::{
     build_add_todo_edit, build_autopilot_rule_edits, build_resolve_todo_edit,
-    collect_project_todos, AutopilotRuleSpec,
+    build_upsert_multiplier_unit_edit, collect_multiplier_units, collect_project_todos,
+    instantiate_multiplier_unit_project, is_multiplier_project, AutopilotRuleSpec,
+    MultiplierUnitEntry,
 };
 use loxone_core::room_controller_config::{
     collect_energy_source_candidates, RoomControllerConfig, RoomTempMode,
@@ -1708,6 +1710,152 @@ fn call_advanced_tool_part2(
                     "page_uuid": page_uuid,
                     "mode": mode_str,
                     "moved_blocks": moved_count
+                }),
+            )
+        }
+        "multiplier_units_list" => {
+            let Some(proj) = session.project() else {
+                return JsonRpcResponse::tool_err(id, "No project loaded");
+            };
+            let is_mult = is_multiplier_project(proj);
+            let units: Vec<Value> = collect_multiplier_units(proj)
+                .into_iter()
+                .map(|u| {
+                    let ovs: Vec<Value> = u
+                        .device_serial_overrides
+                        .into_iter()
+                        .map(|(du, sn)| json!({ "device_uuid": du, "serial": sn }))
+                        .collect();
+                    json!({
+                        "uuid": u.uuid,
+                        "title": u.title,
+                        "miniserver_serial": u.miniserver_serial,
+                        "address": u.address,
+                        "description": u.description,
+                        "device_serial_overrides": ovs
+                    })
+                })
+                .collect();
+            JsonRpcResponse::tool_ok(
+                id,
+                json!({
+                    "is_multiplier_project": is_mult,
+                    "count": units.len(),
+                    "units": units
+                }),
+            )
+        }
+        "multiplier_unit_upsert" => {
+            let (Some(title), Some(miniserver_serial)) = (
+                args.get("title").and_then(Value::as_str),
+                args.get("miniserver_serial").and_then(Value::as_str),
+            ) else {
+                return JsonRpcResponse::tool_err(
+                    id,
+                    "Missing required parameters 'title' and 'miniserver_serial'",
+                );
+            };
+            let unit_uuid = args
+                .get("unit_uuid")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            let address = args
+                .get("address")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            let description = args
+                .get("description")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            let overrides: Vec<(String, String)> = args
+                .get("device_serial_overrides")
+                .and_then(Value::as_array)
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|item| {
+                            let du = item.get("device_uuid")?.as_str()?;
+                            let sn = item.get("serial")?.as_str()?;
+                            Some((du.to_string(), sn.to_string()))
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+
+            let entry = MultiplierUnitEntry {
+                uuid: unit_uuid,
+                title: title.to_string(),
+                miniserver_serial: miniserver_serial.to_string(),
+                address: address.clone(),
+                description,
+                device_serial_overrides: overrides.clone(),
+            };
+            let (saved_uuid, edit) = {
+                let Some(proj) = session.project() else {
+                    return JsonRpcResponse::tool_err(id, "No project loaded");
+                };
+                build_upsert_multiplier_unit_edit(proj, &entry)
+            };
+            if let Err(e) = session.apply_edit(edit) {
+                return JsonRpcResponse::tool_err(id, e);
+            }
+            JsonRpcResponse::tool_ok(
+                id,
+                json!({
+                    "unit_uuid": saved_uuid,
+                    "title": title,
+                    "miniserver_serial": miniserver_serial.trim().to_ascii_uppercase(),
+                    "address": address,
+                    "override_count": overrides.len()
+                }),
+            )
+        }
+        "multiplier_export_unit" => {
+            let Some(unit_uuid) = args.get("unit_uuid").and_then(Value::as_str) else {
+                return JsonRpcResponse::tool_err(id, "Missing required parameter 'unit_uuid'");
+            };
+            let derived = {
+                let Some(proj) = session.project() else {
+                    return JsonRpcResponse::tool_err(id, "No project loaded");
+                };
+                let Some(d) = instantiate_multiplier_unit_project(proj, unit_uuid) else {
+                    return JsonRpcResponse::tool_err(
+                        id,
+                        format!("Multiplier unit '{unit_uuid}' not found"),
+                    );
+                };
+                d
+            };
+            let xml = match loxone_core::writer::serialize_loxone_xml(&derived) {
+                Ok(x) => x,
+                Err(e) => return JsonRpcResponse::tool_err(id, e.to_string()),
+            };
+            let mut written_to = None;
+            if let Some(out_path) = args.get("output_path").and_then(Value::as_str) {
+                let p = Path::new(out_path);
+                if let Some(parent) = p.parent() {
+                    if !parent.as_os_str().is_empty() {
+                        let _ = std::fs::create_dir_all(parent);
+                    }
+                }
+                if let Err(e) = std::fs::write(p, &xml) {
+                    return JsonRpcResponse::tool_err(
+                        id,
+                        format!("Failed to write {}: {}", p.display(), e),
+                    );
+                }
+                written_to = Some(p.display().to_string());
+            }
+            JsonRpcResponse::tool_ok(
+                id,
+                json!({
+                    "unit_uuid": unit_uuid,
+                    "project_title": derived.metadata.title,
+                    "bytes": xml.len(),
+                    "output_path": written_to,
+                    "xml": xml
                 }),
             )
         }

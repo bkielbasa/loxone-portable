@@ -940,6 +940,53 @@ pub fn tool_definitions() -> Value {
                     },
                     "required": ["page_uuid", "mode"]
                 }
+            },
+            {
+                "name": "multiplier_units_list",
+                "description": "Lists all configured Multiplier units (Miniserver serials, addresses, and per-device serial overrides) in the active project.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {}
+                }
+            },
+            {
+                "name": "multiplier_unit_upsert",
+                "description": "Creates or updates a Multiplier unit in the project and marks the project as a Multiplier template.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "unit_uuid": { "type": "string", "description": "Optional existing Multiplier unit UUID to update." },
+                        "title": { "type": "string", "description": "Unit name (e.g. 'Suite 201', 'Apartment 3B')." },
+                        "miniserver_serial": { "type": "string", "description": "Miniserver serial number for this unit." },
+                        "address": { "type": "string", "description": "IP or Cloud DNS address for this unit." },
+                        "description": { "type": "string", "description": "Optional unit description." },
+                        "device_serial_overrides": {
+                            "type": "array",
+                            "description": "Optional list of per-device serial overrides ({device_uuid, serial}).",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "device_uuid": { "type": "string" },
+                                    "serial": { "type": "string" }
+                                },
+                                "required": ["device_uuid", "serial"]
+                            }
+                        }
+                    },
+                    "required": ["title", "miniserver_serial"]
+                }
+            },
+            {
+                "name": "multiplier_export_unit",
+                "description": "Instantiates a standalone .Loxone XML project for a specific Multiplier unit (applying its Miniserver serial/address and device serial overrides) and optionally writes it to output_path.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "unit_uuid": { "type": "string", "description": "UUID of the Multiplier unit to instantiate." },
+                        "output_path": { "type": "string", "description": "Optional file path on disk to write the instantiated .Loxone file." }
+                    },
+                    "required": ["unit_uuid"]
+                }
             }
         ]
     })
