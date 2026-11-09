@@ -1678,6 +1678,36 @@ impl LoxonePortableApp {
                     self.admin_modals.open_multiplier_manager(proj);
                 }
             }
+            TopBarAction::SetSimulationWeatherPreset(preset) => {
+                if let Some(proj) = &self.project {
+                    let w = match preset {
+                        "sunny" => loxone_core::SimulatedWeatherState {
+                            outdoor_temp_c: 26.0,
+                            wind_speed_kmh: 8.0,
+                            solar_radiation_wm2: 750.0,
+                            rain_active: false,
+                            relative_humidity_pct: 42.0,
+                        },
+                        "storm" => loxone_core::SimulatedWeatherState {
+                            outdoor_temp_c: 11.0,
+                            wind_speed_kmh: 65.0,
+                            solar_radiation_wm2: 80.0,
+                            rain_active: true,
+                            relative_humidity_pct: 92.0,
+                        },
+                        "frost" => loxone_core::SimulatedWeatherState {
+                            outdoor_temp_c: -6.0,
+                            wind_speed_kmh: 15.0,
+                            solar_radiation_wm2: 180.0,
+                            rain_active: false,
+                            relative_humidity_pct: 70.0,
+                        },
+                        _ => loxone_core::SimulatedWeatherState::default(),
+                    };
+                    self.simulator.set_weather(proj, w);
+                    self.live_view_enabled = true;
+                }
+            }
             TopBarAction::NewProjectTab => {
                 if let Some(proj) = self.project.take() {
                     self.parked_tabs.push(ParkedProjectTab {

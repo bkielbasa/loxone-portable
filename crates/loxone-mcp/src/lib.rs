@@ -459,5 +459,28 @@ mod tests {
             .unwrap()
             .contains("Villa 04"));
         assert!(mult_export["xml"].as_str().unwrap().contains("B0300004"));
+
+        // Stage 14: Weather & Solar Position Simulation
+        call_tool(
+            &mut session,
+            "sim_control",
+            json!({ "action": "set_time", "iso_time": "2026-06-21 12:00:00" }),
+        );
+        let w_set = call_tool(
+            &mut session,
+            "sim_weather_set",
+            json!({
+                "outdoor_temp_c": 29.5,
+                "wind_speed_kmh": 14.0,
+                "solar_radiation_wm2": 820.0,
+                "rain_active": false
+            }),
+        );
+        assert_eq!(w_set["outdoor_temp_c"], 29.5);
+        assert_eq!(w_set["is_daylight"], true);
+        assert_eq!(w_set["sunshine_active"], true);
+
+        let w_get = call_tool(&mut session, "sim_weather_get", json!({}));
+        assert!(w_get["solar_elevation_deg"].as_f64().unwrap() > 50.0);
     }
 }

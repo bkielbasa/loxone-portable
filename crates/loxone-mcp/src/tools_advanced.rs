@@ -1859,6 +1859,69 @@ fn call_advanced_tool_part2(
                 }),
             )
         }
+        "sim_weather_get" => {
+            let Some(proj) = session.project() else {
+                return JsonRpcResponse::tool_err(id, "No project loaded");
+            };
+            let sim = session.simulator();
+            let solar = sim.solar_position(proj);
+            let w = sim.weather;
+            JsonRpcResponse::tool_ok(
+                id,
+                json!({
+                    "simulated_time": sim.simulated_time.format_iso(),
+                    "outdoor_temp_c": w.outdoor_temp_c,
+                    "wind_speed_kmh": w.wind_speed_kmh,
+                    "solar_radiation_wm2": w.solar_radiation_wm2,
+                    "rain_active": w.rain_active,
+                    "relative_humidity_pct": w.relative_humidity_pct,
+                    "solar_elevation_deg": solar.elevation_deg,
+                    "solar_azimuth_deg": solar.azimuth_deg,
+                    "is_daylight": solar.is_daylight,
+                    "sunshine_active": solar.sunshine_active
+                }),
+            )
+        }
+        "sim_weather_set" => {
+            let proj_clone = {
+                let Some(proj) = session.project() else {
+                    return JsonRpcResponse::tool_err(id, "No project loaded");
+                };
+                proj.clone()
+            };
+            let mut w = session.simulator().weather;
+            if let Some(v) = args.get("outdoor_temp_c").and_then(Value::as_f64) {
+                w.outdoor_temp_c = v;
+            }
+            if let Some(v) = args.get("wind_speed_kmh").and_then(Value::as_f64) {
+                w.wind_speed_kmh = v;
+            }
+            if let Some(v) = args.get("solar_radiation_wm2").and_then(Value::as_f64) {
+                w.solar_radiation_wm2 = v;
+            }
+            if let Some(v) = args.get("rain_active").and_then(Value::as_bool) {
+                w.rain_active = v;
+            }
+            if let Some(v) = args.get("relative_humidity_pct").and_then(Value::as_f64) {
+                w.relative_humidity_pct = v;
+            }
+            session.simulator_mut().set_weather(&proj_clone, w);
+            let solar = session.simulator().solar_position(&proj_clone);
+            JsonRpcResponse::tool_ok(
+                id,
+                json!({
+                    "outdoor_temp_c": w.outdoor_temp_c,
+                    "wind_speed_kmh": w.wind_speed_kmh,
+                    "solar_radiation_wm2": w.solar_radiation_wm2,
+                    "rain_active": w.rain_active,
+                    "relative_humidity_pct": w.relative_humidity_pct,
+                    "solar_elevation_deg": solar.elevation_deg,
+                    "solar_azimuth_deg": solar.azimuth_deg,
+                    "is_daylight": solar.is_daylight,
+                    "sunshine_active": solar.sunshine_active
+                }),
+            )
+        }
         other => JsonRpcResponse::tool_err(id, format!("Unknown tool: {other}")),
     }
 }

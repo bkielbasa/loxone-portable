@@ -987,6 +987,28 @@ pub fn tool_definitions() -> Value {
                     },
                     "required": ["unit_uuid"]
                 }
+            },
+            {
+                "name": "sim_weather_get",
+                "description": "Returns the current simulated Weather Server environmental state and computed astronomical solar elevation & azimuth angles.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {}
+                }
+            },
+            {
+                "name": "sim_weather_set",
+                "description": "Updates the simulated Weather Server environmental state (outdoor temperature °C, wind speed km/h, solar radiation W/m², rain, humidity %) and recomputes all schematic logic.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "outdoor_temp_c": { "type": "number", "description": "Outdoor temperature in °C." },
+                        "wind_speed_kmh": { "type": "number", "description": "Wind speed in km/h." },
+                        "solar_radiation_wm2": { "type": "number", "description": "Solar radiation in W/m²." },
+                        "rain_active": { "type": "boolean", "description": "Whether rain / precipitation is active." },
+                        "relative_humidity_pct": { "type": "number", "description": "Outdoor relative humidity %." }
+                    }
+                }
             }
         ]
     })
