@@ -391,5 +391,21 @@ mod tests {
         assert!(diff_res["modified_blocks"].as_u64().unwrap() >= 1);
         assert!(diff_res["modified_tree_nodes"].as_u64().unwrap() >= 1);
         assert!(diff_res["total_changes"].as_u64().unwrap() >= 2);
+
+        // Stage 11: BOM and Terminal Schedule
+        let bom_res = call_tool(
+            &mut session,
+            "project_bom_get",
+            json!({ "distribution_board": "DB-Main" }),
+        );
+        assert_eq!(bom_res["device_count"], 1);
+        assert_eq!(bom_res["devices"][0]["serial"], "B03099AA");
+
+        let sched_res = call_tool(
+            &mut session,
+            "project_terminal_schedule_get",
+            json!({ "wired_only": true }),
+        );
+        assert!(sched_res["count"].as_u64().unwrap() > 0);
     }
 }

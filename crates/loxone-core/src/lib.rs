@@ -26,6 +26,11 @@ pub use efm_config::{
     collect_efm_candidate_objects, resolve_efm_object_label, EfmConfig, EfmNode, EfmNodeType,
     EfmObjectCandidate, StatInterval,
 };
+pub use export::{
+    build_project_bom, collect_terminal_schedule, export_component_bom_csv,
+    export_terminal_schedule_csv, page_to_svg, project_documentation_html, technical_report_html,
+    BomDeviceEntry, BomPartSummary, BomReport, TerminalScheduleEntry,
+};
 pub use light_config::{
     collect_operating_modes, decode_q_to_pct, encode_pct_to_q, AutomationAction, HclConfig,
     HclMode, LightAutomationRule, LightCircuit, LightCircuitType, LightControllerConfig,

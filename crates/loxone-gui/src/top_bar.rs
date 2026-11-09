@@ -283,6 +283,7 @@ pub enum TopBarAction {
     OpenAutopilotDesigner,
     OpenProjectDiff,
     NewProjectTab,
+    OpenTechReportWizard,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2433,6 +2434,13 @@ fn render_ribbon_row_2(
                                 "Compare the active project against its saved baseline or another .Loxone file",
                                 LOXONE_GREEN,
                                 TopBarAction::OpenProjectDiff,
+                            ),
+                            (
+                                "🔌",
+                                "Terminal & BOM Wizard",
+                                "Inspect DIN-rail panel placement, terminal wiring schedule, and Bill of Materials (CTechReportWizard)",
+                                ACCENT_BLUE,
+                                TopBarAction::OpenTechReportWizard,
                             ),
                         ];
                         for (icon, label, tip, tint, act) in admin_tiles {

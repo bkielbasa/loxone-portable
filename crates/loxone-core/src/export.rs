@@ -322,7 +322,7 @@ table{{border-collapse:collapse;width:100%;margin:8px 0 16px}}td,th{{border:1px 
         diags.len(),
     );
 
-    s.push_str("<h2>Hardware & Bus Inventory (Link / Tree / Air)</h2><table><tr><th>Device</th><th>Type</th><th>Serial Number</th><th>Parent Bus</th><th>I/O Channels</th></tr>");
+    s.push_str("<h2>Hardware & Bus Inventory (Link / Tree / Air)</h2><table><tr><th>Device</th><th>Type</th><th>Serial Number</th><th>Parent Bus</th><th>Distribution Board</th><th>Row / Slot</th><th>I/O Channels</th></tr>");
     for d in &hw_items {
         let sn = if d.serial.trim().is_empty() {
             "Unconfigured"
@@ -331,15 +331,56 @@ table{{border-collapse:collapse;width:100%;margin:8px 0 16px}}td,th{{border:1px 
         };
         let _ = write!(
             s,
-            "<tr><td>{}</td><td>{}</td><td><code>{}</code></td><td>{}</td><td>{}</td></tr>",
+            "<tr><td>{}</td><td>{}</td><td><code>{}</code></td><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>",
             e(&d.title),
             e(&d.node_type),
             e(sn),
             e(&d.parent_label),
+            e(if d.distribution_board.is_empty() { "—" } else { &d.distribution_board }),
+            e(if d.row_position.is_empty() { "—" } else { &d.row_position }),
             d.io_count,
         );
     }
     s.push_str("</table>");
+
+    let terminals = collect_terminal_schedule(project);
+    if !terminals.is_empty() {
+        s.push_str("<h2>DIN-Rail & Terminal Wiring Schedule</h2><table><tr><th>Device</th><th>Board / Row</th><th>Terminal</th><th>Channel</th><th>Type</th><th>Room</th><th>Category</th><th>Connected Pages & Blocks</th></tr>");
+        for t in &terminals {
+            let board_row = match (t.distribution_board.is_empty(), t.row_position.is_empty()) {
+                (true, true) => "—".to_string(),
+                (false, true) => t.distribution_board.clone(),
+                (true, false) => t.row_position.clone(),
+                (false, false) => format!("{} / {}", t.distribution_board, t.row_position),
+            };
+            let connected = if t.connected_blocks.is_empty() {
+                if t.connected_pages.is_empty() {
+                    "Unwired".to_string()
+                } else {
+                    t.connected_pages.join(", ")
+                }
+            } else {
+                format!(
+                    "{} ({})",
+                    t.connected_blocks.join(", "),
+                    t.connected_pages.join(", ")
+                )
+            };
+            let _ = write!(
+                s,
+                "<tr><td>{}</td><td>{}</td><td><code>{}</code></td><td>{}</td><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>",
+                e(&t.device_title),
+                e(&board_row),
+                e(&t.terminal_label),
+                e(&t.channel_title),
+                e(&t.channel_type),
+                e(&t.room_title),
+                e(&t.category_title),
+                e(&connected),
+            );
+        }
+        s.push_str("</table>");
+    }
 
     s.push_str("<h2>Project Analysis Summary</h2><table><tr><th>Category</th><th>Severity</th><th>Code</th><th>Page / Scope</th><th>Object</th><th>Details</th></tr>");
     for d in &diags {
@@ -363,41 +404,317 @@ table{{border-collapse:collapse;width:100%;margin:8px 0 16px}}td,th{{border:1px 
     s
 }
 
-/// Generates a CSV Bill of Materials (BOM) / Component List (`Generate Component List`)
-/// covering all hardware devices, aggregated hardware counts by type, and function block usage.
-pub fn export_component_bom_csv(project: &LoxoneProject) -> String {
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BomDeviceEntry {
+    pub uuid: String,
+    pub title: String,
+    pub node_type: String,
+    pub serial: String,
+    pub parent_label: String,
+    pub distribution_board: String,
+    pub row_position: String,
+    pub lighting_group: String,
+    pub description: String,
+    pub total_channels: usize,
+    pub wired_channels: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BomPartSummary {
+    pub part_type: String,
+    pub quantity: usize,
+    pub total_channels: usize,
+    pub wired_channels: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BomReport {
+    pub devices: Vec<BomDeviceEntry>,
+    pub hardware_summaries: Vec<BomPartSummary>,
+    pub function_block_counts: Vec<(String, usize)>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TerminalScheduleEntry {
+    pub device_uuid: String,
+    pub device_title: String,
+    pub device_type: String,
+    pub device_serial: String,
+    pub distribution_board: String,
+    pub row_position: String,
+    pub channel_uuid: String,
+    pub channel_title: String,
+    pub channel_type: String,
+    pub terminal_label: String,
+    pub room_title: String,
+    pub category_title: String,
+    pub is_wired: bool,
+    pub connected_pages: Vec<String>,
+    pub connected_blocks: Vec<String>,
+}
+
+/// Collects every physical/periphery I/O terminal channel across all hardware devices
+/// and maps it to its room, category, and wired schematic pages & function blocks.
+pub fn collect_terminal_schedule(project: &LoxoneProject) -> Vec<TerminalScheduleEntry> {
+    use std::collections::{BTreeMap, BTreeSet};
+
+    // Map channel_uuid -> (set of page titles, set of connected block titles)
+    let mut channel_usage: BTreeMap<String, (BTreeSet<String>, BTreeSet<String>)> = BTreeMap::new();
+
+    for page in &project.pages {
+        // Build map of pin_uuid -> block index on this page
+        let mut pin_to_block: HashMap<&str, &PageBlock> = HashMap::new();
+        for b in &page.blocks {
+            for p in &b.pins {
+                pin_to_block.insert(p.uuid.as_str(), b);
+            }
+        }
+
+        for b in &page.blocks {
+            if let Some(ref_uuid) = &b.ref_uuid {
+                let entry = channel_usage.entry(ref_uuid.clone()).or_default();
+                entry.0.insert(page.title.clone());
+                // Check incoming links into this reference bar
+                for p in &b.pins {
+                    for link in &p.incoming_links {
+                        if let Some(src_block) = pin_to_block.get(link.source_pin_uuid.as_str()) {
+                            entry.1.insert(block_label(project, src_block));
+                        }
+                    }
+                }
+                // Check outgoing links from this reference bar's pins to other blocks on the page
+                let ref_pin_uuids: BTreeSet<&str> = b.pins.iter().map(|p| p.uuid.as_str()).collect();
+                for other in &page.blocks {
+                    if other.uuid == b.uuid {
+                        continue;
+                    }
+                    let has_link = other.pins.iter().any(|op| {
+                        op.incoming_links
+                            .iter()
+                            .any(|l| ref_pin_uuids.contains(l.source_pin_uuid.as_str()))
+                    });
+                    if has_link {
+                        entry.1.insert(block_label(project, other));
+                    }
+                }
+            }
+
+            // Also check `<IoData Ref="..."/>` children inside function blocks
+            for child in &b.extra_children {
+                if child.tag == "IoData" {
+                    if let Some(io_ref) = child.attr("Ref") {
+                        let trimmed = io_ref.trim();
+                        if !trimmed.is_empty() {
+                            let entry = channel_usage.entry(trimmed.to_string()).or_default();
+                            entry.0.insert(page.title.clone());
+                            entry.1.insert(block_label(project, b));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let mut schedule = Vec::new();
+
+    #[allow(clippy::too_many_arguments)]
+    fn walk_device_channels(
+        project: &LoxoneProject,
+        node: & crate::model::TreeNode,
+        dev_ctx: Option<(&str, &str, &str, &str, &str, &str)>,
+        channel_idx: &mut usize,
+        channel_usage: &std::collections::BTreeMap<
+            String,
+            (std::collections::BTreeSet<String>, std::collections::BTreeSet<String>),
+        >,
+        out: &mut Vec<TerminalScheduleEntry>,
+    ) {
+        let is_hw = matches!(
+            node.control_type.as_str(),
+            "LoxLIVE"
+                | "AudioServer"
+                | "LoxTree"
+                | "LoxAIR"
+                | "LoxDIMM"
+                | "LoxREL"
+                | "Comm485"
+                | "TreeDevice"
+                | "LoxAIRDevice"
+                | "IntercomDevice"
+                | "NetworkDevice"
+                | "MTablet"
+        );
+
+        let current_dev = if is_hw {
+            let serial = node
+                .attr("Serial")
+                .or_else(|| node.attr("MAC"))
+                .unwrap_or_default();
+            let dist = node
+                .attr("DistBoard")
+                .or_else(|| node.attr("DBoard"))
+                .unwrap_or_default();
+            let row = node
+                .attr("RowPos")
+                .or_else(|| node.attr("BlinkPos"))
+                .unwrap_or_default();
+            *channel_idx = 0;
+            Some((
+                node.uuid.as_str(),
+                node.title.as_str(),
+                node.control_type.as_str(),
+                serial,
+                dist,
+                row,
+            ))
+        } else {
+            dev_ctx
+        };
+
+        if !is_hw && !node.pins.is_empty() {
+            if let Some((duuid, dtitle, dtype, dserial, dboard, drow)) = current_dev {
+                *channel_idx += 1;
+                let term_prefix = match node.control_type.as_str() {
+                    t if t.contains("InA") || t.contains("AI") || t.contains("AnalogIn") => "AI",
+                    t if t.contains("OutA")
+                        || t.contains("AQ")
+                        || t.contains("Dimmer")
+                        || t.contains("AnalogOut") =>
+                    {
+                        "AQ"
+                    }
+                    t if t.contains("Out")
+                        || t.contains("DO")
+                        || t.contains("Relay")
+                        || t.contains("Actor") =>
+                    {
+                        "Q"
+                    }
+                    t if t.contains("In") || t.contains("DI") || t.contains("Sensor") => "I",
+                    _ => "CH",
+                };
+                let terminal_label = node
+                    .attr(" Terminal")
+                    .or_else(|| node.attr("IoNum"))
+                    .map(str::to_string)
+                    .unwrap_or_else(|| format!("{term_prefix}{}", *channel_idx));
+
+                let room_title = node
+                    .room_uuid
+                    .as_ref()
+                    .and_then(|r| project.places.get(r))
+                    .map(|p| p.title.clone())
+                    .unwrap_or_default();
+                let category_title = node
+                    .category_uuid
+                    .as_ref()
+                    .and_then(|c| project.categories.get(c))
+                    .map(|c| c.title.clone())
+                    .unwrap_or_default();
+
+                let (pages, blocks) = channel_usage
+                    .get(&node.uuid)
+                    .map(|(p, b)| {
+                        (
+                            p.iter().cloned().collect::<Vec<_>>(),
+                            b.iter().cloned().collect::<Vec<_>>(),
+                        )
+                    })
+                    .unwrap_or_default();
+                let is_wired = !pages.is_empty() || !blocks.is_empty();
+
+                out.push(TerminalScheduleEntry {
+                    device_uuid: duuid.to_string(),
+                    device_title: dtitle.to_string(),
+                    device_type: dtype.to_string(),
+                    device_serial: dserial.to_string(),
+                    distribution_board: dboard.to_string(),
+                    row_position: drow.to_string(),
+                    channel_uuid: node.uuid.clone(),
+                    channel_title: node.title.clone(),
+                    channel_type: node.control_type.clone(),
+                    terminal_label,
+                    room_title,
+                    category_title,
+                    is_wired,
+                    connected_pages: pages,
+                    connected_blocks: blocks,
+                });
+            }
+        }
+
+        let mut local_idx = if is_hw { 0 } else { *channel_idx };
+        for child in &node.children {
+            walk_device_channels(
+                project,
+                child,
+                current_dev,
+                &mut local_idx,
+                channel_usage,
+                out,
+            );
+        }
+        if !is_hw {
+            *channel_idx = local_idx;
+        }
+    }
+
+    for node in project.periphery_tree.iter().chain(project.system_tree.iter()) {
+        let mut idx = 0;
+        walk_device_channels(project, node, None, &mut idx, &channel_usage, &mut schedule);
+    }
+
+    schedule
+}
+
+/// Builds a structured Bill of Materials (`BomReport`) with per-device commissioning metadata
+/// and wired channel utilization counts.
+pub fn build_project_bom(project: &LoxoneProject) -> BomReport {
     let hw_items = crate::periphery_provisioning::collect_provisioned_hardware(project);
-    let mut out =
-        String::from("PartGroup,ComponentType,Title,SerialNumber,BusOrPage,Quantity,IOChannels\n");
-    let esc = |s: &str| format!("\"{}\"", s.replace('"', "\"\""));
+    let schedule = collect_terminal_schedule(project);
 
-    let mut hw_counts: std::collections::BTreeMap<String, (usize, usize)> =
+    let mut wired_by_device: HashMap<&str, usize> = HashMap::new();
+    for entry in &schedule {
+        if entry.is_wired {
+            *wired_by_device.entry(entry.device_uuid.as_str()).or_insert(0) += 1;
+        }
+    }
+
+    let mut devices = Vec::with_capacity(hw_items.len());
+    let mut part_map: std::collections::BTreeMap<String, (usize, usize, usize)> =
         std::collections::BTreeMap::new();
-    for d in &hw_items {
-        let entry = hw_counts.entry(d.node_type.clone()).or_insert((0, 0));
-        entry.0 += 1;
-        entry.1 += d.io_count;
-        let _ = writeln!(
-            out,
-            "Hardware,{},{},{},{},1,{}",
-            esc(&d.node_type),
-            esc(&d.title),
-            esc(&d.serial),
-            esc(&d.parent_label),
-            d.io_count
-        );
+
+    for d in hw_items {
+        let wired_channels = wired_by_device.get(d.uuid.as_str()).copied().unwrap_or(0);
+        let summary = part_map.entry(d.node_type.clone()).or_insert((0, 0, 0));
+        summary.0 += 1;
+        summary.1 += d.io_count;
+        summary.2 += wired_channels;
+
+        devices.push(BomDeviceEntry {
+            uuid: d.uuid,
+            title: d.title,
+            node_type: d.node_type,
+            serial: d.serial,
+            parent_label: d.parent_label,
+            distribution_board: d.distribution_board,
+            row_position: d.row_position,
+            lighting_group: d.lighting_group,
+            description: d.description,
+            total_channels: d.io_count,
+            wired_channels,
+        });
     }
 
-    for (node_type, (count, total_io)) in &hw_counts {
-        let _ = writeln!(
-            out,
-            "HardwareSummary,{},{},\"\",\"\",{},{}",
-            esc(node_type),
-            esc(&format!("Total {node_type}")),
-            count,
-            total_io
-        );
-    }
+    let hardware_summaries = part_map
+        .into_iter()
+        .map(|(part_type, (quantity, total_channels, wired_channels))| BomPartSummary {
+            part_type,
+            quantity,
+            total_channels,
+            wired_channels,
+        })
+        .collect();
 
     let mut block_counts: std::collections::BTreeMap<String, usize> =
         std::collections::BTreeMap::new();
@@ -408,10 +725,84 @@ pub fn export_component_bom_csv(project: &LoxoneProject) -> String {
             }
         }
     }
-    for (block_type, count) in &block_counts {
+
+    BomReport {
+        devices,
+        hardware_summaries,
+        function_block_counts: block_counts.into_iter().collect(),
+    }
+}
+
+/// Exports the DIN-Rail & Terminal Wiring Schedule as CSV.
+pub fn export_terminal_schedule_csv(project: &LoxoneProject) -> String {
+    let schedule = collect_terminal_schedule(project);
+    let mut out = String::from(
+        "DeviceTitle,DeviceType,SerialNumber,DistributionBoard,RowPosition,Terminal,ChannelTitle,ChannelType,Room,Category,Wired,ConnectedPages,ConnectedBlocks\n",
+    );
+    let esc = |s: &str| format!("\"{}\"", s.replace('"', "\"\""));
+    for t in &schedule {
         let _ = writeln!(
             out,
-            "FunctionBlockSummary,{},{},\"\",\"\",{},0",
+            "{},{},{},{},{},{},{},{},{},{},{},{},{}",
+            esc(&t.device_title),
+            esc(&t.device_type),
+            esc(&t.device_serial),
+            esc(&t.distribution_board),
+            esc(&t.row_position),
+            esc(&t.terminal_label),
+            esc(&t.channel_title),
+            esc(&t.channel_type),
+            esc(&t.room_title),
+            esc(&t.category_title),
+            if t.is_wired { "Yes" } else { "No" },
+            esc(&t.connected_pages.join("; ")),
+            esc(&t.connected_blocks.join("; ")),
+        );
+    }
+    out
+}
+
+/// Generates a CSV Bill of Materials (BOM) / Component List (`Generate Component List`)
+/// covering all hardware devices, commissioning panel locations, aggregated hardware counts,
+/// and function block usage.
+pub fn export_component_bom_csv(project: &LoxoneProject) -> String {
+    let bom = build_project_bom(project);
+    let mut out = String::from(
+        "PartGroup,ComponentType,Title,SerialNumber,BusOrPage,DistributionBoard,RowPosition,Quantity,IOChannels,WiredChannels\n",
+    );
+    let esc = |s: &str| format!("\"{}\"", s.replace('"', "\"\""));
+
+    for d in &bom.devices {
+        let _ = writeln!(
+            out,
+            "Hardware,{},{},{},{},{},{},1,{},{}",
+            esc(&d.node_type),
+            esc(&d.title),
+            esc(&d.serial),
+            esc(&d.parent_label),
+            esc(&d.distribution_board),
+            esc(&d.row_position),
+            d.total_channels,
+            d.wired_channels,
+        );
+    }
+
+    for s in &bom.hardware_summaries {
+        let _ = writeln!(
+            out,
+            "HardwareSummary,{},{},\"\",\"\",\"\",\"\",{},{},{}",
+            esc(&s.part_type),
+            esc(&format!("Total {}", s.part_type)),
+            s.quantity,
+            s.total_channels,
+            s.wired_channels,
+        );
+    }
+
+    for (block_type, count) in &bom.function_block_counts {
+        let _ = writeln!(
+            out,
+            "FunctionBlockSummary,{},{},\"\",\"\",\"\",\"\",{},0,0",
             esc(block_type),
             esc(&format!("Total {block_type}")),
             count
@@ -419,4 +810,70 @@ pub fn export_component_bom_csv(project: &LoxoneProject) -> String {
     }
 
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::parser::load_loxone_file;
+    use crate::periphery_provisioning::{
+        build_provision_hardware_edit, build_replace_device_edit, HardwareTemplateKind,
+    };
+    use crate::writer::apply_edit;
+    use std::path::PathBuf;
+
+    #[test]
+    fn bom_and_terminal_schedule_include_provisioned_devices_and_metadata() {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../Sample.Loxone");
+        let mut project = load_loxone_file(&path).expect("load Sample.Loxone");
+        let edit = build_provision_hardware_edit(
+            &project,
+            HardwareTemplateKind::RelayExtension,
+            "Relay Ext UV1",
+            "14D80077",
+            None,
+            None,
+            None,
+        );
+        apply_edit(&mut project, &edit).expect("apply relay");
+
+        let dev_uuid = crate::periphery_provisioning::collect_provisioned_hardware(&project)
+            .into_iter()
+            .find(|d| d.title == "Relay Ext UV1")
+            .expect("find provisioned relay")
+            .uuid;
+
+        let meta_edit = build_replace_device_edit(
+            &dev_uuid,
+            "14D80077",
+            Some("Main Floor Lighting Relays"),
+            Some("UV-Main"),
+            Some("Row 2 / Slot 3"),
+            Some("LG-1"),
+        );
+        apply_edit(&mut project, &meta_edit).expect("apply metadata");
+
+        let bom = build_project_bom(&project);
+        let relay_dev = bom
+            .devices
+            .iter()
+            .find(|d| d.uuid == dev_uuid)
+            .expect("relay in BOM");
+        assert_eq!(relay_dev.distribution_board, "UV-Main");
+        assert_eq!(relay_dev.row_position, "Row 2 / Slot 3");
+        assert_eq!(relay_dev.total_channels, 14);
+
+        let schedule = collect_terminal_schedule(&project);
+        let relay_terms: Vec<_> = schedule
+            .iter()
+            .filter(|t| t.device_uuid == dev_uuid)
+            .collect();
+        assert_eq!(relay_terms.len(), 14);
+        assert_eq!(relay_terms[0].distribution_board, "UV-Main");
+        assert_eq!(relay_terms[0].terminal_label, "Q1");
+
+        let csv = export_terminal_schedule_csv(&project);
+        assert!(csv.contains("UV-Main"));
+        assert!(csv.contains("Row 2 / Slot 3"));
+    }
 }

@@ -1668,6 +1668,11 @@ impl LoxonePortableApp {
                     self.admin_modals.open_project_diff(cmp_base, proj);
                 }
             }
+            TopBarAction::OpenTechReportWizard => {
+                if self.project.is_some() {
+                    self.admin_modals.open_tech_report_wizard();
+                }
+            }
             TopBarAction::NewProjectTab => {
                 if let Some(proj) = self.project.take() {
                     self.parked_tabs.push(ParkedProjectTab {

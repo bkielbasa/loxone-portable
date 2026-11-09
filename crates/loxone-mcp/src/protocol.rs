@@ -870,13 +870,13 @@ pub fn tool_definitions() -> Value {
             },
             {
                 "name": "report_export",
-                "description": "Generates a project report (page_svg, documentation_html, technical_report_html, project_analysis_csv, or component_bom_csv) and optionally writes it to output_path.",
+                "description": "Generates a project report (page_svg, documentation_html, technical_report_html, project_analysis_csv, component_bom_csv, or terminal_schedule_csv) and optionally writes it to output_path.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
                         "format": {
                             "type": "string",
-                            "enum": ["page_svg", "documentation_html", "technical_report_html", "project_analysis_csv", "component_bom_csv"],
+                            "enum": ["page_svg", "documentation_html", "technical_report_html", "project_analysis_csv", "component_bom_csv", "terminal_schedule_csv"],
                             "description": "Report format to generate."
                         },
                         "page_uuid": { "type": "string", "description": "Page UUID (required when format='page_svg' unless page_index is provided)." },
@@ -884,6 +884,27 @@ pub fn tool_definitions() -> Value {
                         "output_path": { "type": "string", "description": "Optional file path on disk to write the generated report." }
                     },
                     "required": ["format"]
+                }
+            },
+            {
+                "name": "project_bom_get",
+                "description": "Returns the structured Bill of Materials (BOM) including all hardware devices, DIN distribution board/row placement, wired channel counts, and part summaries.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "distribution_board": { "type": "string", "description": "Optional filter by Distribution Board (DistBoard)." }
+                    }
+                }
+            },
+            {
+                "name": "project_terminal_schedule_get",
+                "description": "Returns the physical DIN-Rail & Terminal Wiring Schedule mapping each device terminal (I1, AI1, Q1, AQ1, etc.) to its room, category, and wired schematic pages & function blocks.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "device_uuid": { "type": "string", "description": "Optional filter by hardware device UUID." },
+                        "wired_only": { "type": "boolean", "description": "If true, returns only terminals wired on a schematic page." }
+                    }
                 }
             }
         ]

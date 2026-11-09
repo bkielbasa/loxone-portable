@@ -5,7 +5,8 @@ use loxone_core::advanced_blocks_config::{
 };
 use loxone_core::efm_config::{EfmConfig, EfmNode, EfmNodeType};
 use loxone_core::export::{
-    export_component_bom_csv, page_to_svg, project_documentation_html, technical_report_html,
+    build_project_bom, collect_terminal_schedule, export_component_bom_csv,
+    export_terminal_schedule_csv, page_to_svg, project_documentation_html, technical_report_html,
 };
 use loxone_core::light_config::{
     HclMode, LightCircuitType, LightControllerConfig, LightScene,
@@ -1475,6 +1476,7 @@ fn call_advanced_tool_part2(
                     ("text/csv", export_project_analysis_csv(proj, &diags))
                 }
                 "component_bom_csv" => ("text/csv", export_component_bom_csv(proj)),
+                "terminal_schedule_csv" => ("text/csv", export_terminal_schedule_csv(proj)),
                 other => {
                     return JsonRpcResponse::tool_err(
                         id,
@@ -1506,6 +1508,123 @@ fn call_advanced_tool_part2(
                     "bytes": content.len(),
                     "output_path": written_to,
                     "content": content
+                }),
+            )
+        }
+        "project_bom_get" => {
+            let Some(proj) = session.project() else {
+                return JsonRpcResponse::tool_err(id, "No project loaded");
+            };
+            let db_filter = args
+                .get("distribution_board")
+                .and_then(Value::as_str)
+                .map(|s| s.trim().to_ascii_lowercase())
+                .filter(|s| !s.is_empty());
+
+            let bom = build_project_bom(proj);
+            let devices_json: Vec<Value> = bom
+                .devices
+                .into_iter()
+                .filter(|d| {
+                    db_filter
+                        .as_ref()
+                        .map_or(true, |f| d.distribution_board.to_ascii_lowercase().contains(f))
+                })
+                .map(|d| {
+                    json!({
+                        "uuid": d.uuid,
+                        "title": d.title,
+                        "node_type": d.node_type,
+                        "serial": d.serial,
+                        "parent_label": d.parent_label,
+                        "distribution_board": d.distribution_board,
+                        "row_position": d.row_position,
+                        "lighting_group": d.lighting_group,
+                        "description": d.description,
+                        "total_channels": d.total_channels,
+                        "wired_channels": d.wired_channels
+                    })
+                })
+                .collect();
+
+            let summaries_json: Vec<Value> = bom
+                .hardware_summaries
+                .into_iter()
+                .map(|s| {
+                    json!({
+                        "part_type": s.part_type,
+                        "quantity": s.quantity,
+                        "total_channels": s.total_channels,
+                        "wired_channels": s.wired_channels
+                    })
+                })
+                .collect();
+
+            let blocks_json: Vec<Value> = bom
+                .function_block_counts
+                .into_iter()
+                .map(|(t, c)| json!({ "block_type": t, "count": c }))
+                .collect();
+
+            JsonRpcResponse::tool_ok(
+                id,
+                json!({
+                    "device_count": devices_json.len(),
+                    "devices": devices_json,
+                    "hardware_summaries": summaries_json,
+                    "function_block_counts": blocks_json
+                }),
+            )
+        }
+        "project_terminal_schedule_get" => {
+            let Some(proj) = session.project() else {
+                return JsonRpcResponse::tool_err(id, "No project loaded");
+            };
+            let dev_filter = args
+                .get("device_uuid")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|s| !s.is_empty());
+            let wired_only = args
+                .get("wired_only")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+
+            let schedule = collect_terminal_schedule(proj);
+            let terminals_json: Vec<Value> = schedule
+                .into_iter()
+                .filter(|t| {
+                    if wired_only && !t.is_wired {
+                        return false;
+                    }
+                    dev_filter.map_or(true, |du| t.device_uuid == du)
+                })
+                .map(|t| {
+                    json!({
+                        "device_uuid": t.device_uuid,
+                        "device_title": t.device_title,
+                        "device_type": t.device_type,
+                        "device_serial": t.device_serial,
+                        "distribution_board": t.distribution_board,
+                        "row_position": t.row_position,
+                        "channel_uuid": t.channel_uuid,
+                        "channel_title": t.channel_title,
+                        "channel_type": t.channel_type,
+                        "terminal_label": t.terminal_label,
+                        "room_title": t.room_title,
+                        "category_title": t.category_title,
+                        "is_wired": t.is_wired,
+                        "connected_pages": t.connected_pages,
+                        "connected_blocks": t.connected_blocks
+                    })
+                })
+                .collect();
+
+            JsonRpcResponse::tool_ok(
+                id,
+                json!({
+                    "count": terminals_json.len(),
+                    "terminals": terminals_json
                 }),
             )
         }
