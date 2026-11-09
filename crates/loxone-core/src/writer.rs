@@ -2052,6 +2052,191 @@ fn escape_xml_text(val: &str, out: &mut String) {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BlockAlignMode {
+    AlignLeft,
+    AlignCenterHorizontal,
+    AlignRight,
+    AlignTop,
+    AlignMiddleVertical,
+    AlignBottom,
+    DistributeHorizontally,
+    DistributeVertically,
+    SnapToGrid,
+}
+
+impl BlockAlignMode {
+    pub fn from_str_name(s: &str) -> Option<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "align_left" | "left" => Some(Self::AlignLeft),
+            "align_center_h" | "center_h" | "center_horizontal" => {
+                Some(Self::AlignCenterHorizontal)
+            }
+            "align_right" | "right" => Some(Self::AlignRight),
+            "align_top" | "top" => Some(Self::AlignTop),
+            "align_middle_v" | "middle_v" | "middle_vertical" => {
+                Some(Self::AlignMiddleVertical)
+            }
+            "align_bottom" | "bottom" => Some(Self::AlignBottom),
+            "distribute_h" | "distribute_horizontally" => Some(Self::DistributeHorizontally),
+            "distribute_v" | "distribute_vertically" => Some(Self::DistributeVertically),
+            "snap_to_grid" | "grid" => Some(Self::SnapToGrid),
+            _ => None,
+        }
+    }
+}
+
+fn snap_loxone_grid_64(v: f32) -> f32 {
+    (v / 64.0).round() * 64.0
+}
+
+fn estimate_block_footprint(block: &PageBlock) -> (f32, f32) {
+    let bw = if block.is_note() {
+        (block.px2 - block.px).max(512.0)
+    } else if block.is_ref_bar() {
+        1680.0
+    } else {
+        1888.0
+    };
+    let bh = if block.is_note() {
+        (block.py2 - block.py).max(192.0)
+    } else if block.is_ref_bar() {
+        240.0
+    } else {
+        640.0
+    };
+    (bw, bh)
+}
+
+/// Computes an undoable `ProjectEdit::Batch` that aligns, distributes, or grid-snaps
+/// the specified blocks (or all positioned blocks on the page when `block_uuids` is empty).
+pub fn build_align_blocks_edits(
+    project: &LoxoneProject,
+    page_uuid: &str,
+    block_uuids: &[String],
+    mode: BlockAlignMode,
+) -> Option<(usize, ProjectEdit)> {
+    let page = project.pages.iter().find(|p| p.uuid == page_uuid)?;
+    let filter_set: HashSet<&str> = block_uuids.iter().map(String::as_str).collect();
+    let targets: Vec<&PageBlock> = page
+        .blocks
+        .iter()
+        .filter(|b| {
+            b.has_position && (filter_set.is_empty() || filter_set.contains(b.uuid.as_str()))
+        })
+        .collect();
+    if targets.is_empty() {
+        return None;
+    }
+
+    let min_x = targets.iter().map(|b| b.px).fold(f32::INFINITY, f32::min);
+    let min_y = targets.iter().map(|b| b.py).fold(f32::INFINITY, f32::min);
+    let max_right = targets
+        .iter()
+        .map(|b| b.px + estimate_block_footprint(b).0)
+        .fold(f32::NEG_INFINITY, f32::max);
+    let max_bottom = targets
+        .iter()
+        .map(|b| b.py + estimate_block_footprint(b).1)
+        .fold(f32::NEG_INFINITY, f32::max);
+    let mid_x = 0.5 * (min_x + max_right);
+    let mid_y = 0.5 * (min_y + max_bottom);
+
+    let mut new_positions: Vec<(String, f32, f32)> = Vec::new();
+
+    match mode {
+        BlockAlignMode::AlignLeft => {
+            let tx = snap_loxone_grid_64(min_x);
+            for b in &targets {
+                new_positions.push((b.uuid.clone(), tx, b.py));
+            }
+        }
+        BlockAlignMode::AlignCenterHorizontal => {
+            for b in &targets {
+                let (bw, _) = estimate_block_footprint(b);
+                new_positions.push((b.uuid.clone(), snap_loxone_grid_64(mid_x - 0.5 * bw), b.py));
+            }
+        }
+        BlockAlignMode::AlignRight => {
+            for b in &targets {
+                let (bw, _) = estimate_block_footprint(b);
+                new_positions.push((b.uuid.clone(), snap_loxone_grid_64(max_right - bw), b.py));
+            }
+        }
+        BlockAlignMode::AlignTop => {
+            let ty = snap_loxone_grid_64(min_y);
+            for b in &targets {
+                new_positions.push((b.uuid.clone(), b.px, ty));
+            }
+        }
+        BlockAlignMode::AlignMiddleVertical => {
+            for b in &targets {
+                let (_, bh) = estimate_block_footprint(b);
+                new_positions.push((b.uuid.clone(), b.px, snap_loxone_grid_64(mid_y - 0.5 * bh)));
+            }
+        }
+        BlockAlignMode::AlignBottom => {
+            for b in &targets {
+                let (_, bh) = estimate_block_footprint(b);
+                new_positions.push((b.uuid.clone(), b.px, snap_loxone_grid_64(max_bottom - bh)));
+            }
+        }
+        BlockAlignMode::DistributeHorizontally => {
+            let mut sorted = targets.clone();
+            sorted.sort_by(|a, b| a.px.partial_cmp(&b.px).unwrap_or(std::cmp::Ordering::Equal));
+            if sorted.len() >= 2 {
+                let start_x = sorted.first().unwrap().px;
+                let end_x = sorted.last().unwrap().px;
+                let span = (end_x - start_x).max(0.0);
+                let n = (sorted.len() - 1) as f32;
+                for (idx, b) in sorted.iter().enumerate() {
+                    let tx = snap_loxone_grid_64(start_x + span * (idx as f32 / n));
+                    new_positions.push((b.uuid.clone(), tx, b.py));
+                }
+            }
+        }
+        BlockAlignMode::DistributeVertically => {
+            let mut sorted = targets.clone();
+            sorted.sort_by(|a, b| a.py.partial_cmp(&b.py).unwrap_or(std::cmp::Ordering::Equal));
+            if sorted.len() >= 2 {
+                let start_y = sorted.first().unwrap().py;
+                let end_y = sorted.last().unwrap().py;
+                let span = (end_y - start_y).max(0.0);
+                let n = (sorted.len() - 1) as f32;
+                for (idx, b) in sorted.iter().enumerate() {
+                    let ty = snap_loxone_grid_64(start_y + span * (idx as f32 / n));
+                    new_positions.push((b.uuid.clone(), b.px, ty));
+                }
+            }
+        }
+        BlockAlignMode::SnapToGrid => {
+            for b in &targets {
+                new_positions.push((
+                    b.uuid.clone(),
+                    snap_loxone_grid_64(b.px),
+                    snap_loxone_grid_64(b.py),
+                ));
+            }
+        }
+    }
+
+    let mut edits = Vec::new();
+    for (uuid, nx, ny) in new_positions {
+        if let Some(orig) = page.blocks.iter().find(|b| b.uuid == uuid) {
+            if (orig.px - nx).abs() > 0.5 || (orig.py - ny).abs() > 0.5 {
+                edits.push(ProjectEdit::MovePageBlock {
+                    page_uuid: page_uuid.to_string(),
+                    block_uuid: uuid,
+                    px: nx,
+                    py: ny,
+                });
+            }
+        }
+    }
+
+    Some((edits.len(), ProjectEdit::Batch(edits)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2758,6 +2943,36 @@ mod tests {
             .iter()
             .any(|b| b.block_type == "Memory" && b.title == "Sw A (Q)"));
         apply_edit_with_inverse(&mut project, &inv_xpage).unwrap();
+
+        // 4. Test build_align_blocks_edits
+        apply_edit(
+            &mut project,
+            &ProjectEdit::AddPageBlock {
+                page_uuid: page_0_uuid.clone(),
+                block: blk_b.clone(),
+            },
+        )
+        .unwrap();
+        let (moved, align_edit) = build_align_blocks_edits(
+            &project,
+            &page_0_uuid,
+            &[blk_a.uuid.clone(), blk_b.uuid.clone()],
+            BlockAlignMode::AlignLeft,
+        )
+        .expect("should compute align_left edits");
+        assert!(moved >= 1);
+        apply_edit(&mut project, &align_edit).unwrap();
+        let a_after = project.pages[0]
+            .blocks
+            .iter()
+            .find(|b| b.uuid == blk_a.uuid)
+            .unwrap();
+        let b_after = project.pages[0]
+            .blocks
+            .iter()
+            .find(|b| b.uuid == blk_b.uuid)
+            .unwrap();
+        assert_eq!(a_after.px, b_after.px);
     }
 }
 

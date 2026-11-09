@@ -2208,14 +2208,37 @@ fn render_documented_pins_section(
                     Some(d) => format!("[{dir_badge}] {} — {}", pin.key, tr(d.label)),
                     None => format!("[{dir_badge}] {}", pin.key),
                 };
-                let resp = ui.label(
-                    RichText::new(title_str)
-                        .monospace()
-                        .size(11.0)
-                        .color(TEXT_PRIMARY),
-                );
+                ui.horizontal(|ui| {
+                    let resp = ui.label(
+                        RichText::new(title_str)
+                            .monospace()
+                            .size(11.0)
+                            .color(TEXT_PRIMARY),
+                    );
+                    if let Some(d) = doc {
+                        resp.on_hover_text(tr(d.description));
+                    }
+                    if pin.pin_kind == PinKind::Input {
+                        let inv_label = if pin.inverted { "● !Inv" } else { "○ Inv" };
+                        let inv_color = if pin.inverted {
+                            egui::Color32::from_rgb(0xFF, 0x4D, 0x5E)
+                        } else {
+                            TEXT_MUTED
+                        };
+                        if ui
+                            .small_button(RichText::new(inv_label).size(10.0).color(inv_color))
+                            .on_hover_text(tr("Toggle logical input negation (FLG / Inv)"))
+                            .clicked()
+                        {
+                            output.edits.push(ProjectEdit::SetPinInverted {
+                                control_uuid: control_uuid.to_string(),
+                                pin_key: pin.key.clone(),
+                                inverted: !pin.inverted,
+                            });
+                        }
+                    }
+                });
                 if let Some(d) = doc {
-                    resp.on_hover_text(tr(d.description));
                     ui.label(RichText::new(tr(d.description)).size(10.0).color(TEXT_MUTED));
                 }
 
