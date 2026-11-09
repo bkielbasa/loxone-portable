@@ -54,6 +54,6 @@ pub use room_controller_config::{
 pub use simulator::*;
 pub use state_alarm_config::*;
 pub use writer::{
-    apply_edit, apply_edit_with_inverse, clone_blocks_for_paste, create_cross_page_link_edits,
-    serialize_raw_node, serialize_raw_nodes, ProjectEdit,
+    apply_edit, apply_edit_with_inverse, build_page_auto_layout_edits, clone_blocks_for_paste,
+    create_cross_page_link_edits, serialize_raw_node, serialize_raw_nodes, ProjectEdit,
 };

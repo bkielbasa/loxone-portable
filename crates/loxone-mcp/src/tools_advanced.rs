@@ -22,7 +22,7 @@ use loxone_core::room_controller_config::{
     collect_energy_source_candidates, RoomControllerConfig, RoomTempMode,
 };
 use loxone_core::simulator::SimulatedDateTime;
-use loxone_core::writer::ProjectEdit;
+use loxone_core::writer::{build_page_auto_layout_edits, ProjectEdit};
 use serde_json::{json, Value};
 
 use crate::helpers::{build_auto_config_plans, compute_find_and_replace};
@@ -874,6 +874,35 @@ fn call_advanced_tool_part2(
                     "conflict_groups": conflicts_json,
                     "resolved_count": reassigned_json.len(),
                     "reassignments": reassigned_json
+                }),
+            )
+        }
+        "page_auto_layout" => {
+            let Some(page_uuid) = args.get("page_uuid").and_then(Value::as_str) else {
+                return JsonRpcResponse::tool_err(id, "Missing required parameter 'page_uuid'");
+            };
+            let layout_opt = {
+                let Some(proj) = session.project() else {
+                    return JsonRpcResponse::tool_err(id, "No project loaded");
+                };
+                build_page_auto_layout_edits(proj, page_uuid)
+            };
+            let Some((moved_count, batch)) = layout_opt else {
+                return JsonRpcResponse::tool_err(
+                    id,
+                    format!("Page '{page_uuid}' not found or has no blocks"),
+                );
+            };
+            if moved_count > 0 {
+                if let Err(e) = session.apply_edit(batch) {
+                    return JsonRpcResponse::tool_err(id, e);
+                }
+            }
+            JsonRpcResponse::tool_ok(
+                id,
+                json!({
+                    "page_uuid": page_uuid,
+                    "moved_blocks": moved_count
                 }),
             )
         }
