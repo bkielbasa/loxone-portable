@@ -1625,6 +1625,17 @@ impl LoxonePortableApp {
             TopBarAction::ExportComponentBomCsv => {
                 self.export_component_bom_csv_dialog();
             }
+            TopBarAction::AutoLayoutActivePage => {
+                if let Some((moved_count, batch)) = self.project.as_ref().and_then(|proj| {
+                    let page_uuid = proj.pages.get(self.active_page_index)?.uuid.clone();
+                    loxone_core::build_page_auto_layout_edits(proj, &page_uuid)
+                }) {
+                    if moved_count > 0 {
+                        self.execute_edit(batch);
+                        self.needs_initial_fit = true;
+                    }
+                }
+            }
         }
     }
 

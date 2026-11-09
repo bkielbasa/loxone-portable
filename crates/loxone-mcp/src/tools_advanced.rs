@@ -14,11 +14,15 @@ use loxone_core::linter::{
     export_project_analysis_csv, lint_project, AnalysisCategory, DiagnosticSeverity,
 };
 use loxone_core::object_config::{build_object_config_edits, build_object_config_rows};
+use loxone_core::periphery_provisioning::{
+    build_replace_device_edit, build_resolve_serial_conflicts_edit, collect_provisioned_hardware,
+    detect_serial_number_conflicts,
+};
 use loxone_core::room_controller_config::{
     collect_energy_source_candidates, RoomControllerConfig, RoomTempMode,
 };
 use loxone_core::simulator::SimulatedDateTime;
-use loxone_core::writer::ProjectEdit;
+use loxone_core::writer::{build_page_auto_layout_edits, ProjectEdit};
 use serde_json::{json, Value};
 
 use crate::helpers::{build_auto_config_plans, compute_find_and_replace};
@@ -779,6 +783,128 @@ fn call_advanced_tool_part2(
                 ),
                 Err(e) => JsonRpcResponse::tool_err(id, e),
             }
+        }
+        "tree_replace_device" => {
+            let (Some(device_uuid), Some(new_serial)) = (
+                args.get("device_uuid").and_then(Value::as_str),
+                args.get("new_serial").and_then(Value::as_str),
+            ) else {
+                return JsonRpcResponse::tool_err(
+                    id,
+                    "Missing required parameters 'device_uuid' and 'new_serial'",
+                );
+            };
+            let description = args.get("description").and_then(Value::as_str);
+            let distribution_board = args.get("distribution_board").and_then(Value::as_str);
+            let row_position = args.get("row_position").and_then(Value::as_str);
+            let lighting_group = args.get("lighting_group").and_then(Value::as_str);
+
+            let edit = build_replace_device_edit(
+                device_uuid,
+                new_serial,
+                description,
+                distribution_board,
+                row_position,
+                lighting_group,
+            );
+            if let Err(e) = session.apply_edit(edit) {
+                return JsonRpcResponse::tool_err(id, e);
+            }
+            let updated_dev = session.project().and_then(|proj| {
+                collect_provisioned_hardware(proj)
+                    .into_iter()
+                    .find(|d| d.uuid == device_uuid)
+            });
+            JsonRpcResponse::tool_ok(
+                id,
+                json!({
+                    "device_uuid": device_uuid,
+                    "serial": updated_dev.as_ref().map(|d| d.serial.as_str()).unwrap_or(new_serial),
+                    "description": updated_dev.as_ref().map(|d| d.description.as_str()).unwrap_or(""),
+                    "distribution_board": updated_dev.as_ref().map(|d| d.distribution_board.as_str()).unwrap_or(""),
+                    "row_position": updated_dev.as_ref().map(|d| d.row_position.as_str()).unwrap_or(""),
+                    "lighting_group": updated_dev.as_ref().map(|d| d.lighting_group.as_str()).unwrap_or(""),
+                    "updated": true
+                }),
+            )
+        }
+        "tree_resolve_serial_conflicts" => {
+            let preview_only = args
+                .get("preview_only")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            let (conflicts_json, reassignments, batch_opt) = {
+                let Some(proj) = session.project() else {
+                    return JsonRpcResponse::tool_err(id, "No project loaded");
+                };
+                let conflicts: Vec<Value> = detect_serial_number_conflicts(proj)
+                    .into_iter()
+                    .map(|c| {
+                        json!({
+                            "serial": c.serial,
+                            "device_uuids": c.device_uuids,
+                            "device_titles": c.device_titles
+                        })
+                    })
+                    .collect();
+                let (reassignments, batch) = build_resolve_serial_conflicts_edit(proj);
+                (conflicts, reassignments, batch)
+            };
+            if !preview_only {
+                if let Some(batch) = batch_opt {
+                    if let Err(e) = session.apply_edit(batch) {
+                        return JsonRpcResponse::tool_err(id, e);
+                    }
+                }
+            }
+            let reassigned_json: Vec<Value> = reassignments
+                .iter()
+                .map(|(uuid, old_sn, new_sn)| {
+                    json!({
+                        "device_uuid": uuid,
+                        "old_serial": old_sn,
+                        "new_serial": new_sn
+                    })
+                })
+                .collect();
+            JsonRpcResponse::tool_ok(
+                id,
+                json!({
+                    "preview_only": preview_only,
+                    "conflict_groups": conflicts_json,
+                    "resolved_count": reassigned_json.len(),
+                    "reassignments": reassigned_json
+                }),
+            )
+        }
+        "page_auto_layout" => {
+            let Some(page_uuid) = args.get("page_uuid").and_then(Value::as_str) else {
+                return JsonRpcResponse::tool_err(id, "Missing required parameter 'page_uuid'");
+            };
+            let layout_opt = {
+                let Some(proj) = session.project() else {
+                    return JsonRpcResponse::tool_err(id, "No project loaded");
+                };
+                build_page_auto_layout_edits(proj, page_uuid)
+            };
+            let Some((moved_count, batch)) = layout_opt else {
+                return JsonRpcResponse::tool_err(
+                    id,
+                    format!("Page '{page_uuid}' not found or has no blocks"),
+                );
+            };
+            if moved_count > 0 {
+                if let Err(e) = session.apply_edit(batch) {
+                    return JsonRpcResponse::tool_err(id, e);
+                }
+            }
+            JsonRpcResponse::tool_ok(
+                id,
+                json!({
+                    "page_uuid": page_uuid,
+                    "moved_blocks": moved_count
+                }),
+            )
         }
         "wizard_auto_configure_rooms" => {
             let preview_only = args

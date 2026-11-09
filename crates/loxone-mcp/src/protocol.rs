@@ -704,6 +704,43 @@ pub fn tool_definitions() -> Value {
                 }
             },
             {
+                "name": "tree_replace_device",
+                "description": "Replaces a hardware device's serial number in-place and updates commissioning metadata (description, distribution_board, row_position, lighting_group) while preserving child I/O channels and schematic wire links.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "device_uuid": { "type": "string", "description": "UUID of the hardware device node in Periphery/System tree." },
+                        "new_serial": { "type": "string", "description": "New Loxone serial number." },
+                        "description": { "type": "string" },
+                        "distribution_board": { "type": "string" },
+                        "row_position": { "type": "string" },
+                        "lighting_group": { "type": "string" }
+                    },
+                    "required": ["device_uuid", "new_serial"]
+                }
+            },
+            {
+                "name": "tree_resolve_serial_conflicts",
+                "description": "Detects and optionally resolves duplicate or unassigned ('00000000') hardware serial numbers across all Periphery/System devices.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "preview_only": { "type": "boolean", "description": "If true, only lists conflicts and planned serial assignments without mutating the project." }
+                    }
+                }
+            },
+            {
+                "name": "page_auto_layout",
+                "description": "Runs the topological Sugiyama-style schematic auto-layout engine on a page, arranging InputRefs on the left, function blocks in signal-flow columns, and OutputRefs on the right snapped to the 64-unit grid.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "page_uuid": { "type": "string", "description": "UUID of the schematic page to auto-layout." }
+                    },
+                    "required": ["page_uuid"]
+                }
+            },
+            {
                 "name": "wizard_auto_configure_rooms",
                 "description": "Previews or executes the Auto Configuration room logic wizard to generate standard LightController2, AutoJalousie, HeatIRoomController2, and/or AudioZone blocks across rooms.",
                 "inputSchema": {

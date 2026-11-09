@@ -278,6 +278,7 @@ pub enum TopBarAction {
     ExportTechnicalReport,
     OpenAutoConfiguration,
     ExportComponentBomCsv,
+    AutoLayoutActivePage,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2386,6 +2387,13 @@ fn render_ribbon_row_2(
                                 "Export Bill of Materials (BOM) CSV of hardware devices and function blocks",
                                 ACCENT_BLUE,
                                 TopBarAction::ExportComponentBomCsv,
+                            ),
+                            (
+                                "✨",
+                                "Auto-Layout Page",
+                                "Automatically tidy and arrange blocks on the active page in topological signal-flow columns snapped to the 64-unit grid",
+                                LOXONE_GREEN,
+                                TopBarAction::AutoLayoutActivePage,
                             ),
                         ];
                         for (icon, label, tip, tint, act) in admin_tiles {
