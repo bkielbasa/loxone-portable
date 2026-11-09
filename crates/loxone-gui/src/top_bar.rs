@@ -120,6 +120,106 @@ pub fn build_selected_object_context(
     })
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum BusMonitorProtocol {
+    #[default]
+    Air,
+    Tree,
+    Link,
+    Audio,
+    Knx,
+    Rs232,
+    Rs485,
+    Modbus,
+    OneWire,
+    Dali,
+    Dmx,
+    EnOcean,
+    Fronius,
+    VirtualHttpInputs,
+    VirtualOutputs,
+    VirtualUdpInputs,
+    Intercom,
+    System,
+    CPoolPro,
+    Schrack,
+}
+
+impl BusMonitorProtocol {
+    pub const ALL: [BusMonitorProtocol; 20] = [
+        Self::Air,
+        Self::Tree,
+        Self::Link,
+        Self::Audio,
+        Self::Knx,
+        Self::Rs232,
+        Self::Rs485,
+        Self::Modbus,
+        Self::OneWire,
+        Self::Dali,
+        Self::Dmx,
+        Self::EnOcean,
+        Self::Fronius,
+        Self::VirtualHttpInputs,
+        Self::VirtualOutputs,
+        Self::VirtualUdpInputs,
+        Self::Intercom,
+        Self::System,
+        Self::CPoolPro,
+        Self::Schrack,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Air => "Air",
+            Self::Tree => "Tree",
+            Self::Link => "Link",
+            Self::Audio => "Audio",
+            Self::Knx => "KNX",
+            Self::Rs232 => "RS232",
+            Self::Rs485 => "RS485",
+            Self::Modbus => "Modbus",
+            Self::OneWire => "1-Wire",
+            Self::Dali => "Dali",
+            Self::Dmx => "DMX",
+            Self::EnOcean => "EnOcean",
+            Self::Fronius => "Fronius",
+            Self::VirtualHttpInputs => "Virtual HTTP Inputs",
+            Self::VirtualOutputs => "Virtual Outputs",
+            Self::VirtualUdpInputs => "Virtual UDP Inputs",
+            Self::Intercom => "Intercom",
+            Self::System => "System",
+            Self::CPoolPro => "CPoolPro",
+            Self::Schrack => "Schrack",
+        }
+    }
+
+    pub fn icon(self) -> &'static str {
+        match self {
+            Self::Air => "📡",
+            Self::Tree => "🌿",
+            Self::Link => "🔗",
+            Self::Audio => "🎵",
+            Self::Knx => "🏢",
+            Self::Rs232 => "🔌",
+            Self::Rs485 => "🔌",
+            Self::Modbus => "⚙",
+            Self::OneWire => "🌡",
+            Self::Dali => "💡",
+            Self::Dmx => "🌈",
+            Self::EnOcean => "📶",
+            Self::Fronius => "☀",
+            Self::VirtualHttpInputs => "🌐",
+            Self::VirtualOutputs => "📤",
+            Self::VirtualUdpInputs => "📥",
+            Self::Intercom => "🔔",
+            Self::System => "🖥",
+            Self::CPoolPro => "🏊",
+            Self::Schrack => "⚡",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TopBarAction {
     ToggleLeftPanel,
@@ -173,6 +273,9 @@ pub enum TopBarAction {
     AlignSelectedBlocks(crate::canvas::MultiSelectAlign),
     SetSimulationDateTime(String),
     AdvanceSimulationSeconds(i64),
+    OpenBusMonitor(Option<BusMonitorProtocol>),
+    OpenHealthCheck,
+    ExportTechnicalReport,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2420,9 +2523,9 @@ fn render_ribbon_row_2(
                         group: ToolbarGroup::Authoring,
                         icon: "✓",
                         vector_icon: ToolbarIcon::VerifyCheck,
-                        label: "Verify".to_string(),
+                        label: "Project Analysis".to_string(),
                         shortcut_hint: None,
-                        tooltip: "Run Project Health Check / Linter (dangling references, missing Room/Category, unconnected blocks)"
+                        tooltip: "Run categorized Project Analysis (To-Do items, missing passwords, unconfigured devices, invalid assignments)"
                             .to_string(),
                         action: TopBarAction::VerifyProject,
                         enabled: has_project,
@@ -2444,6 +2547,95 @@ fn render_ribbon_row_2(
                 if let Some(act) = render_toolbar_capsule(ui, &diag_items) {
                     action = Some(act);
                 }
+
+                // Loxone Config 17 Diagnostics tools: Monitor ▾ (20 protocols), Loxone Health Check, Technical Report
+                Frame::new()
+                    .fill(CAPSULE_BG)
+                    .stroke(Stroke::new(1.0_f32, BORDER_SUBTLE))
+                    .corner_radius(CornerRadius::same(7))
+                    .inner_margin(Margin::symmetric(5, 2))
+                    .show(ui, |ui| {
+                        ui.spacing_mut().item_spacing.x = 4.0;
+                        if render_ribbon_chip(
+                            ui,
+                            "📡",
+                            "Monitor",
+                            "Open Multi-Bus Monitor window (Air, Tree, Link, Audio, KNX, Modbus, Virtual I/O, System…)",
+                            has_project,
+                            LOXONE_GREEN,
+                        )
+                        .clicked()
+                            && has_project
+                        {
+                            action = Some(TopBarAction::OpenBusMonitor(None));
+                        }
+
+                        ui.menu_button(
+                            RichText::new("▾").size(11.0).color(TEXT_PRIMARY),
+                            |ui| {
+                                ui.set_min_width(210.0);
+                                if ui
+                                    .button(format!(
+                                        "📡  {}",
+                                        crate::i18n::tr("All Monitors (20 Protocols)")
+                                    ))
+                                    .clicked()
+                                {
+                                    action = Some(TopBarAction::OpenBusMonitor(None));
+                                    ui.close_menu();
+                                }
+                                ui.separator();
+                                egui::ScrollArea::vertical()
+                                    .max_height(340.0)
+                                    .show(ui, |ui| {
+                                        for proto in BusMonitorProtocol::ALL {
+                                            let lbl = format!(
+                                                "{}  {}",
+                                                proto.icon(),
+                                                crate::i18n::tr(proto.label())
+                                            );
+                                            if ui.button(lbl).clicked() {
+                                                action =
+                                                    Some(TopBarAction::OpenBusMonitor(Some(proto)));
+                                                ui.close_menu();
+                                            }
+                                        }
+                                    });
+                            },
+                        )
+                        .response
+                        .on_hover_text(crate::i18n::tr("Select Bus Monitor Protocol"));
+
+                        render_capsule_divider(ui);
+
+                        if render_ribbon_chip(
+                            ui,
+                            "🩺",
+                            "Loxone Health Check",
+                            "Inspect Miniserver, Loxone Link, Loxone Tree, and Loxone Air bus health metrics",
+                            has_project,
+                            ACCENT_BLUE,
+                        )
+                        .clicked()
+                            && has_project
+                        {
+                            action = Some(TopBarAction::OpenHealthCheck);
+                        }
+
+                        if render_ribbon_chip(
+                            ui,
+                            "📑",
+                            "Technical Report",
+                            "Export a structured HTML Technical Report (hardware topology, rooms, categories, and analysis)",
+                            has_project,
+                            Color32::from_rgb(0xE4, 0xB3, 0x3B),
+                        )
+                        .clicked()
+                            && has_project
+                        {
+                            action = Some(TopBarAction::ExportTechnicalReport);
+                        }
+                    });
 
                 let panel_items = vec![
                     ToolbarItem {

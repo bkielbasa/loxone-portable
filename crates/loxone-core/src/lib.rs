@@ -31,7 +31,10 @@ pub use light_config::{
     HclMode, LightAutomationRule, LightCircuit, LightCircuitType, LightControllerConfig,
     LightScene,
 };
-pub use linter::{lint_project, DiagnosticSeverity, ProjectDiagnostic};
+pub use linter::{
+    export_project_analysis_csv, lint_project, AnalysisCategory, DiagnosticSeverity,
+    ProjectDiagnostic,
+};
 pub use merge::{
     check_server_newer_version, extract_prog_archive_timestamp,
     merge_remote_project_server_priority, MergeSummary, ServerDiffSummary, ServerVersionConflict,

@@ -165,7 +165,7 @@ impl PageBlock {
     }
 
     pub fn is_note(&self) -> bool {
-        matches!(self.block_type.as_str(), "Note" | "Text")
+        matches!(self.block_type.as_str(), "Note" | "Text" | "Memo")
     }
 
     pub fn attr(&self, name: &str) -> Option<&str> {

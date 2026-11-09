@@ -267,3 +267,98 @@ table{{border-collapse:collapse;width:100%;margin:8px 0 16px}}td,th{{border:1px 
     s.push_str("</body></html>\n");
     s
 }
+
+/// Builds a comprehensive HTML Technical Report covering hardware topology (Link / Tree / Air),
+/// serial numbers, room & category counts, schematic complexity, and Project Analysis diagnostics.
+pub fn technical_report_html(project: &LoxoneProject) -> String {
+    let m = &project.metadata;
+    let e = xml_escape;
+    let hw_items = crate::periphery_provisioning::collect_provisioned_hardware(project);
+    let diags = crate::linter::lint_project(project);
+
+    let total_blocks: usize = project.pages.iter().map(|p| p.blocks.len()).sum();
+    let total_wires: usize = project
+        .pages
+        .iter()
+        .flat_map(|p| p.blocks.iter())
+        .flat_map(|b| b.pins.iter())
+        .map(|pin| pin.incoming_links.len())
+        .sum();
+
+    let mut s = String::new();
+    let _ = write!(
+        s,
+        r#"<!DOCTYPE html><html><head><meta charset="utf-8"><title>{t} – Technical Report</title>
+<style>body{{font-family:Segoe UI,Arial,sans-serif;margin:32px;color:#1e252c}}h1{{color:#2f7d1f;margin-bottom:4px}}h2{{border-bottom:2px solid #69C350;padding-bottom:4px;margin-top:28px}}
+.kpi-row{{display:flex;gap:14px;flex-wrap:wrap;margin:14px 0}}.kpi{{border:1px solid #cfd8dc;border-radius:6px;padding:10px 16px;background:#f7faf6;min-width:130px}}
+.kpi .val{{font-size:20px;font-weight:bold;color:#2f7d1f}}.kpi .lbl{{font-size:12px;color:#546e7a}}
+table{{border-collapse:collapse;width:100%;margin:8px 0 16px}}td,th{{border:1px solid #cfd8dc;padding:5px 8px;text-align:left;font-size:12.5px}}th{{background:#eef5ea}}
+</style></head><body>
+<h1>{t} — Technical Report</h1>
+<p>ConfigVersion: <b>{cv}</b> · Pages: <b>{pg}</b> · Blocks: <b>{bl}</b> · Wires: <b>{wr}</b> · Provisioned Hardware: <b>{hw}</b></p>"#,
+        t = e(if m.title.is_empty() { "Loxone Project" } else { &m.title }),
+        cv = e(if m.config_version.is_empty() { "17021021" } else { &m.config_version }),
+        pg = project.pages.len(),
+        bl = total_blocks,
+        wr = total_wires,
+        hw = hw_items.len(),
+    );
+
+    let _ = write!(
+        s,
+        r#"<div class="kpi-row">
+<div class="kpi"><div class="val">{}</div><div class="lbl">Schematic Pages</div></div>
+<div class="kpi"><div class="val">{}</div><div class="lbl">Logic Blocks</div></div>
+<div class="kpi"><div class="val">{}</div><div class="lbl">Wire Links</div></div>
+<div class="kpi"><div class="val">{}</div><div class="lbl">Hardware Devices</div></div>
+<div class="kpi"><div class="val">{}</div><div class="lbl">Rooms</div></div>
+<div class="kpi"><div class="val">{}</div><div class="lbl">Analysis Findings</div></div>
+</div>"#,
+        project.pages.len(),
+        total_blocks,
+        total_wires,
+        hw_items.len(),
+        project.places.len(),
+        diags.len(),
+    );
+
+    s.push_str("<h2>Hardware & Bus Inventory (Link / Tree / Air)</h2><table><tr><th>Device</th><th>Type</th><th>Serial Number</th><th>Parent Bus</th><th>I/O Channels</th></tr>");
+    for d in &hw_items {
+        let sn = if d.serial.trim().is_empty() {
+            "Unconfigured"
+        } else {
+            d.serial.as_str()
+        };
+        let _ = write!(
+            s,
+            "<tr><td>{}</td><td>{}</td><td><code>{}</code></td><td>{}</td><td>{}</td></tr>",
+            e(&d.title),
+            e(&d.node_type),
+            e(sn),
+            e(&d.parent_label),
+            d.io_count,
+        );
+    }
+    s.push_str("</table>");
+
+    s.push_str("<h2>Project Analysis Summary</h2><table><tr><th>Category</th><th>Severity</th><th>Code</th><th>Page / Scope</th><th>Object</th><th>Details</th></tr>");
+    for d in &diags {
+        let sev = match d.severity {
+            crate::linter::DiagnosticSeverity::Error => "ERROR",
+            crate::linter::DiagnosticSeverity::Warning => "WARN",
+            crate::linter::DiagnosticSeverity::Info => "INFO",
+        };
+        let _ = write!(
+            s,
+            "<tr><td>{}</td><td><b>{}</b></td><td><code>{}</code></td><td>{}</td><td>{}</td><td>{}</td></tr>",
+            e(d.category().label()),
+            sev,
+            d.code,
+            e(&d.page_title),
+            e(&d.block_title),
+            e(&d.message),
+        );
+    }
+    s.push_str("</table></body></html>\n");
+    s
+}
