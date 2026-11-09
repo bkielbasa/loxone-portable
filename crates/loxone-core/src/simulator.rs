@@ -149,6 +149,91 @@ impl SimulatedDateTime {
     pub fn minutes_since_midnight(self) -> u16 {
         (self.hour as u16) * 60 + (self.minute as u16)
     }
+
+    pub fn day_of_year(self) -> u16 {
+        const CUM_DAYS: [u16; 12] = [0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334];
+        let m_idx = (self.month.clamp(1, 12) - 1) as usize;
+        let leap = (self.year % 4 == 0 && self.year % 100 != 0) || (self.year % 400 == 0);
+        let extra = if leap && self.month > 2 { 1 } else { 0 };
+        CUM_DAYS[m_idx] + (self.day.clamp(1, 31) as u16) + extra
+    }
+}
+
+/// Simulated Weather Server & environmental state for testing shading, heating/cooling,
+/// frost/wind protection, and solar radiation blocks in [`OfflineSimulator`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SimulatedWeatherState {
+    pub outdoor_temp_c: f64,
+    pub wind_speed_kmh: f64,
+    pub solar_radiation_wm2: f64,
+    pub rain_active: bool,
+    pub relative_humidity_pct: f64,
+}
+
+impl Default for SimulatedWeatherState {
+    fn default() -> Self {
+        Self {
+            outdoor_temp_c: 18.5,
+            wind_speed_kmh: 12.0,
+            solar_radiation_wm2: 450.0,
+            rain_active: false,
+            relative_humidity_pct: 55.0,
+        }
+    }
+}
+
+/// Computed astronomical solar position for a project's latitude/longitude at [`SimulatedDateTime`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SolarPosition {
+    pub elevation_deg: f64,
+    pub azimuth_deg: f64,
+    pub is_daylight: bool,
+    pub sunshine_active: bool,
+}
+
+/// Computes the sun's elevation and azimuth angles (degrees) from date/time and GPS coordinates.
+pub fn compute_solar_position(
+    dt: SimulatedDateTime,
+    latitude_deg: f64,
+    longitude_deg: f64,
+    solar_radiation_wm2: f64,
+) -> SolarPosition {
+    let doy = dt.day_of_year() as f64;
+    let fractional_hour =
+        (dt.hour as f64) + (dt.minute as f64) / 60.0 + (dt.second as f64) / 3600.0;
+
+    // Solar declination (Cooper's equation)
+    let decl_rad = 23.45_f64.to_radians()
+        * ((360.0 / 365.0 * (284.0 + doy)).to_radians()).sin();
+
+    // Approximate solar time using longitude offset from Central European standard meridian (15°E)
+    let solar_time_hours = fractional_hour + (longitude_deg - 15.0) / 15.0;
+    let hour_angle_rad = ((solar_time_hours - 12.0) * 15.0).to_radians();
+    let lat_rad = latitude_deg.clamp(-89.5, 89.5).to_radians();
+
+    let sin_el =
+        lat_rad.sin() * decl_rad.sin() + lat_rad.cos() * decl_rad.cos() * hour_angle_rad.cos();
+    let el_rad = sin_el.clamp(-1.0, 1.0).asin();
+    let elevation_deg = el_rad.to_degrees();
+
+    let cos_az = ((decl_rad.sin() - lat_rad.sin() * sin_el) / (lat_rad.cos() * el_rad.cos()).max(1e-6))
+        .clamp(-1.0, 1.0);
+    let base_az = cos_az.acos().to_degrees();
+    let azimuth_deg = if hour_angle_rad > 0.0 {
+        360.0 - base_az
+    } else {
+        base_az
+    };
+
+    let is_daylight = elevation_deg > -0.833;
+    let sunshine_active = elevation_deg > 5.0 && solar_radiation_wm2 >= 200.0;
+
+    SolarPosition {
+        elevation_deg: (elevation_deg * 10.0).round() / 10.0,
+        azimuth_deg: (azimuth_deg * 10.0).round() / 10.0,
+        is_daylight,
+        sunshine_active,
+    }
 }
 
 /// Pure offline logic simulation engine for Loxone schematics.
@@ -163,6 +248,7 @@ pub struct OfflineSimulator {
     pub live_store: LiveValueStore,
     pub tick_count: u64,
     pub simulated_time: SimulatedDateTime,
+    pub weather: SimulatedWeatherState,
     pub forced_inputs: BTreeMap<String, String>,
     pub block_latches: BTreeMap<String, f64>,
 }
@@ -297,6 +383,38 @@ impl OfflineSimulator {
         }
     }
 
+    /// Updates the simulated Weather Server environmental state and recomputes all blocks.
+    pub fn set_weather(&mut self, project: &LoxoneProject, weather: SimulatedWeatherState) {
+        self.weather = weather;
+        if !self.enabled {
+            self.start(project);
+        } else {
+            self.recompute(project);
+        }
+    }
+
+    /// Computes astronomical solar position for the project's latitude/longitude at [`Self::simulated_time`].
+    pub fn solar_position(&self, project: &LoxoneProject) -> SolarPosition {
+        let lat = project
+            .metadata
+            .latitude
+            .trim()
+            .parse::<f64>()
+            .unwrap_or(52.23);
+        let lon = project
+            .metadata
+            .longitude
+            .trim()
+            .parse::<f64>()
+            .unwrap_or(21.01);
+        compute_solar_position(
+            self.simulated_time,
+            lat,
+            lon,
+            self.weather.solar_radiation_wm2,
+        )
+    }
+
     /// Advances the simulated wall-clock date/time by `delta_secs` and recomputes all blocks.
     pub fn advance_seconds(&mut self, project: &LoxoneProject, delta_secs: i64) {
         if !self.enabled {
@@ -310,6 +428,7 @@ impl OfflineSimulator {
     /// Evaluates all pages and blocks in the project over multiple passes so multi-hop wires
     /// and cross-page `Memory` (`Merker`) references converge.
     pub fn recompute(&mut self, project: &LoxoneProject) {
+        self.propagate_weather_and_solar_nodes(project);
         const PASSES: usize = 4;
         for _ in 0..PASSES {
             for page in &project.pages {
@@ -322,6 +441,57 @@ impl OfflineSimulator {
             }
         }
         self.live_store.poll_count += 1;
+    }
+
+    fn propagate_weather_and_solar_nodes(&mut self, project: &LoxoneProject) {
+        let solar = self.solar_position(project);
+        let weather = self.weather;
+
+        fn walk_nodes(
+            sim: &mut OfflineSimulator,
+            nodes: &[crate::model::TreeNode],
+            solar: SolarPosition,
+            weather: SimulatedWeatherState,
+        ) {
+            for node in nodes {
+                let tl = node.title.to_ascii_lowercase();
+                let ct = node.control_type.to_ascii_lowercase();
+                let maybe_val: Option<String> = if ct.contains("weather") || ct.contains("sysvar") {
+                    if tl.contains("temp") || tl.contains("temperatura") {
+                        Some(format_compact_f64(weather.outdoor_temp_c))
+                    } else if tl.contains("wind") || tl.contains("wiatr") {
+                        Some(format_compact_f64(weather.wind_speed_kmh))
+                    } else if tl.contains("rain") || tl.contains("deszcz") || tl.contains("opad") {
+                        Some(if weather.rain_active { "1" } else { "0" }.to_string())
+                    } else if tl.contains("rad") || tl.contains("promieniowanie") {
+                        Some(format_compact_f64(weather.solar_radiation_wm2))
+                    } else if tl.contains("elev") || tl.contains("wysokość słońca") {
+                        Some(format_compact_f64(solar.elevation_deg))
+                    } else if tl.contains("azim") || tl.contains("azymut") {
+                        Some(format_compact_f64(solar.azimuth_deg))
+                    } else if tl.contains("sun") || tl.contains("słońce") {
+                        Some(if solar.sunshine_active { "1" } else { "0" }.to_string())
+                    } else if tl.contains("daylight") || tl.contains("dzień") {
+                        Some(if solar.is_daylight { "1" } else { "0" }.to_string())
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+
+                if let Some(raw) = maybe_val {
+                    if !sim.forced_inputs.contains_key(&node.uuid) {
+                        sim.set_block_output_pin(&node.uuid, "O", &raw, true);
+                        sim.set_block_output_pin(&node.uuid, "Q", &raw, false);
+                    }
+                }
+                walk_nodes(sim, &node.children, solar, weather);
+            }
+        }
+
+        walk_nodes(self, &project.system_tree, solar, weather);
+        walk_nodes(self, &project.periphery_tree, solar, weather);
     }
 
     fn propagate_central_block_members(&mut self, block: &PageBlock, active_val: f64) {
@@ -1157,5 +1327,48 @@ mod tests {
         // Driving the inverted input pin high (1) negates it to 0 -> AND gate output becomes 0
         sim.apply_command(&project, &and_uuid, Some(&inv_pin_key), "1");
         assert!(!sim.live_store.resolve_pin_signal(blk, q_pin, page_ref, &project).is_active);
+    }
+
+    #[test]
+    fn test_solar_position_and_weather_simulation() {
+        let noon_summer = SimulatedDateTime::new(2026, 6, 21, 12, 0, 0);
+        let midnight_winter = SimulatedDateTime::new(2026, 12, 21, 0, 0, 0);
+
+        let pos_noon = compute_solar_position(noon_summer, 52.23, 21.01, 650.0);
+        assert!(pos_noon.elevation_deg > 50.0);
+        assert!(pos_noon.is_daylight);
+        assert!(pos_noon.sunshine_active);
+
+        let pos_night = compute_solar_position(midnight_winter, 52.23, 21.01, 0.0);
+        assert!(pos_night.elevation_deg < -10.0);
+        assert!(!pos_night.is_daylight);
+        assert!(!pos_night.sunshine_active);
+
+        let xml = std::fs::read_to_string("../../Sample.Loxone")
+            .expect("Sample.Loxone fixture should exist");
+        let mut project = crate::parser::parse_loxone_xml(&xml).expect("parse should succeed");
+        let weather_node = new_tree_node("WeatherIn", "Outdoor Temperature");
+        let weather_uuid = weather_node.uuid.clone();
+        project.periphery_tree.push(weather_node);
+
+        let mut sim = OfflineSimulator::new();
+        sim.start(&project);
+        sim.set_weather(
+            &project,
+            SimulatedWeatherState {
+                outdoor_temp_c: -4.5,
+                wind_speed_kmh: 48.0,
+                solar_radiation_wm2: 720.0,
+                rain_active: true,
+                relative_humidity_pct: 88.0,
+            },
+        );
+        assert_eq!(
+            sim.live_store
+                .controls
+                .get(&weather_uuid)
+                .and_then(|c| c.primary_value.as_deref()),
+            Some("-4.5")
+        );
     }
 }

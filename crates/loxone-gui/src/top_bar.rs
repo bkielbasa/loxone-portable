@@ -285,6 +285,7 @@ pub enum TopBarAction {
     NewProjectTab,
     OpenTechReportWizard,
     OpenMultiplierManager,
+    SetSimulationWeatherPreset(&'static str),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2595,6 +2596,24 @@ fn render_ribbon_row_2(
                 if let Some(sim_act) = render_simulation_datetime_capsule(ui, has_project) {
                     action = Some(sim_act);
                 }
+                ui.menu_button(
+                    RichText::new(format!("☀ {}", crate::i18n::tr("Weather Sim")))
+                        .size(11.2)
+                        .color(TEXT_PRIMARY),
+                    |ui| {
+                        for (lbl, preset) in [
+                            ("☀ Sunny Summer (26°C, 750 W/m²)", "sunny"),
+                            ("⛅ Mild Overcast (18.5°C, 250 W/m²)", "mild"),
+                            ("🌧 Storm & Rain (11°C, 65 km/h, Rain)", "storm"),
+                            ("❄ Winter Frost (-6°C, 15 km/h)", "frost"),
+                        ] {
+                            if ui.button(lbl).clicked() {
+                                action = Some(TopBarAction::SetSimulationWeatherPreset(preset));
+                                ui.close_menu();
+                            }
+                        }
+                    },
+                );
             }
             RibbonTab::View => {
                 let diag_items = vec![
@@ -2892,6 +2911,24 @@ fn render_ribbon_row_2(
                 if let Some(sim_act) = render_simulation_datetime_capsule(ui, has_project) {
                     action = Some(sim_act);
                 }
+                ui.menu_button(
+                    RichText::new(format!("☀ {}", crate::i18n::tr("Weather Sim")))
+                        .size(11.2)
+                        .color(TEXT_PRIMARY),
+                    |ui| {
+                        for (lbl, preset) in [
+                            ("☀ Sunny Summer (26°C, 750 W/m²)", "sunny"),
+                            ("⛅ Mild Overcast (18.5°C, 250 W/m²)", "mild"),
+                            ("🌧 Storm & Rain (11°C, 65 km/h, Rain)", "storm"),
+                            ("❄ Winter Frost (-6°C, 15 km/h)", "frost"),
+                        ] {
+                            if ui.button(lbl).clicked() {
+                                action = Some(TopBarAction::SetSimulationWeatherPreset(preset));
+                                ui.close_menu();
+                            }
+                        }
+                    },
+                );
             }
         }
 
