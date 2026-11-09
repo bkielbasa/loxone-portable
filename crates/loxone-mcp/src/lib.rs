@@ -234,7 +234,42 @@ mod tests {
             assert_eq!((py % 64.0).abs(), 0.0);
         }
 
-        // 9. Test Undo & Redo
+        // 9. Test To-Do Manager and Autopilot Rule Designer (Stage 9)
+        let added_todo = call_tool(
+            &mut session,
+            "todo_add",
+            json!({
+                "page_uuid": page_uuid,
+                "title": "Verify island dimmer curve",
+                "text": "Check DALI minimum brightness"
+            }),
+        );
+        let todo_uuid = added_todo["todo_uuid"].as_str().unwrap().to_string();
+        let todos = call_tool(&mut session, "todo_list", json!({}));
+        assert_eq!(todos["count"], 1);
+        call_tool(
+            &mut session,
+            "todo_resolve",
+            json!({ "todo_uuid": todo_uuid, "delete_block": false }),
+        );
+        let todos_after = call_tool(&mut session, "todo_list", json!({}));
+        assert_eq!(todos_after["todos"][0]["is_resolved"], true);
+
+        let ap_rule = call_tool(
+            &mut session,
+            "autopilot_rule_create",
+            json!({
+                "title": "Island Trigger Rule",
+                "page_uuid": page_uuid,
+                "logic_op": "AND",
+                "condition_source_uuids": [in_ref_uuid],
+                "target_block_uuid": lc_uuid,
+                "target_pin_key": "Tr"
+            }),
+        );
+        assert!(ap_rule["rule_uuid"].as_str().is_some());
+
+        // 10. Test Undo & Redo
         let undo_res = call_tool(&mut session, "project_undo", json!({}));
         assert_eq!(undo_res["undone"], true);
         let redo_res = call_tool(&mut session, "project_redo", json!({}));

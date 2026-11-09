@@ -741,6 +741,59 @@ pub fn tool_definitions() -> Value {
                 }
             },
             {
+                "name": "todo_list",
+                "description": "Lists all To-Do / Memo notes across schematic pages.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {}
+                }
+            },
+            {
+                "name": "todo_add",
+                "description": "Adds a new To-Do / Memo note block to a schematic page.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "page_uuid": { "type": "string" },
+                        "title": { "type": "string" },
+                        "text": { "type": "string" },
+                        "px": { "type": "number" },
+                        "py": { "type": "number" }
+                    },
+                    "required": ["page_uuid", "title"]
+                }
+            },
+            {
+                "name": "todo_resolve",
+                "description": "Resolves (marks Done) or deletes a To-Do / Memo note by UUID.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "todo_uuid": { "type": "string" },
+                        "delete_block": { "type": "boolean" }
+                    },
+                    "required": ["todo_uuid"]
+                }
+            },
+            {
+                "name": "autopilot_rule_create",
+                "description": "Creates a Loxone Autopilot IF/AND/OR condition -> action rule on a schematic page.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "title": { "type": "string" },
+                        "page_uuid": { "type": "string" },
+                        "logic_op": { "type": "string", "enum": ["AND", "OR"] },
+                        "condition_source_uuids": { "type": "array", "items": { "type": "string" } },
+                        "target_block_uuid": { "type": "string" },
+                        "target_pin_key": { "type": "string" },
+                        "px": { "type": "number" },
+                        "py": { "type": "number" }
+                    },
+                    "required": ["title", "page_uuid"]
+                }
+            },
+            {
                 "name": "wizard_auto_configure_rooms",
                 "description": "Previews or executes the Auto Configuration room logic wizard to generate standard LightController2, AutoJalousie, HeatIRoomController2, and/or AudioZone blocks across rooms.",
                 "inputSchema": {
