@@ -1868,6 +1868,17 @@ impl LoxonePortableApp {
             CanvasAction::OpenObjectConfig(block_uuid) => {
                 self.open_object_config_modal(&block_uuid);
             }
+            CanvasAction::TogglePinInverted {
+                block_uuid,
+                pin_key,
+                inverted,
+            } => {
+                self.execute_edit(ProjectEdit::SetPinInverted {
+                    control_uuid: block_uuid,
+                    pin_key,
+                    inverted,
+                });
+            }
         }
     }
 
@@ -4220,6 +4231,67 @@ mod tests {
         assert_eq!(
             app.miniserver_modal.active_tab,
             crate::miniserver_modal::MiniserverModalTab::ConnectManually
+        );
+
+        // 7. TogglePinInverted canvas action updates ConnectorPin::inverted and supports Undo/Redo + XML roundtrip
+        let alarm_page_idx = app
+            .project
+            .as_ref()
+            .unwrap()
+            .pages
+            .iter()
+            .position(|p| p.uuid == "19eb19ad-02ad-eae0-ffff51535bcccc04")
+            .unwrap();
+        let sys_alarm_uuid = app.project.as_ref().unwrap().pages[alarm_page_idx]
+            .blocks
+            .iter()
+            .find(|b| b.title == "System alarmowy")
+            .unwrap()
+            .uuid
+            .clone();
+
+        app.handle_canvas_action(CanvasAction::TogglePinInverted {
+            block_uuid: sys_alarm_uuid.clone(),
+            pin_key: "I1".to_string(),
+            inverted: true,
+        });
+        assert!(
+            app.project.as_ref().unwrap().pages[alarm_page_idx]
+                .blocks
+                .iter()
+                .find(|b| b.uuid == sys_alarm_uuid)
+                .unwrap()
+                .pins
+                .iter()
+                .find(|p| p.key == "I1")
+                .unwrap()
+                .inverted
+        );
+        app.undo();
+        assert!(
+            !app.project.as_ref().unwrap().pages[alarm_page_idx]
+                .blocks
+                .iter()
+                .find(|b| b.uuid == sys_alarm_uuid)
+                .unwrap()
+                .pins
+                .iter()
+                .find(|p| p.key == "I1")
+                .unwrap()
+                .inverted
+        );
+        app.redo();
+        assert!(
+            app.project.as_ref().unwrap().pages[alarm_page_idx]
+                .blocks
+                .iter()
+                .find(|b| b.uuid == sys_alarm_uuid)
+                .unwrap()
+                .pins
+                .iter()
+                .find(|p| p.key == "I1")
+                .unwrap()
+                .inverted
         );
     }
 }

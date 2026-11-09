@@ -87,6 +87,12 @@ pub struct ShowPinValuesPopupState {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct BlockInfoPopupState {
+    pub screen_pos: Pos2,
+    pub block_uuid: String,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct RefBarChromeLayout {
     pub badge: String,
     pub capsule_rect: Rect,
@@ -112,6 +118,7 @@ pub struct CanvasInteractionState {
     pub live_value_popup: Option<LiveValuePopupState>,
     pub inline_rename: Option<InlineRenameState>,
     pub show_pin_values_popup: Option<ShowPinValuesPopupState>,
+    pub block_info_popup: Option<BlockInfoPopupState>,
     pub custom_pin_visibility: HashMap<String, HashMap<String, bool>>,
     pub last_clicked_block_uuid: Option<String>,
 }
@@ -360,6 +367,11 @@ pub enum CanvasAction {
         command: String,
     },
     OpenObjectConfig(String),
+    TogglePinInverted {
+        block_uuid: String,
+        pin_key: String,
+        inverted: bool,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -374,6 +386,7 @@ pub struct DisplayPin {
     pub key: String,
     pub side: PinSide,
     pub is_schema_only: bool,
+    pub inverted: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -671,6 +684,25 @@ pub fn is_default_visible_pin(block_type: &str, pin_key: &str) -> bool {
                 | "OutHumid"
         ),
         "Heatmixer2" => matches!(pin_key, "Outer" | "Stop" | "AQt" | "Qp"),
+        "Alarm" => matches!(
+            pin_key,
+            "I1"
+                | "I5"
+                | "Remanence"
+                | "ActiveDelay"
+                | "ActiveDelayP"
+                | "Inactive"
+                | "DisMv"
+                | "InputDisable"
+                | "Confirm"
+                | "IInit"
+                | "Q"
+                | "Q2"
+                | "Q1"
+                | "Q3"
+                | "Q5"
+                | "TQ"
+        ),
         _ => false,
     }
 }
@@ -889,7 +921,13 @@ pub fn collect_block_display_pins_with_overrides(
     );
     let has_object_footer = is_climate
         || loxone_core::CentralBlockConfig::is_central_block(&block.block_type)
-        || loxone_core::AudioZoneConfig::is_audio_zone_block(&block.block_type);
+        || loxone_core::AudioZoneConfig::is_audio_zone_block(&block.block_type)
+        || loxone_core::PresenceBlockConfig::is_presence_block(&block.block_type)
+        || loxone_core::supports_object_config(block)
+        || matches!(
+            block.block_type.as_str(),
+            "HeatIRoomController2" | "HeatIRoomController"
+        );
     let has_any_wire = block.pins.iter().any(|p| {
         !p.key.ends_with("Hidden")
             && (p.has_visible_incoming_links() || has_visible_outgoing_wires(&p.uuid, xref))
@@ -907,22 +945,32 @@ pub fn collect_block_display_pins_with_overrides(
             && override_val != Some(true)
             && !show_all_pins
         {
-            // Rendered inside the bottom "Przyporządkuj obiekty... / API ⇄" footer row
+            // Rendered inside the bottom "Assign objects... / API ⇄" footer row
             continue;
         }
 
         if !show_all_pins {
             if let Some(vis) = override_val {
-                if !vis && !connected {
+                if !vis && !connected && !pin.inverted {
                     continue;
                 }
-            } else if is_climate {
-                if !connected && !is_default_visible_pin(&block.block_type, &pin.key) {
+            } else if is_climate || block.block_type == "Alarm" {
+                if !connected
+                    && !pin.inverted
+                    && !is_default_visible_pin(&block.block_type, &pin.key)
+                {
                     continue;
                 }
-            } else if is_internal_parameter_pin(&block.block_type, pin) && !connected {
+            } else if is_internal_parameter_pin(&block.block_type, pin)
+                && !connected
+                && !pin.inverted
+            {
                 continue;
-            } else if has_any_wire && !connected {
+            } else if has_any_wire
+                && !connected
+                && !pin.inverted
+                && !is_default_visible_pin(&block.block_type, &pin.key)
+            {
                 continue;
             }
         }
@@ -932,6 +980,7 @@ pub fn collect_block_display_pins_with_overrides(
             key: pin.key.clone(),
             side,
             is_schema_only: false,
+            inverted: pin.inverted,
         };
         match side {
             PinSide::Input => inputs.push(dp),
@@ -952,6 +1001,7 @@ pub fn collect_block_display_pins_with_overrides(
                         key: doc.pin_key.to_string(),
                         side,
                         is_schema_only: true,
+                        inverted: false,
                     };
                     match side {
                         PinSide::Input => inputs.push(dp),
@@ -1385,6 +1435,7 @@ pub fn render_page_canvas(
     let mut clicked_any_pin_or_wire = false;
     let mut opened_live_popup_this_frame = false;
     let mut opened_pin_values_popup_this_frame = false;
+    let mut opened_block_info_popup_this_frame = false;
     let multi_mod = ui.input(|i| i.modifiers.shift || i.modifiers.command || i.modifiers.ctrl);
     let pan_mod = ui.input(|i| i.key_down(egui::Key::Space) || i.modifiers.alt);
     let show_all_pins = !viewport.compact_pins || viewport.interaction.wiring_from.is_some();
@@ -1599,6 +1650,7 @@ pub fn render_page_canvas(
         viewport.interaction.selected_wire = None;
         viewport.interaction.inline_rename = None;
         viewport.interaction.show_pin_values_popup = None;
+        viewport.interaction.block_info_popup = None;
         viewport.interaction.resizing_block = None;
         viewport.interaction.marquee_start = None;
         viewport.interaction.marquee_current = None;
@@ -2335,15 +2387,21 @@ pub fn render_page_canvas(
                     } else {
                         (4.5 * viewport.zoom).clamp(3.5, 6.8)
                     };
-                    let dot_color = if is_hovered {
-                        ACCENT_BLUE
-                    } else if ref_sig_active {
-                        LIVE_ACTIVE_GREEN
+                    if pin.inverted && block.is_output_ref_bar() {
+                        painter.circle_filled(anchor, r, Color32::from_rgb(0xE5, 0x24, 0x24));
+                        painter.circle_stroke(anchor, r, Stroke::new(1.2_f32, CANVAS_BG));
+                        painter.circle_filled(anchor, (r * 0.42).max(1.5), Color32::WHITE);
                     } else {
-                        WIRE_DIGITAL
-                    };
-                    painter.circle_filled(anchor, r, dot_color);
-                    painter.circle_stroke(anchor, r, Stroke::new(1.2_f32, CANVAS_BG));
+                        let dot_color = if is_hovered {
+                            ACCENT_BLUE
+                        } else if ref_sig_active {
+                            LIVE_ACTIVE_GREEN
+                        } else {
+                            WIRE_DIGITAL
+                        };
+                        painter.circle_filled(anchor, r, dot_color);
+                        painter.circle_stroke(anchor, r, Stroke::new(1.2_f32, CANVAS_BG));
+                    }
                 }
             }
             continue;
@@ -2404,12 +2462,18 @@ pub fn render_page_canvas(
             if btn_hovered {
                 ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
             }
-            let is_popup_open = kind == 0
+            let is_popup_open = (kind == 0
                 && viewport
                     .interaction
                     .show_pin_values_popup
                     .as_ref()
-                    .is_some_and(|p| p.block_uuid == block.uuid);
+                    .is_some_and(|p| p.block_uuid == block.uuid))
+                || (kind == 2
+                    && viewport
+                        .interaction
+                        .block_info_popup
+                        .as_ref()
+                        .is_some_and(|p| p.block_uuid == block.uuid));
             painter.circle_filled(
                 center,
                 btn_r,
@@ -2448,17 +2512,26 @@ pub fn render_page_canvas(
                 match kind {
                     0 => {
                         opened_pin_values_popup_this_frame = true;
+                        viewport.interaction.block_info_popup = None;
                         viewport.interaction.show_pin_values_popup = Some(ShowPinValuesPopupState {
                             screen_pos: Pos2::new(plus_center.x, header_rect.max.y + 4.0),
                             block_uuid: block.uuid.clone(),
-                            side: Some(PinSide::Output),
+                            side: None,
                         });
                         action = Some(CanvasAction::SelectObject(block.uuid.clone()));
                     }
                     1 => {
+                        viewport.interaction.show_pin_values_popup = None;
+                        viewport.interaction.block_info_popup = None;
                         action = Some(CanvasAction::OpenObjectConfig(block.uuid.clone()));
                     }
                     _ => {
+                        opened_block_info_popup_this_frame = true;
+                        viewport.interaction.show_pin_values_popup = None;
+                        viewport.interaction.block_info_popup = Some(BlockInfoPopupState {
+                            screen_pos: Pos2::new(info_center.x, header_rect.max.y + 4.0),
+                            block_uuid: block.uuid.clone(),
+                        });
                         action = Some(CanvasAction::SelectObject(block.uuid.clone()));
                     }
                 }
@@ -2639,15 +2712,21 @@ pub fn render_page_canvas(
                     }
                 }
             }
-            let dot_color = if is_hovered {
-                ACCENT_BLUE
-            } else if pin_active {
-                LIVE_ACTIVE_GREEN
+            if pin.inverted {
+                painter.circle_filled(anchor, r, Color32::from_rgb(0xE5, 0x24, 0x24));
+                painter.circle_stroke(anchor, r, Stroke::new(1.2_f32, CANVAS_BG));
+                painter.circle_filled(anchor, (r * 0.42).max(1.5), Color32::WHITE);
             } else {
-                WIRE_DIGITAL
-            };
-            painter.circle_filled(anchor, r, dot_color);
-            painter.circle_stroke(anchor, r, Stroke::new(1.2_f32, CANVAS_BG));
+                let dot_color = if is_hovered {
+                    ACCENT_BLUE
+                } else if pin_active {
+                    LIVE_ACTIVE_GREEN
+                } else {
+                    WIRE_DIGITAL
+                };
+                painter.circle_filled(anchor, r, dot_color);
+                painter.circle_stroke(anchor, r, Stroke::new(1.2_f32, CANVAS_BG));
+            }
             let display_key =
                 loxone_core::miniserver::loxone_short_pin_label(&block.block_type, &pin.key);
             painter.text(
@@ -2680,6 +2759,7 @@ pub fn render_page_canvas(
                         key: pin.key.clone(),
                         pin_kind: loxone_core::model::PinKind::Output,
                         default_value: None,
+                        inverted: false,
                         incoming_links: Vec::new(),
                     };
                     &fallback_pin
@@ -2840,57 +2920,66 @@ pub fn render_page_canvas(
                         TEXT_PRIMARY
                     },
                 );
-                footer_clip.text(
-                    Pos2::new(
-                        rect.max.x - 16.0 * viewport.zoom,
-                        footer_rect.center().y,
-                    ),
-                    Align2::RIGHT_CENTER,
-                    "API",
-                    pin_font.clone(),
-                    pin_label_color,
-                );
-                let api_badge_sz = Vec2::new(
-                    (13.0 * viewport.zoom).clamp(10.0, 18.0),
-                    (11.0 * viewport.zoom).clamp(8.5, 15.0),
-                );
-                let api_badge_rect = Rect::from_center_size(
-                    Pos2::new(rect.max.x - api_badge_sz.x * 0.45, footer_rect.center().y),
-                    api_badge_sz,
-                );
-                painter.rect(
-                    api_badge_rect,
-                    CornerRadius::same(2),
-                    Color32::from_rgb(0x2B, 0x31, 0x3D),
-                    Stroke::new(1.0_f32, CARD_BORDER),
-                    egui::StrokeKind::Inside,
-                );
-                let ac = api_badge_rect.center();
-                let aw = api_badge_rect.width() * 0.28;
-                let ay = api_badge_rect.height() * 0.18;
-                let arr_stroke = Stroke::new((1.1 * viewport.zoom).clamp(0.9, 1.5), TEXT_PRIMARY);
-                painter.line_segment(
-                    [Pos2::new(ac.x - aw, ac.y - ay), Pos2::new(ac.x + aw, ac.y - ay)],
-                    arr_stroke,
-                );
-                painter.line_segment(
-                    [
-                        Pos2::new(ac.x + aw - 2.0 * viewport.zoom, ac.y - ay - 1.5 * viewport.zoom),
-                        Pos2::new(ac.x + aw, ac.y - ay),
-                    ],
-                    arr_stroke,
-                );
-                painter.line_segment(
-                    [Pos2::new(ac.x + aw, ac.y + ay), Pos2::new(ac.x - aw, ac.y + ay)],
-                    arr_stroke,
-                );
-                painter.line_segment(
-                    [
-                        Pos2::new(ac.x - aw + 2.0 * viewport.zoom, ac.y + ay + 1.5 * viewport.zoom),
-                        Pos2::new(ac.x - aw, ac.y + ay),
-                    ],
-                    arr_stroke,
-                );
+                if summary.show_api_fanout {
+                    footer_clip.text(
+                        Pos2::new(
+                            rect.max.x - 16.0 * viewport.zoom,
+                            footer_rect.center().y,
+                        ),
+                        Align2::RIGHT_CENTER,
+                        "API",
+                        pin_font.clone(),
+                        pin_label_color,
+                    );
+                    let api_badge_sz = Vec2::new(
+                        (13.0 * viewport.zoom).clamp(10.0, 18.0),
+                        (11.0 * viewport.zoom).clamp(8.5, 15.0),
+                    );
+                    let api_badge_rect = Rect::from_center_size(
+                        Pos2::new(rect.max.x - api_badge_sz.x * 0.45, footer_rect.center().y),
+                        api_badge_sz,
+                    );
+                    painter.rect(
+                        api_badge_rect,
+                        CornerRadius::same(2),
+                        Color32::from_rgb(0x2B, 0x31, 0x3D),
+                        Stroke::new(1.0_f32, CARD_BORDER),
+                        egui::StrokeKind::Inside,
+                    );
+                    let ac = api_badge_rect.center();
+                    let aw = api_badge_rect.width() * 0.28;
+                    let ay = api_badge_rect.height() * 0.18;
+                    let arr_stroke =
+                        Stroke::new((1.1 * viewport.zoom).clamp(0.9, 1.5), TEXT_PRIMARY);
+                    painter.line_segment(
+                        [Pos2::new(ac.x - aw, ac.y - ay), Pos2::new(ac.x + aw, ac.y - ay)],
+                        arr_stroke,
+                    );
+                    painter.line_segment(
+                        [
+                            Pos2::new(
+                                ac.x + aw - 2.0 * viewport.zoom,
+                                ac.y - ay - 1.5 * viewport.zoom,
+                            ),
+                            Pos2::new(ac.x + aw, ac.y - ay),
+                        ],
+                        arr_stroke,
+                    );
+                    painter.line_segment(
+                        [Pos2::new(ac.x + aw, ac.y + ay), Pos2::new(ac.x - aw, ac.y + ay)],
+                        arr_stroke,
+                    );
+                    painter.line_segment(
+                        [
+                            Pos2::new(
+                                ac.x - aw + 2.0 * viewport.zoom,
+                                ac.y + ay + 1.5 * viewport.zoom,
+                            ),
+                            Pos2::new(ac.x - aw, ac.y + ay),
+                        ],
+                        arr_stroke,
+                    );
+                }
 
                 if clicked
                     && !clicked_any_pin_or_wire
@@ -2903,7 +2992,7 @@ pub fn render_page_canvas(
                 }
 
                 // Draw orthogonal fan-out tree from API ⇄ to assigned object pills (e.g. Irc2: Gabinet ...)
-                if !summary.assigned.is_empty() {
+                if summary.show_api_fanout && !summary.assigned.is_empty() {
                     let api_anchor = Pos2::new(rect.max.x, footer_rect.center().y);
                     let tree_gap = (28.0 * viewport.zoom).clamp(18.0, 42.0);
                     let trunk_x = rect.max.x + tree_gap * 0.5;
@@ -3054,7 +3143,10 @@ pub fn render_page_canvas(
         }
     }
 
-    // Pass 4: Draw consolidated clickable pill tags for detached (FLG=2) and cross-page/periphery links
+    // Pass 4: Draw Loxone-style capsule tags for detached (FLG=2) and cross-page links (both incoming and outgoing)
+    let mut hanging_stacks_by_blocker: HashMap<usize, usize> = HashMap::new();
+    let mut target_trunk_index: usize = 0;
+
     for layout in &layouts {
         let block = layout.block;
         if block.is_input_ref_bar() {
@@ -3081,125 +3173,360 @@ pub fn render_page_canvas(
                 continue;
             }
 
-            let first_meta = pill_sources[0];
-            let extra_count = pill_sources.len() - 1;
-            let owner_short = truncate_text(&first_meta.owner_title, 16);
-            let pin_short = truncate_text(&first_meta.pin_key, 6);
-            let tag = if extra_count > 0 {
-                format!("🔗 {}:{} (+{})", owner_short, pin_short, extra_count)
-            } else {
-                format!("🔗 {}:{}", owner_short, pin_short)
-            };
-
-            let pill_live = live_store
-                .and_then(|store| store.resolve_pin_by_uuid(&first_meta.pin_uuid, page, project, 0));
-            let pill_active = pill_live.as_ref().is_some_and(|s| s.is_active);
-            let cap_w = (20.0 * viewport.zoom).clamp(15.0, 26.0);
-            let cap_extra_w = cap_w + 2.0 * viewport.zoom;
-
-            let char_w = (6.8 * viewport.zoom).clamp(5.0, 9.5);
-            let pill_w = ((tag.chars().count() as f32) * char_w + 14.0 * viewport.zoom + cap_extra_w)
-                .clamp(68.0 * viewport.zoom, 220.0 * viewport.zoom);
-            let pill_h = (18.0 * viewport.zoom).clamp(14.0, 26.0);
-            let gap = if live_store.is_some() {
+            let pill_w = (182.0 * viewport.zoom).clamp(130.0, 248.0);
+            let pill_h = (18.0 * viewport.zoom).clamp(13.5, 25.0);
+            let pill_gap = (2.5 * viewport.zoom).clamp(1.5, 4.0);
+            let direct_gap = if live_store.is_some() {
                 (44.0 * viewport.zoom).max(28.0)
             } else {
-                (8.0 * viewport.zoom).max(5.0)
+                (10.0 * viewport.zoom).max(6.0)
             };
-            let pill_rect = Rect::from_min_max(
-                Pos2::new(dst_pos.x - pill_w - gap, dst_pos.y - pill_h * 0.5),
-                Pos2::new(dst_pos.x - gap, dst_pos.y + pill_h * 0.5),
+
+            let ideal_rect = Rect::from_min_max(
+                Pos2::new(
+                    dst_pos.x - pill_w - direct_gap,
+                    dst_pos.y - pill_h * 0.5,
+                ),
+                Pos2::new(
+                    dst_pos.x - direct_gap,
+                    dst_pos.y + pill_h * 0.5 + (pill_sources.len().saturating_sub(1) as f32) * (pill_h + pill_gap),
+                ),
             );
 
-            painter.line_segment(
-                [Pos2::new(pill_rect.max.x, dst_pos.y), dst_pos],
-                Stroke::new(
-                    if pill_active { 2.2_f32 } else { 1.5_f32 },
+            let blocking_idx = layouts
+                .iter()
+                .enumerate()
+                .filter(|(_, l)| {
+                    l.block.uuid != block.uuid
+                        && l.rect.max.x < dst_pos.x - 4.0 * viewport.zoom
+                        && l.rect.intersects(ideal_rect.expand(4.0 * viewport.zoom))
+                })
+                .max_by(|(_, a), (_, b)| {
+                    a.rect
+                        .max
+                        .x
+                        .partial_cmp(&b.rect.max.x)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                })
+                .map(|(idx, _)| idx);
+
+            let trunk_slot = target_trunk_index;
+            target_trunk_index += 1;
+
+            for (src_idx, src_meta) in pill_sources.iter().enumerate() {
+                let short_pin = loxone_core::miniserver::loxone_short_pin_label(
+                    &src_meta.owner_type,
+                    &src_meta.pin_key,
+                );
+                let display_lbl = format!("{}: {}", short_pin, src_meta.owner_title);
+                let pill_live = live_store.and_then(|store| {
+                    store.resolve_pin_by_uuid(&src_meta.pin_uuid, page, project, 0)
+                });
+                let pill_active = pill_live.as_ref().is_some_and(|s| s.is_active);
+
+                let pill_rect = if let Some(b_idx) = blocking_idx {
+                    let blocker_rect = layouts[b_idx].rect;
+                    let stack_slot = hanging_stacks_by_blocker.entry(b_idx).or_insert(0);
+                    let cur_slot = *stack_slot;
+                    *stack_slot += 1;
+                    let top_y = blocker_rect.max.y
+                        + 6.0 * viewport.zoom
+                        + (cur_slot as f32) * (pill_h + pill_gap);
+                    Rect::from_min_max(
+                        Pos2::new(blocker_rect.max.x - pill_w, top_y),
+                        Pos2::new(blocker_rect.max.x, top_y + pill_h),
+                    )
+                } else {
+                    let top_y = dst_pos.y - pill_h * 0.5
+                        + (src_idx as f32) * (pill_h + pill_gap);
+                    Rect::from_min_max(
+                        Pos2::new(dst_pos.x - pill_w - direct_gap, top_y),
+                        Pos2::new(dst_pos.x - direct_gap, top_y + pill_h),
+                    )
+                };
+
+                let p_cy = pill_rect.center().y;
+                let wire_stroke = Stroke::new(
+                    if pill_active { 2.0_f32 } else { 1.3_f32 },
                     if pill_active {
                         LIVE_ACTIVE_GREEN
                     } else {
                         CARD_BORDER
                     },
-                ),
-            );
-            painter.rect(
-                pill_rect,
-                CornerRadius::same(4),
-                CARD_BG,
-                Stroke::new(1.2_f32, CARD_BORDER),
-                egui::StrokeKind::Inside,
-            );
-            let cap_rect = Rect::from_min_max(
-                Pos2::new(pill_rect.max.x - cap_w - 1.5, pill_rect.min.y + 1.5),
-                Pos2::new(pill_rect.max.x - 1.5, pill_rect.max.y - 1.5),
-            );
-            if let Some(sig) = pill_live {
-                painter.rect_filled(
-                    cap_rect,
-                    CornerRadius::same(3),
-                    if sig.is_active {
-                        LIVE_ACTIVE_GREEN
-                    } else {
-                        LIVE_INACTIVE_CAPSULE_BG
-                    },
                 );
-                painter.text(
-                    cap_rect.center(),
-                    Align2::CENTER_CENTER,
-                    "->",
-                    FontId::proportional((9.5 * viewport.zoom).clamp(8.0, 13.0)),
-                    Color32::WHITE,
-                );
-                live_wire_labels.push((
-                    Pos2::new(dst_pos.x - 6.5 * viewport.zoom, dst_pos.y),
-                    Align2::RIGHT_CENTER,
-                    sig.formatted,
-                    sig.is_active,
-                ));
-            } else {
+
+                if blocking_idx.is_some() || src_idx > 0 {
+                    let trunk_x = (pill_rect.max.x
+                        + (10.0 + (trunk_slot % 4) as f32 * 5.0) * viewport.zoom)
+                        .min(dst_pos.x - 6.0 * viewport.zoom);
+                    painter.line_segment(
+                        [Pos2::new(pill_rect.max.x, p_cy), Pos2::new(trunk_x, p_cy)],
+                        wire_stroke,
+                    );
+                    painter.line_segment(
+                        [Pos2::new(trunk_x, p_cy), Pos2::new(trunk_x, dst_pos.y)],
+                        wire_stroke,
+                    );
+                    painter.line_segment([Pos2::new(trunk_x, dst_pos.y), dst_pos], wire_stroke);
+                } else {
+                    painter.line_segment([Pos2::new(pill_rect.max.x, p_cy), dst_pos], wire_stroke);
+                }
+
+                if src_idx == 0 {
+                    if let Some(sig) = &pill_live {
+                        live_wire_labels.push((
+                            Pos2::new(dst_pos.x - 6.5 * viewport.zoom, dst_pos.y),
+                            Align2::RIGHT_CENTER,
+                            sig.formatted.clone(),
+                            sig.is_active,
+                        ));
+                    }
+                }
+
+                let pill_hovered = hover_pos.is_some_and(|hp| pill_rect.contains(hp));
+                if pill_hovered {
+                    ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                }
                 painter.rect(
-                    cap_rect,
-                    CornerRadius::same(3),
-                    OFF_CAPSULE_BG,
-                    Stroke::new(1.0_f32, OFF_CAPSULE_BORDER),
+                    pill_rect,
+                    CornerRadius::same(8),
+                    if pill_hovered {
+                        ELEVATED_BG
+                    } else {
+                        Color32::from_rgb(0x21, 0x26, 0x2D)
+                    },
+                    Stroke::new(
+                        1.0_f32,
+                        if pill_hovered {
+                            LOXONE_GREEN
+                        } else if pill_active {
+                            LIVE_ACTIVE_GREEN
+                        } else {
+                            CARD_BORDER
+                        },
+                    ),
                     egui::StrokeKind::Inside,
                 );
+
+                // Left `(i)` circle inside incoming capsule
+                let i_r = (5.5 * viewport.zoom).clamp(4.0, 8.0);
+                let i_center = Pos2::new(pill_rect.min.x + 5.5 * viewport.zoom + i_r, p_cy);
+                painter.circle_filled(i_center, i_r, Color32::from_rgb(0x18, 0x1C, 0x22));
+                painter.circle_stroke(i_center, i_r, Stroke::new(1.0_f32, BORDER_SUBTLE));
                 painter.text(
-                    cap_rect.center(),
+                    i_center,
                     Align2::CENTER_CENTER,
-                    "->",
-                    FontId::proportional((9.5 * viewport.zoom).clamp(8.0, 13.0)),
+                    "i",
+                    FontId::proportional((8.5 * viewport.zoom).clamp(6.8, 12.0)),
                     TEXT_PRIMARY,
                 );
-            }
-            let text_rect = Rect::from_min_max(
-                pill_rect.min,
-                Pos2::new(pill_rect.max.x - cap_extra_w, pill_rect.max.y),
-            );
-            let pill_clip = painter.with_clip_rect(text_rect.shrink(1.5));
-            pill_clip.text(
-                text_rect.center(),
-                Align2::CENTER_CENTER,
-                tag,
-                FontId::proportional((10.5 * viewport.zoom).clamp(8.5, 15.0)),
-                ACCENT_BLUE,
-            );
 
-            if clicked && !clicked_any_pin_or_wire {
-                if let Some(pos) = pointer_pos {
-                    if pill_rect.contains(pos) {
-                        clicked_any_block = true;
-                        viewport.interaction.last_clicked_block_uuid = None;
-                        if let Some(src_page_idx) = first_meta.page_index {
-                            action = Some(CanvasAction::NavigateToBlock {
-                                page_index: src_page_idx,
-                                block_uuid: first_meta.owner_uuid.clone(),
-                            });
-                        } else {
-                            action =
-                                Some(CanvasAction::SelectObject(first_meta.owner_uuid.clone()));
+                // Right cap with output-box arrow icon (`[□->]`)
+                let cap_w = (22.0 * viewport.zoom).clamp(16.0, 30.0);
+                painter.line_segment(
+                    [
+                        Pos2::new(pill_rect.max.x - cap_w, pill_rect.min.y + 1.0),
+                        Pos2::new(pill_rect.max.x - cap_w, pill_rect.max.y - 1.0),
+                    ],
+                    Stroke::new(1.0_f32, BORDER_SUBTLE),
+                );
+                let box_sz = (6.5 * viewport.zoom).clamp(4.8, 9.0);
+                let box_c = Pos2::new(pill_rect.max.x - cap_w * 0.52, p_cy);
+                let box_r = Rect::from_center_size(box_c, Vec2::splat(box_sz));
+                let sym_stroke = Stroke::new(
+                    (1.1 * viewport.zoom).clamp(0.9, 1.5),
+                    if pill_active {
+                        LIVE_ACTIVE_GREEN
+                    } else {
+                        TEXT_MUTED
+                    },
+                );
+                painter.rect_stroke(box_r, CornerRadius::same(1), sym_stroke, egui::StrokeKind::Inside);
+                painter.line_segment(
+                    [
+                        Pos2::new(box_c.x, p_cy),
+                        Pos2::new(box_r.max.x + 2.5 * viewport.zoom, p_cy),
+                    ],
+                    sym_stroke,
+                );
+
+                let lbl_left = i_center.x + i_r + 5.0 * viewport.zoom;
+                let lbl_right = pill_rect.max.x - cap_w - 4.0 * viewport.zoom;
+                let pill_clip = painter.with_clip_rect(Rect::from_min_max(
+                    Pos2::new(lbl_left, pill_rect.min.y),
+                    Pos2::new(lbl_right.max(lbl_left + 10.0), pill_rect.max.y),
+                ));
+                pill_clip.text(
+                    Pos2::new(lbl_left, p_cy),
+                    Align2::LEFT_CENTER,
+                    truncate_text(&display_lbl, 28),
+                    FontId::proportional((10.0 * viewport.zoom).clamp(8.0, 14.0)),
+                    TEXT_PRIMARY,
+                );
+
+                if clicked && !clicked_any_pin_or_wire {
+                    if let Some(pos) = pointer_pos {
+                        if pill_rect.contains(pos) {
+                            clicked_any_block = true;
+                            clicked_any_pin_or_wire = true;
+                            viewport.interaction.last_clicked_block_uuid = None;
+                            if let Some(src_page_idx) = src_meta.page_index {
+                                action = Some(CanvasAction::NavigateToBlock {
+                                    page_index: src_page_idx,
+                                    block_uuid: src_meta.owner_uuid.clone(),
+                                });
+                            } else {
+                                action =
+                                    Some(CanvasAction::SelectObject(src_meta.owner_uuid.clone()));
+                            }
                         }
                     }
+                }
+            }
+        }
+
+        // Also draw outgoing detached (FLG=2) or cross-page target capsules on the right of output pins
+        if !block.is_ref_bar() {
+            for out_pin in &layout.outputs {
+                let Some(&(src_pos, _)) = pin_screen_positions.get(&out_pin.uuid) else {
+                    continue;
+                };
+                let Some(targets) = project.xref.outgoing_wires_by_pin_uuid.get(&out_pin.uuid)
+                else {
+                    continue;
+                };
+                let detached_targets: Vec<_> = targets
+                    .iter()
+                    .filter(|t| {
+                        !t.is_hidden
+                            && (t.is_detached_ref
+                                || !pin_screen_positions.contains_key(&t.target_pin_uuid))
+                    })
+                    .collect();
+                if detached_targets.is_empty() {
+                    continue;
+                }
+
+                let first_target = detached_targets[0];
+                let target_type = project
+                    .xref
+                    .objects_by_uuid
+                    .get(&first_target.target_block_uuid)
+                    .map(|o| o.object_type.as_str())
+                    .unwrap_or("");
+                let target_pin_short = loxone_core::miniserver::loxone_short_pin_label(
+                    target_type,
+                    &first_target.target_pin_key,
+                );
+                let out_lbl = if detached_targets.len() > 1 {
+                    format!(
+                        "{}: {} (+{})",
+                        target_pin_short,
+                        first_target.target_block_title,
+                        detached_targets.len() - 1
+                    )
+                } else {
+                    format!("{}: {}", target_pin_short, first_target.target_block_title)
+                };
+
+                let pill_w = (182.0 * viewport.zoom).clamp(130.0, 248.0);
+                let pill_h = (18.0 * viewport.zoom).clamp(13.5, 25.0);
+                let out_gap = if live_store.is_some() {
+                    (40.0 * viewport.zoom).max(26.0)
+                } else {
+                    (12.0 * viewport.zoom).max(8.0)
+                };
+                let pill_rect = Rect::from_min_max(
+                    Pos2::new(src_pos.x + out_gap, src_pos.y - pill_h * 0.5),
+                    Pos2::new(src_pos.x + out_gap + pill_w, src_pos.y + pill_h * 0.5),
+                );
+                let p_cy = pill_rect.center().y;
+                painter.line_segment(
+                    [src_pos, Pos2::new(pill_rect.min.x, p_cy)],
+                    Stroke::new(1.3_f32, CARD_BORDER),
+                );
+
+                let pill_hovered = hover_pos.is_some_and(|hp| pill_rect.contains(hp));
+                if pill_hovered {
+                    ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                }
+                painter.rect(
+                    pill_rect,
+                    CornerRadius::same(8),
+                    if pill_hovered {
+                        ELEVATED_BG
+                    } else {
+                        Color32::from_rgb(0x21, 0x26, 0x2D)
+                    },
+                    Stroke::new(
+                        1.0_f32,
+                        if pill_hovered {
+                            LOXONE_GREEN
+                        } else {
+                            CARD_BORDER
+                        },
+                    ),
+                    egui::StrokeKind::Inside,
+                );
+
+                let cap_w = (22.0 * viewport.zoom).clamp(16.0, 30.0);
+                painter.line_segment(
+                    [
+                        Pos2::new(pill_rect.min.x + cap_w, pill_rect.min.y + 1.0),
+                        Pos2::new(pill_rect.min.x + cap_w, pill_rect.max.y - 1.0),
+                    ],
+                    Stroke::new(1.0_f32, BORDER_SUBTLE),
+                );
+                let box_sz = (6.5 * viewport.zoom).clamp(4.8, 9.0);
+                let box_c = Pos2::new(pill_rect.min.x + cap_w * 0.52, p_cy);
+                let box_r = Rect::from_center_size(box_c, Vec2::splat(box_sz));
+                let sym_stroke = Stroke::new((1.1 * viewport.zoom).clamp(0.9, 1.5), TEXT_MUTED);
+                painter.rect_stroke(box_r, CornerRadius::same(1), sym_stroke, egui::StrokeKind::Inside);
+                painter.line_segment(
+                    [
+                        Pos2::new(box_r.min.x - 2.5 * viewport.zoom, p_cy),
+                        Pos2::new(box_c.x, p_cy),
+                    ],
+                    sym_stroke,
+                );
+
+                let i_r = (5.5 * viewport.zoom).clamp(4.0, 8.0);
+                let i_center = Pos2::new(pill_rect.max.x - 5.5 * viewport.zoom - i_r, p_cy);
+                painter.circle_filled(i_center, i_r, Color32::from_rgb(0x18, 0x1C, 0x22));
+                painter.circle_stroke(i_center, i_r, Stroke::new(1.0_f32, BORDER_SUBTLE));
+                painter.text(
+                    i_center,
+                    Align2::CENTER_CENTER,
+                    "i",
+                    FontId::proportional((8.5 * viewport.zoom).clamp(6.8, 12.0)),
+                    TEXT_PRIMARY,
+                );
+
+                let lbl_left = pill_rect.min.x + cap_w + 4.0 * viewport.zoom;
+                let lbl_right = i_center.x - i_r - 5.0 * viewport.zoom;
+                let pill_clip = painter.with_clip_rect(Rect::from_min_max(
+                    Pos2::new(lbl_left, pill_rect.min.y),
+                    Pos2::new(lbl_right.max(lbl_left + 10.0), pill_rect.max.y),
+                ));
+                pill_clip.text(
+                    Pos2::new(lbl_right, p_cy),
+                    Align2::RIGHT_CENTER,
+                    truncate_text(&out_lbl, 28),
+                    FontId::proportional((10.0 * viewport.zoom).clamp(8.0, 14.0)),
+                    TEXT_PRIMARY,
+                );
+
+                if clicked
+                    && !clicked_any_pin_or_wire
+                    && pointer_pos.is_some_and(|p| pill_rect.contains(p))
+                {
+                    clicked_any_block = true;
+                    clicked_any_pin_or_wire = true;
+                    viewport.interaction.last_clicked_block_uuid = None;
+                    action = Some(CanvasAction::NavigateToBlock {
+                        page_index: first_target.target_page_index,
+                        block_uuid: first_target.target_block_uuid.clone(),
+                    });
                 }
             }
         }
@@ -4136,6 +4463,37 @@ pub fn render_page_canvas(
                                                 .size(11.0)
                                                 .color(badge_color),
                                             );
+                                            if !is_out {
+                                                let inv_btn = ui.add(
+                                                    egui::Button::new(
+                                                        egui::RichText::new("¬")
+                                                            .monospace()
+                                                            .size(11.0)
+                                                            .color(if pin.inverted {
+                                                                Color32::WHITE
+                                                            } else {
+                                                                TEXT_MUTED
+                                                            }),
+                                                    )
+                                                    .fill(if pin.inverted {
+                                                        Color32::from_rgb(0xE5, 0x24, 0x24)
+                                                    } else {
+                                                        Color32::from_rgb(0x28, 0x2E, 0x3A)
+                                                    }),
+                                                );
+                                                if inv_btn
+                                                    .on_hover_text(crate::i18n::tr(
+                                                        "Invert digital input pin (Inv=true)",
+                                                    ))
+                                                    .clicked()
+                                                {
+                                                    action = Some(CanvasAction::TogglePinInverted {
+                                                        block_uuid: block.uuid.clone(),
+                                                        pin_key: pin.key.clone(),
+                                                        inverted: !pin.inverted,
+                                                    });
+                                                }
+                                            }
                                             ui.label(
                                                 egui::RichText::new(format!("{:<4}", short_lbl))
                                                     .monospace()
@@ -4206,6 +4564,142 @@ pub fn render_page_canvas(
         }
         if close_pin_popup {
             viewport.interaction.show_pin_values_popup = None;
+        }
+    }
+
+    // Render active Block Info (`(i)`) documentation & pin reference popover
+    if let Some(info_popup) = viewport.interaction.block_info_popup.clone() {
+        let mut close_info_popup = false;
+        if let Some(block) = page.blocks.iter().find(|b| b.uuid == info_popup.block_uuid) {
+            let area_resp = egui::Area::new(egui::Id::new("canvas_block_info_popup"))
+                .order(egui::Order::Foreground)
+                .fixed_pos(info_popup.screen_pos)
+                .show(ui.ctx(), |ui| {
+                    egui::Frame::popup(ui.style())
+                        .fill(Color32::from_rgb(0x23, 0x26, 0x2E))
+                        .stroke(Stroke::new(1.2_f32, CARD_BORDER))
+                        .corner_radius(CornerRadius::same(6))
+                        .inner_margin(egui::Margin::same(10))
+                        .show(ui, |ui| {
+                            ui.set_min_width(350.0);
+                            ui.set_max_width(450.0);
+                            ui.horizontal(|ui| {
+                                ui.label(
+                                    egui::RichText::new(if block.title.is_empty() {
+                                        &block.block_type
+                                    } else {
+                                        &block.title
+                                    })
+                                    .strong()
+                                    .size(13.0)
+                                    .color(TEXT_PRIMARY),
+                                );
+                                ui.with_layout(
+                                    egui::Layout::right_to_left(egui::Align::Center),
+                                    |ui| {
+                                        if ui.small_button("×").clicked() {
+                                            close_info_popup = true;
+                                        }
+                                        ui.label(
+                                            egui::RichText::new(&block.block_type)
+                                                .monospace()
+                                                .size(11.0)
+                                                .color(LOXONE_GREEN),
+                                        );
+                                    },
+                                );
+                            });
+                            ui.label(
+                                egui::RichText::new(block_type_subtitle_label(&block.block_type))
+                                    .size(11.5)
+                                    .color(TEXT_MUTED),
+                            );
+                            if let Some(summary) =
+                                loxone_core::collect_block_assigned_objects(block, project)
+                            {
+                                ui.add_space(4.0);
+                                ui.horizontal(|ui| {
+                                    ui.label(
+                                        egui::RichText::new(format!(
+                                            "{}: {}/{}",
+                                            crate::i18n::tr("Assigned objects"),
+                                            summary.assigned.len(),
+                                            summary.total_candidates
+                                        ))
+                                        .size(11.5)
+                                        .color(TEXT_PRIMARY),
+                                    );
+                                    if ui
+                                        .small_button(crate::i18n::tr("⚙ Configure Objects…"))
+                                        .clicked()
+                                    {
+                                        action =
+                                            Some(CanvasAction::OpenObjectConfig(block.uuid.clone()));
+                                        close_info_popup = true;
+                                    }
+                                });
+                            }
+                            ui.separator();
+                            let selectable =
+                                collect_block_selectable_pins(block, &project.xref, None);
+                            egui::ScrollArea::vertical()
+                                .max_height(260.0)
+                                .show(ui, |ui| {
+                                    for (pin, side) in selectable {
+                                        let is_out = side == PinSide::Output;
+                                        let short_lbl =
+                                            loxone_core::miniserver::loxone_short_pin_label(
+                                                &block.block_type,
+                                                &pin.key,
+                                            );
+                                        let meta = loxone_core::miniserver::loxone_pin_metadata(
+                                            &block.block_type,
+                                            &pin.key,
+                                            is_out,
+                                        );
+                                        ui.horizontal(|ui| {
+                                            ui.label(
+                                                egui::RichText::new(if is_out {
+                                                    "OUT"
+                                                } else {
+                                                    "IN "
+                                                })
+                                                .monospace()
+                                                .size(10.0)
+                                                .color(if is_out {
+                                                    WIRE_ANALOG
+                                                } else {
+                                                    LIVE_ACTIVE_GREEN
+                                                }),
+                                            );
+                                            ui.label(
+                                                egui::RichText::new(format!("{:<4}", short_lbl))
+                                                    .monospace()
+                                                    .strong()
+                                                    .size(11.5)
+                                                    .color(TEXT_PRIMARY),
+                                            );
+                                            ui.label(
+                                                egui::RichText::new(crate::i18n::tr(meta.full_name))
+                                                    .size(11.5)
+                                                    .color(TEXT_MUTED),
+                                            );
+                                        });
+                                    }
+                                });
+                        });
+                });
+            if clicked
+                && !opened_block_info_popup_this_frame
+                && !area_resp.response.rect.contains(pointer_pos.unwrap_or_default())
+            {
+                close_info_popup = true;
+            }
+        } else {
+            close_info_popup = true;
+        }
+        if close_info_popup {
+            viewport.interaction.block_info_popup = None;
         }
     }
 
@@ -4809,6 +5303,132 @@ mod tests {
         let _ = ctx.run(egui::RawInput::default(), |ctx| {
             egui::CentralPanel::default().show(ctx, |ui| {
                 let _ = render_page_canvas(ui, &project, page_idx, &mut vp, None, None);
+            });
+        });
+    }
+
+    #[test]
+    fn test_stage2_alarm_block_object_assignment_inverted_pins_hanging_capsules_and_sim_switches() {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../Sample.Loxone");
+        let project = load_loxone_file(&path).expect("Sample.Loxone should parse");
+        let alarm_idx = project
+            .pages
+            .iter()
+            .position(|p| p.uuid == "19eb19ad-02ad-eae0-ffff51535bcccc04")
+            .expect("Alarm page should exist");
+        let alarm_page = &project.pages[alarm_idx];
+
+        let sys_alarm = alarm_page
+            .blocks
+            .iter()
+            .find(|b| b.title == "System alarmowy" && b.block_type == "Alarm")
+            .expect("System alarmowy block should exist");
+
+        // 1. Verify bottom object assignment summary on System alarmowy is (36/49) without API fan-out
+        let summary = loxone_core::collect_block_assigned_objects(sys_alarm, &project)
+            .expect("Alarm block should produce an object assignment summary");
+        assert_eq!(summary.assigned.len(), 36);
+        assert_eq!(summary.total_candidates, 49);
+        assert!(!summary.show_api_fanout);
+
+        // 2. Verify inverted input pins (Inv="true" in XML) are parsed and always visible on System alarmowy
+        let (alarm_in, alarm_out) =
+            collect_block_display_pins_with_overrides(sys_alarm, &project.xref, false, None);
+        let in_keys: Vec<&str> = alarm_in.iter().map(|p| p.key.as_str()).collect();
+        let out_keys: Vec<&str> = alarm_out.iter().map(|p| p.key.as_str()).collect();
+        assert!(in_keys.contains(&"I1"));
+        assert!(in_keys.contains(&"I5"));
+        assert!(in_keys.contains(&"Remanence"));
+        assert!(in_keys.contains(&"IInit"));
+        assert!(out_keys.contains(&"Q"));
+        assert!(out_keys.contains(&"Q2"));
+        assert!(out_keys.contains(&"TQ"));
+
+        let i5_pin = alarm_in.iter().find(|p| p.key == "I5").unwrap();
+        let rem_pin = alarm_in.iter().find(|p| p.key == "Remanence").unwrap();
+        let iinit_pin = alarm_in.iter().find(|p| p.key == "IInit").unwrap();
+        assert!(i5_pin.inverted, "I5 (Wc) should be inverted");
+        assert!(rem_pin.inverted, "Remanence (Ot) should be inverted");
+        assert!(iinit_pin.inverted, "IInit (Aoc) should be inverted");
+
+        // 3. Verify Loxone Config 17 short pin labels on Alarm
+        assert_eq!(
+            loxone_core::miniserver::loxone_short_pin_label("Alarm", "I1"),
+            "P"
+        );
+        assert_eq!(
+            loxone_core::miniserver::loxone_short_pin_label("Alarm", "I5"),
+            "Wc"
+        );
+        assert_eq!(
+            loxone_core::miniserver::loxone_short_pin_label("Alarm", "Remanence"),
+            "Ot"
+        );
+        assert_eq!(
+            loxone_core::miniserver::loxone_short_pin_label("Alarm", "IInit"),
+            "Aoc"
+        );
+        assert_eq!(
+            loxone_core::miniserver::loxone_short_pin_label("Alarm", "Q"),
+            "S"
+        );
+        assert_eq!(
+            loxone_core::miniserver::loxone_short_pin_label("Alarm", "Q2"),
+            "Sa"
+        );
+        assert_eq!(
+            loxone_core::miniserver::loxone_short_pin_label("Alarm", "TQ"),
+            "Ca"
+        );
+
+        // 4. Verify inline simulation switches (ToggleSwitch) on Alarm page InputRef bars ("M", "VI1", "B")
+        let rect = Rect::from_min_max(Pos2::new(100.0, 200.0), Pos2::new(260.0, 224.0));
+        let obecni = alarm_page
+            .blocks
+            .iter()
+            .find(|b| b.is_input_ref_bar() && b.attr("LinkRefType") == Some("320"))
+            .expect("Memory InputRef (LinkRefType=320) should exist on Alarm page");
+        let chrome_obecni =
+            compute_ref_bar_chrome_layout(obecni, rect, 1.0, true, alarm_page, &project);
+        assert_eq!(chrome_obecni.badge, "M");
+        assert_eq!(
+            chrome_obecni.control_kind,
+            loxone_core::miniserver::RefBarLiveControlKind::ToggleSwitch
+        );
+
+        let uzbroj = alarm_page
+            .blocks
+            .iter()
+            .find(|b| b.is_input_ref_bar() && b.attr("LinkRefType") == Some("95"))
+            .expect("VI1 InputRef (LinkRefType=95) should exist on Alarm page");
+        let chrome_vi1 =
+            compute_ref_bar_chrome_layout(uzbroj, rect, 1.0, true, alarm_page, &project);
+        assert_eq!(chrome_vi1.badge, "VI1");
+        assert_eq!(
+            chrome_vi1.control_kind,
+            loxone_core::miniserver::RefBarLiveControlKind::ToggleSwitch
+        );
+
+        // 5. Headless render of Alarm page with Live View store and BlockInfoPopupState open
+        let mut store = loxone_core::miniserver::LiveValueStore::new();
+        store.seed_project_defaults(&project);
+        let mut vp = CanvasViewport::default();
+        vp.fit_to_page(alarm_page, Vec2::new(1400.0, 900.0));
+        vp.interaction.block_info_popup = Some(BlockInfoPopupState {
+            screen_pos: Pos2::new(400.0, 180.0),
+            block_uuid: sys_alarm.uuid.clone(),
+        });
+        let ctx = egui::Context::default();
+        let _ = ctx.run(egui::RawInput::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                let _ = render_page_canvas(
+                    ui,
+                    &project,
+                    alarm_idx,
+                    &mut vp,
+                    Some(&sys_alarm.uuid),
+                    Some(&store),
+                );
             });
         });
     }

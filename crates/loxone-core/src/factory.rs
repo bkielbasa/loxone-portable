@@ -78,6 +78,7 @@ pub fn ensure_schema_pins_on_block(block: &mut PageBlock) {
                     uuid: generate_loxone_uuid(),
                     key: doc.pin_key.to_string(),
                     default_value: default_val,
+                    inverted: false,
                     pin_kind: desired_kind,
                     incoming_links: Vec::new(),
                 });
@@ -96,6 +97,7 @@ pub fn ensure_schema_pins_on_block(block: &mut PageBlock) {
                     uuid: generate_loxone_uuid(),
                     key: param.pin_key.to_string(),
                     default_value: default_val,
+                    inverted: false,
                     pin_kind: PinKind::Parameter,
                     incoming_links: Vec::new(),
                 });
@@ -108,6 +110,7 @@ pub fn ensure_schema_pins_on_block(block: &mut PageBlock) {
             uuid: generate_loxone_uuid(),
             key: "Q".to_string(),
             default_value: None,
+            inverted: false,
             pin_kind: PinKind::Output,
             incoming_links: Vec::new(),
         });
@@ -117,6 +120,7 @@ pub fn ensure_schema_pins_on_block(block: &mut PageBlock) {
             uuid: generate_loxone_uuid(),
             key: "I".to_string(),
             default_value: None,
+            inverted: false,
             pin_kind: PinKind::Input,
             incoming_links: Vec::new(),
         });
@@ -249,6 +253,7 @@ pub fn new_reference_block(
             },
             key: tp.key.clone(),
             default_value: None,
+            inverted: false,
             pin_kind,
             incoming_links: Vec::new(),
         });
@@ -261,6 +266,7 @@ pub fn new_reference_block(
                     uuid: generate_loxone_uuid(),
                     key: "O".to_string(),
                     default_value: None,
+                    inverted: false,
                     pin_kind: PinKind::Output,
                     incoming_links: Vec::new(),
                 });
@@ -270,6 +276,7 @@ pub fn new_reference_block(
                     uuid: generate_loxone_uuid(),
                     key: "Q".to_string(),
                     default_value: None,
+                    inverted: false,
                     pin_kind: PinKind::Output,
                     incoming_links: Vec::new(),
                 });
@@ -281,6 +288,7 @@ pub fn new_reference_block(
                     uuid: generate_loxone_uuid(),
                     key: "I".to_string(),
                     default_value: None,
+                    inverted: false,
                     pin_kind: PinKind::Input,
                     incoming_links: Vec::new(),
                 });
@@ -292,6 +300,7 @@ pub fn new_reference_block(
                     uuid: generate_loxone_uuid(),
                     key: "I".to_string(),
                     default_value: None,
+                    inverted: false,
                     pin_kind: PinKind::Input,
                     incoming_links: Vec::new(),
                 });
@@ -301,6 +310,7 @@ pub fn new_reference_block(
                     uuid: generate_loxone_uuid(),
                     key: "Q".to_string(),
                     default_value: None,
+                    inverted: false,
                     pin_kind: PinKind::Output,
                     incoming_links: Vec::new(),
                 });
@@ -436,6 +446,7 @@ pub fn new_tree_node(type_name: &str, title: &str) -> TreeNode {
                 uuid: generate_loxone_uuid(),
                 key: doc.pin_key.to_string(),
                 default_value: None,
+                inverted: false,
                 pin_kind: if doc.is_output {
                     PinKind::Output
                 } else {
@@ -455,6 +466,7 @@ pub fn new_tree_node(type_name: &str, title: &str) -> TreeNode {
             uuid: generate_loxone_uuid(),
             key: if is_actuator { "I" } else { "Q" }.to_string(),
             default_value: None,
+            inverted: false,
             pin_kind: if is_actuator {
                 PinKind::Input
             } else {

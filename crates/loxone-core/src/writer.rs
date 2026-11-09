@@ -19,6 +19,11 @@ pub enum ProjectEdit {
         pin_key: String,
         default_value: Option<String>,
     },
+    SetPinInverted {
+        control_uuid: String,
+        pin_key: String,
+        inverted: bool,
+    },
     SetChildTagAttr {
         control_uuid: String,
         child_tag: String,
@@ -254,6 +259,40 @@ fn apply_edit_inner(
                 control_uuid: control_uuid.clone(),
                 pin_key: pin_key.clone(),
                 default_value: old_default,
+            })
+        }
+        ProjectEdit::SetPinInverted {
+            control_uuid,
+            pin_key,
+            inverted,
+        } => {
+            let mut old_inverted = false;
+            if let Some(block) = find_page_block_mut(project, control_uuid) {
+                old_inverted = block
+                    .pins
+                    .iter()
+                    .find(|p| p.key == *pin_key)
+                    .map(|p| p.inverted)
+                    .unwrap_or(false);
+                if set_pin_inverted_on_slice(&mut block.pins, control_uuid, pin_key, *inverted) {
+                    *needs_xref_rebuild = true;
+                }
+            } else if let Some(tree_node) = find_tree_node_mut(project, control_uuid) {
+                old_inverted = tree_node
+                    .pins
+                    .iter()
+                    .find(|p| p.key == *pin_key)
+                    .map(|p| p.inverted)
+                    .unwrap_or(false);
+                if set_pin_inverted_on_slice(&mut tree_node.pins, control_uuid, pin_key, *inverted)
+                {
+                    *needs_xref_rebuild = true;
+                }
+            }
+            Ok(ProjectEdit::SetPinInverted {
+                control_uuid: control_uuid.clone(),
+                pin_key: pin_key.clone(),
+                inverted: old_inverted,
             })
         }
         ProjectEdit::SetChildTagAttr {
@@ -536,6 +575,7 @@ fn apply_edit_inner(
                         uuid: crate::factory::generate_loxone_uuid(),
                         key: target_pin_key.clone(),
                         default_value: None,
+                        inverted: false,
                         pin_kind: PinKind::Input,
                         incoming_links: Vec::new(),
                     });
@@ -569,6 +609,7 @@ fn apply_edit_inner(
                         uuid: crate::factory::generate_loxone_uuid(),
                         key: target_pin_key.clone(),
                         default_value: None,
+                        inverted: false,
                         pin_kind: PinKind::Input,
                         incoming_links: Vec::new(),
                     });
@@ -1108,7 +1149,30 @@ fn set_pin_default_on_slice(
             uuid: format!("{}-{}", control_uuid, pin_key),
             key: pin_key.to_string(),
             default_value: default_value.clone(),
+            inverted: false,
             pin_kind: PinKind::Parameter,
+            incoming_links: Vec::new(),
+        });
+        true
+    }
+}
+
+fn set_pin_inverted_on_slice(
+    pins: &mut Vec<ConnectorPin>,
+    control_uuid: &str,
+    pin_key: &str,
+    inverted: bool,
+) -> bool {
+    if let Some(pin) = pins.iter_mut().find(|p| p.key == pin_key) {
+        pin.inverted = inverted;
+        false
+    } else {
+        pins.push(ConnectorPin {
+            uuid: format!("{}-{}", control_uuid, pin_key),
+            key: pin_key.to_string(),
+            default_value: None,
+            inverted,
+            pin_kind: PinKind::Input,
             incoming_links: Vec::new(),
         });
         true
@@ -1482,6 +1546,7 @@ fn sync_co_children(existing_children: &[RawNode], pins: &[ConnectorPin]) -> Vec
                 || c.attr("K") == Some(pin.key.as_str())
         }) {
             co.set_attr("Def", pin.default_value.as_deref());
+            co.set_attr("Inv", pin.inverted.then_some("true"));
             if !in_children_match(co, &pin.incoming_links) {
                 if pin.incoming_links.is_empty() {
                     co.set_attr("Nc", None);
@@ -1522,6 +1587,7 @@ fn pin_to_raw_node(pin: &ConnectorPin) -> RawNode {
         children: Vec::new(),
     };
     co.set_attr("Def", pin.default_value.as_deref());
+    co.set_attr("Inv", pin.inverted.then_some("true"));
     if !pin.incoming_links.is_empty() {
         let nc_str = pin.incoming_links.len().to_string();
         co.set_attr("Nc", Some(&nc_str));

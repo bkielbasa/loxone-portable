@@ -118,6 +118,7 @@ pub struct ConnectorPin {
     pub uuid: String,
     pub key: String,
     pub default_value: Option<String>,
+    pub inverted: bool,
     pub pin_kind: PinKind,
     pub incoming_links: Vec<WireLink>,
 }

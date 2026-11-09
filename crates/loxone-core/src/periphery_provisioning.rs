@@ -317,6 +317,7 @@ fn make_io_leaf(
             uuid: pin_uuid,
             key: pin_key.to_string(),
             default_value: None,
+            inverted: false,
             pin_kind,
             incoming_links: Vec::new(),
         }],

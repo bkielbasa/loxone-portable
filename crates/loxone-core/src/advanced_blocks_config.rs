@@ -472,6 +472,7 @@ pub struct AssignedObjectEntry {
 pub struct BlockObjectAssignmentSummary {
     pub assigned: Vec<AssignedObjectEntry>,
     pub total_candidates: usize,
+    pub show_api_fanout: bool,
 }
 
 fn polish_sort_key(s: &str) -> String {
@@ -547,6 +548,7 @@ pub fn collect_block_assigned_objects(
         return Some(BlockObjectAssignmentSummary {
             assigned,
             total_candidates,
+            show_api_fanout: true,
         });
     }
 
@@ -583,6 +585,7 @@ pub fn collect_block_assigned_objects(
         return Some(BlockObjectAssignmentSummary {
             assigned,
             total_candidates,
+            show_api_fanout: true,
         });
     }
 
@@ -606,7 +609,144 @@ pub fn collect_block_assigned_objects(
         return Some(BlockObjectAssignmentSummary {
             assigned,
             total_candidates,
+            show_api_fanout: false,
         });
+    }
+
+    if PresenceBlockConfig::is_presence_block(&block.block_type) {
+        let candidates = collect_presence_sensor_candidates(project);
+        let cfg = PresenceBlockConfig::from_block(block);
+        let mut assigned = Vec::new();
+        for uuid in &cfg.assigned_device_uuids {
+            let title = candidates
+                .iter()
+                .find(|c| &c.uuid == uuid)
+                .map(|c| c.title.clone())
+                .unwrap_or_else(|| uuid.clone());
+            let display_label = format!("Sens: {title}");
+            assigned.push(AssignedObjectEntry {
+                uuid: uuid.clone(),
+                badge_prefix: "Sens".to_string(),
+                title,
+                display_label,
+                page_index: None,
+            });
+        }
+        let total_candidates = candidates.len().max(assigned.len());
+        return Some(BlockObjectAssignmentSummary {
+            assigned,
+            total_candidates,
+            show_api_fanout: false,
+        });
+    }
+
+    if matches!(
+        block.block_type.as_str(),
+        "HeatIRoomController2" | "HeatIRoomController"
+    ) {
+        let obj_uuids: Vec<String> = find_attr(&block.raw_attributes, "Objects")
+            .unwrap_or_default()
+            .split(',')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+            .collect();
+        let all_candidates =
+            crate::room_controller_config::collect_energy_source_candidates(project, &[]);
+        let mut assigned = Vec::new();
+        for uuid in &obj_uuids {
+            let page_idx = project
+                .pages
+                .iter()
+                .position(|p| p.blocks.iter().any(|b| &b.uuid == uuid));
+            let title = all_candidates
+                .iter()
+                .find(|c| &c.object_uuid == uuid)
+                .map(|c| c.src_name.clone())
+                .unwrap_or_else(|| uuid.clone());
+            let display_label = format!("Hvac: {title}");
+            assigned.push(AssignedObjectEntry {
+                uuid: uuid.clone(),
+                badge_prefix: "Hvac".to_string(),
+                title,
+                display_label,
+                page_index: page_idx,
+            });
+        }
+        let total_candidates = all_candidates.len().max(assigned.len());
+        return Some(BlockObjectAssignmentSummary {
+            assigned,
+            total_candidates,
+            show_api_fanout: false,
+        });
+    }
+
+    if crate::object_config::supports_object_config(block) {
+        let rows = crate::object_config::build_object_config_rows(project, "", &block.uuid);
+        let objects_attr = find_attr(&block.raw_attributes, "Objects")
+            .or_else(|| find_attr(&block.raw_attributes, "UO"))
+            .unwrap_or_default();
+        let explicit_uuids: Vec<&str> = objects_attr
+            .split(',')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .collect();
+
+        let mut assigned = Vec::new();
+        if !explicit_uuids.is_empty() {
+            for u in &explicit_uuids {
+                let page_idx = project
+                    .pages
+                    .iter()
+                    .position(|p| p.blocks.iter().any(|b| b.uuid == *u));
+                let title = project
+                    .pages
+                    .iter()
+                    .flat_map(|p| &p.blocks)
+                    .find(|b| b.uuid == *u)
+                    .map(|b| {
+                        if b.title.is_empty() {
+                            b.block_type.clone()
+                        } else {
+                            b.title.clone()
+                        }
+                    })
+                    .unwrap_or_else(|| (*u).to_string());
+                assigned.push(AssignedObjectEntry {
+                    uuid: (*u).to_string(),
+                    badge_prefix: "Obj".to_string(),
+                    display_label: format!("Obj: {title}"),
+                    title,
+                    page_index: page_idx,
+                });
+            }
+        } else {
+            for r in rows.iter().filter(|r| r.is_input || r.is_output) {
+                let page_idx = match &r.target_kind {
+                    crate::object_config::ObjectConfigTargetKind::PageFunctionBlock {
+                        page_uuid,
+                        ..
+                    } => project.pages.iter().position(|p| &p.uuid == page_uuid),
+                    _ => None,
+                };
+                assigned.push(AssignedObjectEntry {
+                    uuid: r.target_uuid.clone(),
+                    badge_prefix: "Obj".to_string(),
+                    display_label: format!("Obj: {}", r.name),
+                    title: r.name.clone(),
+                    page_index: page_idx,
+                });
+            }
+        }
+        let unselected_count = rows.iter().filter(|r| !r.is_input && !r.is_output).count();
+        let total_candidates = assigned.len() + unselected_count;
+        if total_candidates > 0 || !assigned.is_empty() {
+            return Some(BlockObjectAssignmentSummary {
+                assigned,
+                total_candidates,
+                show_api_fanout: false,
+            });
+        }
     }
 
     None

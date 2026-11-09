@@ -163,6 +163,7 @@ fn pin(key: &str, kind: PinKind) -> ConnectorPin {
         uuid: generate_loxone_uuid(),
         key: key.to_string(),
         default_value: None,
+        inverted: false,
         pin_kind: kind,
         incoming_links: Vec::new(),
     }

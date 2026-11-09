@@ -1990,6 +1990,54 @@ pub fn loxone_short_pin_label<'a>(block_type: &str, pin_key: &'a str) -> &'a str
         ("Heatmixer2", "AQl") => "Ml",
         ("Heatmixer2", "AQi") => "Mi",
         ("Heatmixer2", "Qe") => "Err",
+        ("Alarm", "I1") => "P",
+        ("Alarm", "I2") => "M",
+        ("Alarm", "I3") => "W",
+        ("Alarm", "I4") => "D",
+        ("Alarm", "I5") => "Wc",
+        ("Alarm", "Remanence") => "Ot",
+        ("Alarm", "ActiveDelay") => "Ad",
+        ("Alarm", "ActiveDelayP") => "Adnp",
+        ("Alarm", "Active") => "A",
+        ("Alarm", "ActiveP") => "Anp",
+        ("Alarm", "Inactive") => "Off",
+        ("Alarm", "DisMv") => "Dm",
+        ("Alarm", "InputDisable") => "Da",
+        ("Alarm", "Confirm") => "R",
+        ("Alarm", "IInit") => "Aoc",
+        ("Alarm", "Q") => "S",
+        ("Alarm", "Q1") => "Aa",
+        ("Alarm", "Q2") => "Sa",
+        ("Alarm", "Q3") => "Va",
+        ("Alarm", "Q4") => "Fa",
+        ("Alarm", "Q5") => "Ea",
+        ("Alarm", "TQ") => "Ca",
+        ("SmokeAlarm" | "FireEmergency" | "WaterCentral", "Q" | "Q1") => "A",
+        ("SmokeAlarm" | "FireEmergency" | "WaterCentral", "Q2") => "Ma",
+        ("SmokeAlarm" | "FireEmergency" | "WaterCentral", "Q3") => "Va",
+        ("SmokeAlarm" | "FireEmergency" | "WaterCentral", "TQ") => "Ca",
+        ("AalEmergency" | "AalSmartAlarm", "Alarm" | "Alarm Level 1" | "Alarm Level 2" | "Q") => {
+            "A"
+        }
+        ("AalEmergency" | "AalSmartAlarm", "Trigger") => "T",
+        ("AalEmergency" | "AalSmartAlarm", "Cause") => "Ca",
+        ("AlarmChain", "Alarm" | "Urgent") => "A",
+        ("AlarmChain", "InEmgService") => "Es",
+        ("AlarmChain", "Text1") => "T1",
+        ("AlarmChain", "Text2") => "T2",
+        ("AlarmChain", "Text3") => "T3",
+        ("AlarmChain", "Confirm") => "Ca",
+        ("AlarmChain", "Level1") => "A1",
+        ("AlarmChain", "Level2") => "A2",
+        ("AlarmChain", "Level3") => "A3",
+        ("AlarmChain", "Level4") => "A4",
+        ("AlarmChain", "OutEmgService") => "AEs",
+        ("PushButton" | "Pushbutton" | "Switch", "InputTrigger" | "Tr") => "Tg",
+        ("PushButton" | "Pushbutton" | "Switch", "Reset" | "Off") => "Off",
+        ("PushButton" | "Pushbutton" | "Switch", "Remanence") => "Ot",
+        ("PushButton" | "Pushbutton" | "Switch", "Q") => "O",
+        ("PushButton" | "Pushbutton" | "Switch", "Qon") => "On",
+        ("PushButton" | "Pushbutton" | "Switch", "Qoff") => "Off",
         (_, "Temp") => "ϑc",
         (_, "TempO") | (_, "Outer") => "ϑo",
         (_, "InHumid") | (_, "Humid") => "H",
@@ -2300,6 +2348,24 @@ pub fn ref_bar_capsule_badge(
     if block.block_type == "Memory" {
         return "->".to_string();
     }
+    match block.attr("LinkRefType") {
+        Some("320") => return "M".to_string(),
+        Some("21") => return "B".to_string(),
+        Some("95") => return "VI1".to_string(),
+        _ => {}
+    }
+    if let Some(ref_u) = block.ref_uuid.as_deref() {
+        if let Some(node_meta) = project.xref.objects_by_uuid.get(ref_u) {
+            if node_meta.object_type == "TreeActor" {
+                if title_lower.contains("światło alarmu") {
+                    return "Qal".to_string();
+                }
+                if title_lower.contains("dźwięk alarmu") {
+                    return "Qas".to_string();
+                }
+            }
+        }
+    }
 
     if block.is_input_ref_bar() {
         if block.title == "T5" {
@@ -2339,6 +2405,22 @@ pub fn ref_bar_capsule_badge(
 
     if block.is_output_ref_bar() {
         if block.block_type == "OutputRefLM" {
+            for child in &block.extra_children {
+                if child.tag == "LoggerMailer" {
+                    if child.attr("RefCaller").is_some() {
+                        return "Cal".to_string();
+                    }
+                    if child.attr("RefMailer").is_some() {
+                        return "Mail".to_string();
+                    }
+                    if child.attr("RefLogger").is_some() {
+                        return "Log".to_string();
+                    }
+                    if child.attr("RefTracker").is_some() {
+                        return "Trk".to_string();
+                    }
+                }
+            }
             return "->".to_string();
         }
         for pin in &block.pins {
@@ -2440,6 +2522,10 @@ pub fn classify_ref_bar_live_control(
         return RefBarLiveControlKind::NumericValue;
     }
 
+    if block.attr("LinkRefType") == Some("320") || block.block_type == "Memory" {
+        return RefBarLiveControlKind::ToggleSwitch;
+    }
+
     if matches!(
         badge_upper.as_str(),
         "M" | "TR" | "R" | "T" | "I+" | "I-" | "PLUS" | "MINUS" | "RESET"
@@ -2449,7 +2535,7 @@ pub fn classify_ref_bar_live_control(
         return RefBarLiveControlKind::Pushbutton;
     }
 
-    if badge_trim == "->" {
+    if matches!(badge_trim, "->" | "Cal" | "Mail" | "Log" | "Trk") {
         return RefBarLiveControlKind::None;
     }
 
@@ -2862,7 +2948,16 @@ impl LiveValueStore {
                     if let Some(sig) =
                         self.resolve_pin_by_uuid(&link.source_pin_uuid, page, project, 0)
                     {
-                        return format_live_signal(&sig.raw, &block.title, &badge, &block.block_type);
+                        let raw_val = if pin.inverted {
+                            if sig.is_active {
+                                "0"
+                            } else {
+                                "1"
+                            }
+                        } else {
+                            sig.raw.as_str()
+                        };
+                        return format_live_signal(raw_val, &block.title, &badge, &block.block_type);
                     }
                 }
             }

@@ -273,6 +273,9 @@ fn parse_pins(node: &RawNode, wire_sources: &HashSet<String>) -> Vec<ConnectorPi
             let uuid = child.attr("U").unwrap_or_default().to_string();
             let key = child.attr("K").unwrap_or_default().to_string();
             let default_value = child.attr("Def").map(str::to_string);
+            let inverted = child
+                .attr("Inv")
+                .is_some_and(|v| v.eq_ignore_ascii_case("true") || v == "1");
             let mut incoming_links = Vec::new();
             for sub in &child.children {
                 if sub.tag == "In" {
@@ -296,6 +299,7 @@ fn parse_pins(node: &RawNode, wire_sources: &HashSet<String>) -> Vec<ConnectorPi
                 uuid,
                 key,
                 default_value,
+                inverted,
                 pin_kind,
                 incoming_links,
             });

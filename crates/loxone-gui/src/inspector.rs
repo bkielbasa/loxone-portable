@@ -280,6 +280,7 @@ fn render_live_monitor_card(
                                     key: out_schema.pin_key.to_string(),
                                     pin_kind: PinKind::Output,
                                     default_value: None,
+                                    inverted: false,
                                     incoming_links: Vec::new(),
                                 };
                                 let pin_to_use = block

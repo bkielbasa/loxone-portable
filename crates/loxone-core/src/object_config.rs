@@ -658,6 +658,7 @@ pub fn build_object_config_edits(
                                 uuid: q_pin_uuid.clone(),
                                 key: "Q".to_string(),
                                 default_value: None,
+                                inverted: false,
                                 pin_kind: PinKind::Output,
                                 incoming_links: Vec::new(),
                             });
@@ -722,6 +723,7 @@ pub fn build_object_config_edits(
                                 uuid: ai_pin_uuid,
                                 key: "AI".to_string(),
                                 default_value: None,
+                                inverted: false,
                                 pin_kind: PinKind::Input,
                                 incoming_links,
                             });

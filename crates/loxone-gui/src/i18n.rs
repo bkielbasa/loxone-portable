@@ -107,6 +107,7 @@ struct LocalePack {
 }
 
 struct I18nRegistry {
+    #[cfg_attr(test, allow(dead_code))]
     active: Language,
     order: Vec<Language>,
     packs: HashMap<&'static str, LocalePack>,
@@ -291,8 +292,11 @@ pub fn set_language(lang: Language) {
     {
         TEST_ACTIVE_LANG.with(|c| c.set(lang));
     }
-    let mut reg = registry().write().unwrap();
-    reg.active = lang;
+    #[cfg(not(test))]
+    {
+        let mut reg = registry().write().unwrap();
+        reg.active = lang;
+    }
 }
 
 pub fn default_language_config_path() -> Option<PathBuf> {
@@ -590,6 +594,7 @@ mod tests {
         );
 
         // Polish keys must translate to English in EN and German in DE
+        drop(reg);
         assert_eq!(tr_lang(Language::En, "Harmonogram"), "Schedule");
         assert_eq!(tr_lang(Language::De, "Harmonogram"), "Zeitplan");
         assert_eq!(tr_lang(Language::En, "Źródło energii"), "Energy Source");
