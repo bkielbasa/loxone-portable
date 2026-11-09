@@ -5,7 +5,8 @@ use loxone_core::advanced_blocks_config::{
 };
 use loxone_core::efm_config::{EfmConfig, EfmNode, EfmNodeType};
 use loxone_core::export::{
-    export_component_bom_csv, page_to_svg, project_documentation_html, technical_report_html,
+    build_project_bom, collect_terminal_schedule, export_component_bom_csv,
+    export_terminal_schedule_csv, page_to_svg, project_documentation_html, technical_report_html,
 };
 use loxone_core::light_config::{
     HclMode, LightCircuitType, LightControllerConfig, LightScene,
@@ -14,11 +15,19 @@ use loxone_core::linter::{
     export_project_analysis_csv, lint_project, AnalysisCategory, DiagnosticSeverity,
 };
 use loxone_core::object_config::{build_object_config_edits, build_object_config_rows};
+use loxone_core::periphery_provisioning::{
+    build_replace_device_edit, build_resolve_serial_conflicts_edit, collect_provisioned_hardware,
+    detect_serial_number_conflicts,
+};
+use loxone_core::project_admin::{
+    build_add_todo_edit, build_autopilot_rule_edits, build_resolve_todo_edit,
+    collect_project_todos, AutopilotRuleSpec,
+};
 use loxone_core::room_controller_config::{
     collect_energy_source_candidates, RoomControllerConfig, RoomTempMode,
 };
 use loxone_core::simulator::SimulatedDateTime;
-use loxone_core::writer::ProjectEdit;
+use loxone_core::writer::{build_page_auto_layout_edits, ProjectEdit};
 use serde_json::{json, Value};
 
 use crate::helpers::{build_auto_config_plans, compute_find_and_replace};
@@ -780,6 +789,379 @@ fn call_advanced_tool_part2(
                 Err(e) => JsonRpcResponse::tool_err(id, e),
             }
         }
+        "tree_replace_device" => {
+            let (Some(device_uuid), Some(new_serial)) = (
+                args.get("device_uuid").and_then(Value::as_str),
+                args.get("new_serial").and_then(Value::as_str),
+            ) else {
+                return JsonRpcResponse::tool_err(
+                    id,
+                    "Missing required parameters 'device_uuid' and 'new_serial'",
+                );
+            };
+            let description = args.get("description").and_then(Value::as_str);
+            let distribution_board = args.get("distribution_board").and_then(Value::as_str);
+            let row_position = args.get("row_position").and_then(Value::as_str);
+            let lighting_group = args.get("lighting_group").and_then(Value::as_str);
+
+            let edit = build_replace_device_edit(
+                device_uuid,
+                new_serial,
+                description,
+                distribution_board,
+                row_position,
+                lighting_group,
+            );
+            if let Err(e) = session.apply_edit(edit) {
+                return JsonRpcResponse::tool_err(id, e);
+            }
+            let updated_dev = session.project().and_then(|proj| {
+                collect_provisioned_hardware(proj)
+                    .into_iter()
+                    .find(|d| d.uuid == device_uuid)
+            });
+            JsonRpcResponse::tool_ok(
+                id,
+                json!({
+                    "device_uuid": device_uuid,
+                    "serial": updated_dev.as_ref().map(|d| d.serial.as_str()).unwrap_or(new_serial),
+                    "description": updated_dev.as_ref().map(|d| d.description.as_str()).unwrap_or(""),
+                    "distribution_board": updated_dev.as_ref().map(|d| d.distribution_board.as_str()).unwrap_or(""),
+                    "row_position": updated_dev.as_ref().map(|d| d.row_position.as_str()).unwrap_or(""),
+                    "lighting_group": updated_dev.as_ref().map(|d| d.lighting_group.as_str()).unwrap_or(""),
+                    "updated": true
+                }),
+            )
+        }
+        "tree_resolve_serial_conflicts" => {
+            let preview_only = args
+                .get("preview_only")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            let (conflicts_json, reassignments, batch_opt) = {
+                let Some(proj) = session.project() else {
+                    return JsonRpcResponse::tool_err(id, "No project loaded");
+                };
+                let conflicts: Vec<Value> = detect_serial_number_conflicts(proj)
+                    .into_iter()
+                    .map(|c| {
+                        json!({
+                            "serial": c.serial,
+                            "device_uuids": c.device_uuids,
+                            "device_titles": c.device_titles
+                        })
+                    })
+                    .collect();
+                let (reassignments, batch) = build_resolve_serial_conflicts_edit(proj);
+                (conflicts, reassignments, batch)
+            };
+            if !preview_only {
+                if let Some(batch) = batch_opt {
+                    if let Err(e) = session.apply_edit(batch) {
+                        return JsonRpcResponse::tool_err(id, e);
+                    }
+                }
+            }
+            let reassigned_json: Vec<Value> = reassignments
+                .iter()
+                .map(|(uuid, old_sn, new_sn)| {
+                    json!({
+                        "device_uuid": uuid,
+                        "old_serial": old_sn,
+                        "new_serial": new_sn
+                    })
+                })
+                .collect();
+            JsonRpcResponse::tool_ok(
+                id,
+                json!({
+                    "preview_only": preview_only,
+                    "conflict_groups": conflicts_json,
+                    "resolved_count": reassigned_json.len(),
+                    "reassignments": reassigned_json
+                }),
+            )
+        }
+        "page_auto_layout" => {
+            let Some(page_uuid) = args.get("page_uuid").and_then(Value::as_str) else {
+                return JsonRpcResponse::tool_err(id, "Missing required parameter 'page_uuid'");
+            };
+            let layout_opt = {
+                let Some(proj) = session.project() else {
+                    return JsonRpcResponse::tool_err(id, "No project loaded");
+                };
+                build_page_auto_layout_edits(proj, page_uuid)
+            };
+            let Some((moved_count, batch)) = layout_opt else {
+                return JsonRpcResponse::tool_err(
+                    id,
+                    format!("Page '{page_uuid}' not found or has no blocks"),
+                );
+            };
+            if moved_count > 0 {
+                if let Err(e) = session.apply_edit(batch) {
+                    return JsonRpcResponse::tool_err(id, e);
+                }
+            }
+            JsonRpcResponse::tool_ok(
+                id,
+                json!({
+                    "page_uuid": page_uuid,
+                    "moved_blocks": moved_count
+                }),
+            )
+        }
+        "todo_list" => {
+            let Some(proj) = session.project() else {
+                return JsonRpcResponse::tool_err(id, "No project loaded");
+            };
+            let todos: Vec<Value> = collect_project_todos(proj)
+                .into_iter()
+                .map(|t| {
+                    json!({
+                        "uuid": t.uuid,
+                        "page_uuid": t.page_uuid,
+                        "page_index": t.page_index,
+                        "page_title": t.page_title,
+                        "title": t.title,
+                        "text": t.text,
+                        "px": t.px,
+                        "py": t.py,
+                        "is_resolved": t.is_resolved
+                    })
+                })
+                .collect();
+            JsonRpcResponse::tool_ok(
+                id,
+                json!({
+                    "count": todos.len(),
+                    "todos": todos
+                }),
+            )
+        }
+        "todo_add" => {
+            let (Some(page_uuid), Some(title)) = (
+                args.get("page_uuid").and_then(Value::as_str),
+                args.get("title").and_then(Value::as_str),
+            ) else {
+                return JsonRpcResponse::tool_err(
+                    id,
+                    "Missing required parameters 'page_uuid' and 'title'",
+                );
+            };
+            let text = args.get("text").and_then(Value::as_str).unwrap_or("");
+            let px = args
+                .get("px")
+                .and_then(Value::as_f64)
+                .map(|v| v as f32)
+                .unwrap_or(192.0);
+            let py = args
+                .get("py")
+                .and_then(Value::as_f64)
+                .map(|v| v as f32)
+                .unwrap_or(128.0);
+            let (todo_uuid, edit) = build_add_todo_edit(page_uuid, title, text, px, py);
+            if let Err(e) = session.apply_edit(edit) {
+                return JsonRpcResponse::tool_err(id, e);
+            }
+            JsonRpcResponse::tool_ok(
+                id,
+                json!({
+                    "todo_uuid": todo_uuid,
+                    "page_uuid": page_uuid,
+                    "title": title,
+                    "text": text
+                }),
+            )
+        }
+        "todo_resolve" => {
+            let Some(todo_uuid) = args.get("todo_uuid").and_then(Value::as_str) else {
+                return JsonRpcResponse::tool_err(id, "Missing required parameter 'todo_uuid'");
+            };
+            let delete_block = args
+                .get("delete_block")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            let edit_opt = {
+                let Some(proj) = session.project() else {
+                    return JsonRpcResponse::tool_err(id, "No project loaded");
+                };
+                build_resolve_todo_edit(proj, todo_uuid, delete_block)
+            };
+            let Some(edit) = edit_opt else {
+                return JsonRpcResponse::tool_err(
+                    id,
+                    format!("To-Do block '{todo_uuid}' not found"),
+                );
+            };
+            if let Err(e) = session.apply_edit(edit) {
+                return JsonRpcResponse::tool_err(id, e);
+            }
+            JsonRpcResponse::tool_ok(
+                id,
+                json!({
+                    "todo_uuid": todo_uuid,
+                    "deleted": delete_block,
+                    "resolved": true
+                }),
+            )
+        }
+        "autopilot_rule_create" => {
+            let (Some(title), Some(page_uuid)) = (
+                args.get("title").and_then(Value::as_str),
+                args.get("page_uuid").and_then(Value::as_str),
+            ) else {
+                return JsonRpcResponse::tool_err(
+                    id,
+                    "Missing required parameters 'title' and 'page_uuid'",
+                );
+            };
+            let logic_op = args
+                .get("logic_op")
+                .and_then(Value::as_str)
+                .unwrap_or("AND")
+                .to_string();
+            let condition_source_uuids: Vec<String> = args
+                .get("condition_source_uuids")
+                .and_then(Value::as_array)
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(Value::as_str)
+                        .map(str::to_string)
+                        .collect()
+                })
+                .unwrap_or_default();
+            let target_block_uuid = args
+                .get("target_block_uuid")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            let target_pin_key = args
+                .get("target_pin_key")
+                .and_then(Value::as_str)
+                .unwrap_or("Tr")
+                .to_string();
+            let px = args
+                .get("px")
+                .and_then(Value::as_f64)
+                .map(|v| v as f32)
+                .unwrap_or(1024.0);
+            let py = args
+                .get("py")
+                .and_then(Value::as_f64)
+                .map(|v| v as f32)
+                .unwrap_or(256.0);
+
+            let spec = AutopilotRuleSpec {
+                title: title.to_string(),
+                page_uuid: page_uuid.to_string(),
+                logic_op: logic_op.clone(),
+                condition_source_uuids: condition_source_uuids.clone(),
+                target_block_uuid,
+                target_pin_key,
+                px,
+                py,
+            };
+            let rule_opt = {
+                let Some(proj) = session.project() else {
+                    return JsonRpcResponse::tool_err(id, "No project loaded");
+                };
+                build_autopilot_rule_edits(proj, &spec)
+            };
+            let Some((rule_uuid, edit)) = rule_opt else {
+                return JsonRpcResponse::tool_err(id, format!("Page '{page_uuid}' not found"));
+            };
+            if let Err(e) = session.apply_edit(edit) {
+                return JsonRpcResponse::tool_err(id, e);
+            }
+            JsonRpcResponse::tool_ok(
+                id,
+                json!({
+                    "rule_uuid": rule_uuid,
+                    "title": title,
+                    "logic_op": logic_op,
+                    "condition_count": condition_source_uuids.len()
+                }),
+            )
+        }
+        "project_diff" => {
+            let base_path_opt = args
+                .get("base_path")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+                .or_else(|| {
+                    session
+                        .loaded_path()
+                        .map(|p| p.display().to_string())
+                });
+            let target_path_opt = args
+                .get("target_path")
+                .and_then(Value::as_str)
+                .map(str::to_string);
+
+            let Some(base_path_str) = base_path_opt else {
+                return JsonRpcResponse::tool_err(
+                    id,
+                    "Provide 'base_path' or load a project from disk first",
+                );
+            };
+            let base_proj = match loxone_core::parser::load_loxone_file(Path::new(&base_path_str)) {
+                Ok(p) => p,
+                Err(e) => return JsonRpcResponse::tool_err(id, e.to_string()),
+            };
+
+            let owned_target;
+            let target_proj = if let Some(tp) = target_path_opt {
+                match loxone_core::parser::load_loxone_file(Path::new(&tp)) {
+                    Ok(p) => {
+                        owned_target = p;
+                        &owned_target
+                    }
+                    Err(e) => return JsonRpcResponse::tool_err(id, e.to_string()),
+                }
+            } else {
+                let Some(proj) = session.project() else {
+                    return JsonRpcResponse::tool_err(id, "No active project loaded");
+                };
+                proj
+            };
+
+            let report = loxone_core::compare_projects(&base_proj, target_proj);
+            let entries_json: Vec<Value> = report
+                .entries
+                .iter()
+                .map(|e| {
+                    json!({
+                        "change_kind": e.change_kind,
+                        "object_kind": e.object_kind,
+                        "uuid": e.uuid,
+                        "title": e.title,
+                        "object_type": e.object_type,
+                        "location": e.location,
+                        "detail": e.detail
+                    })
+                })
+                .collect();
+
+            JsonRpcResponse::tool_ok(
+                id,
+                json!({
+                    "base_title": report.base_title,
+                    "target_title": report.target_title,
+                    "added_pages": report.added_pages,
+                    "removed_pages": report.removed_pages,
+                    "modified_pages": report.modified_pages,
+                    "added_blocks": report.added_blocks,
+                    "removed_blocks": report.removed_blocks,
+                    "modified_blocks": report.modified_blocks,
+                    "added_tree_nodes": report.added_tree_nodes,
+                    "removed_tree_nodes": report.removed_tree_nodes,
+                    "modified_tree_nodes": report.modified_tree_nodes,
+                    "total_changes": entries_json.len(),
+                    "entries": entries_json
+                }),
+            )
+        }
         "wizard_auto_configure_rooms" => {
             let preview_only = args
                 .get("preview_only")
@@ -1094,6 +1476,7 @@ fn call_advanced_tool_part2(
                     ("text/csv", export_project_analysis_csv(proj, &diags))
                 }
                 "component_bom_csv" => ("text/csv", export_component_bom_csv(proj)),
+                "terminal_schedule_csv" => ("text/csv", export_terminal_schedule_csv(proj)),
                 other => {
                     return JsonRpcResponse::tool_err(
                         id,
@@ -1125,6 +1508,123 @@ fn call_advanced_tool_part2(
                     "bytes": content.len(),
                     "output_path": written_to,
                     "content": content
+                }),
+            )
+        }
+        "project_bom_get" => {
+            let Some(proj) = session.project() else {
+                return JsonRpcResponse::tool_err(id, "No project loaded");
+            };
+            let db_filter = args
+                .get("distribution_board")
+                .and_then(Value::as_str)
+                .map(|s| s.trim().to_ascii_lowercase())
+                .filter(|s| !s.is_empty());
+
+            let bom = build_project_bom(proj);
+            let devices_json: Vec<Value> = bom
+                .devices
+                .into_iter()
+                .filter(|d| {
+                    db_filter
+                        .as_ref()
+                        .map_or(true, |f| d.distribution_board.to_ascii_lowercase().contains(f))
+                })
+                .map(|d| {
+                    json!({
+                        "uuid": d.uuid,
+                        "title": d.title,
+                        "node_type": d.node_type,
+                        "serial": d.serial,
+                        "parent_label": d.parent_label,
+                        "distribution_board": d.distribution_board,
+                        "row_position": d.row_position,
+                        "lighting_group": d.lighting_group,
+                        "description": d.description,
+                        "total_channels": d.total_channels,
+                        "wired_channels": d.wired_channels
+                    })
+                })
+                .collect();
+
+            let summaries_json: Vec<Value> = bom
+                .hardware_summaries
+                .into_iter()
+                .map(|s| {
+                    json!({
+                        "part_type": s.part_type,
+                        "quantity": s.quantity,
+                        "total_channels": s.total_channels,
+                        "wired_channels": s.wired_channels
+                    })
+                })
+                .collect();
+
+            let blocks_json: Vec<Value> = bom
+                .function_block_counts
+                .into_iter()
+                .map(|(t, c)| json!({ "block_type": t, "count": c }))
+                .collect();
+
+            JsonRpcResponse::tool_ok(
+                id,
+                json!({
+                    "device_count": devices_json.len(),
+                    "devices": devices_json,
+                    "hardware_summaries": summaries_json,
+                    "function_block_counts": blocks_json
+                }),
+            )
+        }
+        "project_terminal_schedule_get" => {
+            let Some(proj) = session.project() else {
+                return JsonRpcResponse::tool_err(id, "No project loaded");
+            };
+            let dev_filter = args
+                .get("device_uuid")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|s| !s.is_empty());
+            let wired_only = args
+                .get("wired_only")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+
+            let schedule = collect_terminal_schedule(proj);
+            let terminals_json: Vec<Value> = schedule
+                .into_iter()
+                .filter(|t| {
+                    if wired_only && !t.is_wired {
+                        return false;
+                    }
+                    dev_filter.map_or(true, |du| t.device_uuid == du)
+                })
+                .map(|t| {
+                    json!({
+                        "device_uuid": t.device_uuid,
+                        "device_title": t.device_title,
+                        "device_type": t.device_type,
+                        "device_serial": t.device_serial,
+                        "distribution_board": t.distribution_board,
+                        "row_position": t.row_position,
+                        "channel_uuid": t.channel_uuid,
+                        "channel_title": t.channel_title,
+                        "channel_type": t.channel_type,
+                        "terminal_label": t.terminal_label,
+                        "room_title": t.room_title,
+                        "category_title": t.category_title,
+                        "is_wired": t.is_wired,
+                        "connected_pages": t.connected_pages,
+                        "connected_blocks": t.connected_blocks
+                    })
+                })
+                .collect();
+
+            JsonRpcResponse::tool_ok(
+                id,
+                json!({
+                    "count": terminals_json.len(),
+                    "terminals": terminals_json
                 }),
             )
         }

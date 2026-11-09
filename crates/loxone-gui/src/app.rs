@@ -197,9 +197,20 @@ pub fn save_color_image_png(image: &egui::ColorImage, path: &Path) -> Result<(),
     writer.write_image_data(&bytes).map_err(|e| e.to_string())
 }
 
+pub struct ParkedProjectTab {
+    pub project: LoxoneProject,
+    pub base_project: Option<LoxoneProject>,
+    pub loaded_path: Option<PathBuf>,
+    pub is_dirty: bool,
+    pub active_page_index: usize,
+    pub undo_stack: Vec<ProjectEdit>,
+    pub redo_stack: Vec<ProjectEdit>,
+}
+
 pub struct LoxonePortableApp {
     pub project: Option<LoxoneProject>,
     pub base_project: Option<LoxoneProject>,
+    pub parked_tabs: Vec<ParkedProjectTab>,
     pub last_synced_remote_xml: Option<String>,
     pub loaded_path: Option<PathBuf>,
     pub project_launcher: ProjectLauncherState,
@@ -275,6 +286,7 @@ impl Default for LoxonePortableApp {
         Self {
             project: None,
             base_project: None,
+            parked_tabs: Vec::new(),
             last_synced_remote_xml: None,
             loaded_path: None,
             project_launcher: ProjectLauncherState::default(),
@@ -1624,6 +1636,68 @@ impl LoxonePortableApp {
             }
             TopBarAction::ExportComponentBomCsv => {
                 self.export_component_bom_csv_dialog();
+            }
+            TopBarAction::AutoLayoutActivePage => {
+                if let Some((moved_count, batch)) = self.project.as_ref().and_then(|proj| {
+                    let page_uuid = proj.pages.get(self.active_page_index)?.uuid.clone();
+                    loxone_core::build_page_auto_layout_edits(proj, &page_uuid)
+                }) {
+                    if moved_count > 0 {
+                        self.execute_edit(batch);
+                        self.needs_initial_fit = true;
+                    }
+                }
+            }
+            TopBarAction::OpenTodoList => {
+                if let Some(proj) = &self.project {
+                    self.admin_modals.open_todo_list(proj);
+                }
+            }
+            TopBarAction::OpenAutopilotDesigner => {
+                if let Some(proj) = &self.project {
+                    self.admin_modals.open_autopilot_designer(proj);
+                }
+            }
+            TopBarAction::OpenProjectDiff => {
+                if let Some(proj) = &self.project {
+                    let cmp_base = self
+                        .parked_tabs
+                        .last()
+                        .map(|t| &t.project)
+                        .or(self.base_project.as_ref());
+                    self.admin_modals.open_project_diff(cmp_base, proj);
+                }
+            }
+            TopBarAction::OpenTechReportWizard => {
+                if self.project.is_some() {
+                    self.admin_modals.open_tech_report_wizard();
+                }
+            }
+            TopBarAction::NewProjectTab => {
+                if let Some(proj) = self.project.take() {
+                    self.parked_tabs.push(ParkedProjectTab {
+                        project: proj,
+                        base_project: self.base_project.take(),
+                        loaded_path: self.loaded_path.take(),
+                        is_dirty: self.is_dirty,
+                        active_page_index: self.active_page_index,
+                        undo_stack: std::mem::take(&mut self.undo_stack),
+                        redo_stack: std::mem::take(&mut self.redo_stack),
+                    });
+                    self.is_dirty = false;
+                    self.active_page_index = 0;
+                    self.selected_uuid = None;
+                    self.show_project_launcher();
+                } else if let Some(tab) = self.parked_tabs.pop() {
+                    self.project = Some(tab.project);
+                    self.base_project = tab.base_project;
+                    self.loaded_path = tab.loaded_path;
+                    self.is_dirty = tab.is_dirty;
+                    self.active_page_index = tab.active_page_index;
+                    self.undo_stack = tab.undo_stack;
+                    self.redo_stack = tab.redo_stack;
+                    self.needs_initial_fit = true;
+                }
             }
         }
     }

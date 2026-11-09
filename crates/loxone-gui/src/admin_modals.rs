@@ -8,11 +8,12 @@ use egui::{CornerRadius, Margin, RichText, Stroke};
 use loxone_core::discovery::{discover_miniservers, DiscoveredMiniserver};
 use loxone_core::model::{LoxoneProject, TreeNode};
 use loxone_core::project_admin::{
-    calendar_entries, delete_user_edits, find_node_by_uuid, find_nodes_by_type,
-    granted_permission_refs, group_member_uuids, new_calendar_entry_edit,
-    new_operating_mode_edit, new_user_edit, new_user_group_edit, operating_modes,
-    recurrence_label, set_group_membership_edit, set_permission_edit, active_modes_on,
-    USER_FIELDS,
+    active_modes_on, build_add_todo_edit, build_autopilot_rule_edits, build_resolve_todo_edit,
+    calendar_entries, collect_autopilot_rules, collect_project_todos, delete_user_edits,
+    find_node_by_uuid, find_nodes_by_type, granted_permission_refs, group_member_uuids,
+    new_calendar_entry_edit, new_operating_mode_edit, new_user_edit, new_user_group_edit,
+    operating_modes, recurrence_label, set_group_membership_edit, set_permission_edit,
+    AutopilotRuleSpec, USER_FIELDS,
 };
 use loxone_core::writer::ProjectEdit;
 
@@ -31,6 +32,10 @@ pub enum AdminModal {
     FindAndReplace,
     ProjectBackups,
     AutoConfiguration,
+    TodoList,
+    AutopilotDesigner,
+    ProjectDiff,
+    TechReportWizard,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -129,6 +134,26 @@ pub struct AdminModalsState {
     pub backups_list: Vec<ProjectBackupEntry>,
     // Auto Configuration Wizard state
     pub auto_config_rows: Vec<AutoConfigRoomRow>,
+    // To-Do / Memo Manager state (Stage 9)
+    pub todo_filter: String,
+    pub todo_page_uuid_draft: String,
+    pub todo_title_draft: String,
+    pub todo_text_draft: String,
+    // Autopilot Rule Designer state (Stage 9)
+    pub ap_title_draft: String,
+    pub ap_page_uuid_draft: String,
+    pub ap_logic_op: String,
+    pub ap_selected_conditions: Vec<String>,
+    pub ap_target_block_uuid: String,
+    pub ap_target_pin_key: String,
+    // Project Diff / Compare state (Stage 10)
+    pub diff_compare_path: String,
+    pub diff_filter: String,
+    pub diff_cached_report: Option<loxone_core::ProjectDiffReport>,
+    // Technical Report & BOM / Terminal Schedule state (Stage 11)
+    pub tech_report_tab: usize,
+    pub tech_report_filter: String,
+    pub tech_report_wired_only: bool,
 }
 
 impl Default for AdminModalsState {
@@ -161,6 +186,22 @@ impl Default for AdminModalsState {
             backup_note: String::new(),
             backups_list: Vec::new(),
             auto_config_rows: Vec::new(),
+            todo_filter: String::new(),
+            todo_page_uuid_draft: String::new(),
+            todo_title_draft: String::new(),
+            todo_text_draft: String::new(),
+            ap_title_draft: String::new(),
+            ap_page_uuid_draft: String::new(),
+            ap_logic_op: "AND".to_string(),
+            ap_selected_conditions: Vec::new(),
+            ap_target_block_uuid: String::new(),
+            ap_target_pin_key: "Tr".to_string(),
+            diff_compare_path: String::new(),
+            diff_filter: String::new(),
+            diff_cached_report: None,
+            tech_report_tab: 0,
+            tech_report_filter: String::new(),
+            tech_report_wired_only: false,
         }
     }
 }
@@ -287,6 +328,49 @@ impl AdminModalsState {
         self.status = None;
         self.auto_config_rows = build_auto_config_room_rows(project);
         self.open = AdminModal::AutoConfiguration;
+    }
+
+    pub fn open_todo_list(&mut self, project: &LoxoneProject) {
+        self.status = None;
+        if self.todo_page_uuid_draft.is_empty() {
+            if let Some(first_page) = project.pages.first() {
+                self.todo_page_uuid_draft = first_page.uuid.clone();
+            }
+        }
+        self.open = AdminModal::TodoList;
+    }
+
+    pub fn open_autopilot_designer(&mut self, project: &LoxoneProject) {
+        self.status = None;
+        if self.ap_page_uuid_draft.is_empty() {
+            if let Some(first_page) = project.pages.first() {
+                self.ap_page_uuid_draft = first_page.uuid.clone();
+            }
+        }
+        if self.ap_title_draft.is_empty() {
+            self.ap_title_draft = "Evening Comfort Rule".to_string();
+        }
+        self.open = AdminModal::AutopilotDesigner;
+    }
+
+    pub fn open_project_diff(
+        &mut self,
+        base_project: Option<&LoxoneProject>,
+        active_project: &LoxoneProject,
+    ) {
+        self.status = None;
+        if let Some(base) = base_project {
+            self.diff_cached_report = Some(loxone_core::compare_projects(base, active_project));
+        } else {
+            self.diff_cached_report =
+                Some(loxone_core::compare_projects(active_project, active_project));
+        }
+        self.open = AdminModal::ProjectDiff;
+    }
+
+    pub fn open_tech_report_wizard(&mut self) {
+        self.status = None;
+        self.open = AdminModal::TechReportWizard;
     }
 
     pub fn close(&mut self) {
@@ -519,6 +603,14 @@ pub fn render_admin_modals(
                 AdminModal::ProjectBackups => render_project_backups(ctx, state, project, &mut out),
                 AdminModal::AutoConfiguration => {
                     render_auto_configuration(ctx, state, project, &mut out)
+                }
+                AdminModal::TodoList => render_todo_list(ctx, state, project, &mut out),
+                AdminModal::AutopilotDesigner => {
+                    render_autopilot_designer(ctx, state, project, &mut out)
+                }
+                AdminModal::ProjectDiff => render_project_diff(ctx, state, project, &mut out),
+                AdminModal::TechReportWizard => {
+                    render_tech_report_wizard(ctx, state, project, &mut out)
                 }
                 _ => true,
             }
@@ -2609,6 +2701,762 @@ fn render_auto_configuration(
                             });
                     });
             });
+        },
+    )
+}
+
+fn render_todo_list(
+    ctx: &egui::Context,
+    state: &mut AdminModalsState,
+    project: &LoxoneProject,
+    out: &mut Vec<AdminAction>,
+) -> bool {
+    let status = state.status.clone();
+    let todos = collect_project_todos(project);
+    modal_window(
+        ctx,
+        "admin_todo_list",
+        "📌 Project To-Do & Memo Manager",
+        [860.0, 560.0],
+        status.as_deref(),
+        |ui| {
+            card(ui, |ui| {
+                section_label(ui, "Add New To-Do / Memo Note");
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new("Page:").size(11.5).color(theme::TEXT_SECONDARY));
+                    let selected_page_title = project
+                        .pages
+                        .iter()
+                        .find(|p| p.uuid == state.todo_page_uuid_draft)
+                        .map(|p| p.title.as_str())
+                        .unwrap_or("Select Page");
+                    egui::ComboBox::from_id_salt("todo_page_combo")
+                        .selected_text(selected_page_title)
+                        .show_ui(ui, |ui| {
+                            for p in &project.pages {
+                                ui.selectable_value(
+                                    &mut state.todo_page_uuid_draft,
+                                    p.uuid.clone(),
+                                    &p.title,
+                                );
+                            }
+                        });
+                    ui.label(RichText::new("Title:").size(11.5).color(theme::TEXT_SECONDARY));
+                    ui.add(
+                        egui::TextEdit::singleline(&mut state.todo_title_draft)
+                            .hint_text("To-Do summary")
+                            .desired_width(170.0),
+                    );
+                    ui.label(RichText::new("Note:").size(11.5).color(theme::TEXT_SECONDARY));
+                    ui.add(
+                        egui::TextEdit::singleline(&mut state.todo_text_draft)
+                            .hint_text("Details...")
+                            .desired_width(210.0),
+                    );
+                    let can_add = !state.todo_page_uuid_draft.is_empty()
+                        && !state.todo_title_draft.trim().is_empty();
+                    if button(ui, "➕ Add To-Do", can_add).clicked() && can_add {
+                        let (_, edit) = build_add_todo_edit(
+                            &state.todo_page_uuid_draft,
+                            state.todo_title_draft.trim(),
+                            state.todo_text_draft.trim(),
+                            192.0,
+                            128.0,
+                        );
+                        out.push(AdminAction::Edit(edit));
+                        state.status = Some(format!(
+                            "Added To-Do '{}' to page.",
+                            state.todo_title_draft.trim()
+                        ));
+                        state.todo_title_draft.clear();
+                        state.todo_text_draft.clear();
+                    }
+                });
+            });
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                ui.label(
+                    RichText::new(format!("To-Do / Memo Items ({})", todos.len()))
+                        .size(12.5)
+                        .strong()
+                        .color(theme::TEXT_PRIMARY),
+                );
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.add(
+                        egui::TextEdit::singleline(&mut state.todo_filter)
+                            .hint_text("🔎 Filter To-Do notes...")
+                            .desired_width(240.0),
+                    );
+                });
+            });
+            ui.add_space(4.0);
+            let q = state.todo_filter.trim().to_ascii_lowercase();
+            card(ui, |ui| {
+                egui::ScrollArea::vertical()
+                    .id_salt("todo_items_scroll")
+                    .max_height(ui.available_height() - 16.0)
+                    .show(ui, |ui| {
+                        for item in todos.iter().filter(|t| {
+                            q.is_empty()
+                                || t.title.to_ascii_lowercase().contains(&q)
+                                || t.text.to_ascii_lowercase().contains(&q)
+                                || t.page_title.to_ascii_lowercase().contains(&q)
+                        }) {
+                            ui.horizontal(|ui| {
+                                ui.label(
+                                    RichText::new(if item.is_resolved { "✅" } else { "📌" })
+                                        .size(12.5),
+                                );
+                                ui.label(
+                                    RichText::new(&item.title)
+                                        .size(12.0)
+                                        .strong()
+                                        .color(theme::TEXT_PRIMARY),
+                                );
+                                ui.label(
+                                    RichText::new(format!("[{}]", item.page_title))
+                                        .size(11.0)
+                                        .color(theme::ACCENT_PRIMARY),
+                                );
+                                if !item.text.is_empty() {
+                                    ui.label(
+                                        RichText::new(format!("— {}", item.text))
+                                            .size(11.0)
+                                            .color(theme::TEXT_SECONDARY),
+                                    );
+                                }
+                                ui.with_layout(
+                                    egui::Layout::right_to_left(egui::Align::Center),
+                                    |ui| {
+                                        if ui.small_button("🗑 Delete").clicked() {
+                                            if let Some(edit) =
+                                                build_resolve_todo_edit(project, &item.uuid, true)
+                                            {
+                                                out.push(AdminAction::Edit(edit));
+                                            }
+                                        }
+                                        if !item.is_resolved && ui.small_button("✓ Done").clicked()
+                                        {
+                                            if let Some(edit) =
+                                                build_resolve_todo_edit(project, &item.uuid, false)
+                                            {
+                                                out.push(AdminAction::Edit(edit));
+                                            }
+                                        }
+                                        if ui.small_button("↗ Jump").clicked() {
+                                            out.push(AdminAction::SelectObject(item.uuid.clone()));
+                                        }
+                                    },
+                                );
+                            });
+                            ui.separator();
+                        }
+                    });
+            });
+        },
+    )
+}
+
+fn render_autopilot_designer(
+    ctx: &egui::Context,
+    state: &mut AdminModalsState,
+    project: &LoxoneProject,
+    out: &mut Vec<AdminAction>,
+) -> bool {
+    let status = state.status.clone();
+    let existing_rules = collect_autopilot_rules(project);
+    modal_window(
+        ctx,
+        "admin_autopilot_designer",
+        "🤖 Loxone Autopilot Rule Designer (IF / AND / OR → Action)",
+        [880.0, 580.0],
+        status.as_deref(),
+        |ui| {
+            card(ui, |ui| {
+                section_label(ui, "Create New Autopilot Rule");
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new("Rule Name:").size(11.5).color(theme::TEXT_SECONDARY));
+                    ui.add(
+                        egui::TextEdit::singleline(&mut state.ap_title_draft).desired_width(180.0),
+                    );
+                    ui.label(RichText::new("Page:").size(11.5).color(theme::TEXT_SECONDARY));
+                    let page_title = project
+                        .pages
+                        .iter()
+                        .find(|p| p.uuid == state.ap_page_uuid_draft)
+                        .map(|p| p.title.as_str())
+                        .unwrap_or("Select Page");
+                    egui::ComboBox::from_id_salt("ap_page_combo")
+                        .selected_text(page_title)
+                        .show_ui(ui, |ui| {
+                            for p in &project.pages {
+                                ui.selectable_value(
+                                    &mut state.ap_page_uuid_draft,
+                                    p.uuid.clone(),
+                                    &p.title,
+                                );
+                            }
+                        });
+                    ui.label(RichText::new("Operator:").size(11.5).color(theme::TEXT_SECONDARY));
+                    egui::ComboBox::from_id_salt("ap_op_combo")
+                        .selected_text(&state.ap_logic_op)
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(&mut state.ap_logic_op, "AND".to_string(), "AND");
+                            ui.selectable_value(&mut state.ap_logic_op, "OR".to_string(), "OR");
+                        });
+                });
+                ui.add_space(6.0);
+                if let Some(page) = project
+                    .pages
+                    .iter()
+                    .find(|p| p.uuid == state.ap_page_uuid_draft)
+                {
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            RichText::new("Target Block:")
+                                .size(11.5)
+                                .color(theme::TEXT_SECONDARY),
+                        );
+                        let tgt_label = page
+                            .blocks
+                            .iter()
+                            .find(|b| b.uuid == state.ap_target_block_uuid)
+                            .map(|b| format!("{} [{}]", b.title, b.block_type))
+                            .unwrap_or_else(|| "(None)".to_string());
+                        egui::ComboBox::from_id_salt("ap_target_block_combo")
+                            .selected_text(tgt_label)
+                            .show_ui(ui, |ui| {
+                                ui.selectable_value(
+                                    &mut state.ap_target_block_uuid,
+                                    String::new(),
+                                    "(None)",
+                                );
+                                for b in &page.blocks {
+                                    ui.selectable_value(
+                                        &mut state.ap_target_block_uuid,
+                                        b.uuid.clone(),
+                                        format!("{} [{}]", b.title, b.block_type),
+                                    );
+                                }
+                            });
+                        ui.label(RichText::new("Pin:").size(11.5).color(theme::TEXT_SECONDARY));
+                        ui.add(
+                            egui::TextEdit::singleline(&mut state.ap_target_pin_key)
+                                .desired_width(60.0),
+                        );
+                        let can_create = !state.ap_title_draft.trim().is_empty();
+                        if button(ui, "⚡ Generate Autopilot Rule", can_create).clicked()
+                            && can_create
+                        {
+                            let spec = AutopilotRuleSpec {
+                                title: state.ap_title_draft.clone(),
+                                page_uuid: state.ap_page_uuid_draft.clone(),
+                                logic_op: state.ap_logic_op.clone(),
+                                condition_source_uuids: state.ap_selected_conditions.clone(),
+                                target_block_uuid: state.ap_target_block_uuid.clone(),
+                                target_pin_key: state.ap_target_pin_key.clone(),
+                                px: 1024.0,
+                                py: 256.0,
+                            };
+                            if let Some((_, edit)) = build_autopilot_rule_edits(project, &spec) {
+                                out.push(AdminAction::Edit(edit));
+                                state.status = Some(format!(
+                                    "Created Autopilot rule '{}' on page '{}'.",
+                                    spec.title, page.title
+                                ));
+                            }
+                        }
+                    });
+                    ui.add_space(4.0);
+                    ui.label(
+                        RichText::new("Condition Sources on Page:")
+                            .size(11.0)
+                            .color(theme::TEXT_SECONDARY),
+                    );
+                    egui::ScrollArea::vertical()
+                        .id_salt("ap_conds_scroll")
+                        .max_height(140.0)
+                        .show(ui, |ui| {
+                            for b in &page.blocks {
+                                let mut checked =
+                                    state.ap_selected_conditions.iter().any(|u| u == &b.uuid);
+                                if ui
+                                    .checkbox(
+                                        &mut checked,
+                                        format!("{} [{}]", b.title, b.block_type),
+                                    )
+                                    .changed()
+                                {
+                                    if let Some(pos) = state
+                                        .ap_selected_conditions
+                                        .iter()
+                                        .position(|u| u == &b.uuid)
+                                    {
+                                        state.ap_selected_conditions.remove(pos);
+                                    } else {
+                                        state.ap_selected_conditions.push(b.uuid.clone());
+                                    }
+                                }
+                            }
+                        });
+                }
+            });
+            ui.add_space(6.0);
+            card(ui, |ui| {
+                section_label(
+                    ui,
+                    &format!("Existing Autopilot Rules ({})", existing_rules.len()),
+                );
+                egui::ScrollArea::vertical()
+                    .id_salt("ap_existing_scroll")
+                    .max_height(150.0)
+                    .show(ui, |ui| {
+                        for r in &existing_rules {
+                            ui.horizontal(|ui| {
+                                ui.label(
+                                    RichText::new(&r.title)
+                                        .size(12.0)
+                                        .strong()
+                                        .color(theme::TEXT_PRIMARY),
+                                );
+                                ui.label(
+                                    RichText::new(format!(
+                                        "[{}] • {} • {} cond(s)",
+                                        r.logic_op, r.page_title, r.condition_count
+                                    ))
+                                    .size(11.0)
+                                    .color(theme::TEXT_SECONDARY),
+                                );
+                                if ui.small_button("↗ Jump").clicked() {
+                                    out.push(AdminAction::SelectObject(r.uuid.clone()));
+                                }
+                            });
+                        }
+                    });
+            });
+        },
+    )
+}
+
+fn render_project_diff(
+    ctx: &egui::Context,
+    state: &mut AdminModalsState,
+    project: &LoxoneProject,
+    out: &mut Vec<AdminAction>,
+) -> bool {
+    let status = state.status.clone();
+    modal_window(
+        ctx,
+        "admin_project_diff",
+        "⚖ Compare Projects (Structural Diff)",
+        [920.0, 580.0],
+        status.as_deref(),
+        |ui| {
+            card(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(
+                        RichText::new("Compare against .Loxone file path (optional):")
+                            .size(11.5)
+                            .color(theme::TEXT_SECONDARY),
+                    );
+                    ui.add(
+                        egui::TextEdit::singleline(&mut state.diff_compare_path)
+                            .hint_text("Leave blank to compare against saved baseline")
+                            .desired_width(340.0),
+                    );
+                    if button(ui, "🔄 Compare File", !state.diff_compare_path.trim().is_empty())
+                        .clicked()
+                    {
+                        let p = std::path::Path::new(state.diff_compare_path.trim());
+                        match loxone_core::parser::load_loxone_file(p) {
+                            Ok(other) => {
+                                state.diff_cached_report =
+                                    Some(loxone_core::compare_projects(&other, project));
+                                state.status = Some(format!(
+                                    "Compared active project against '{}'.",
+                                    p.display()
+                                ));
+                            }
+                            Err(e) => {
+                                state.status = Some(format!("Failed to load comparison file: {e}"));
+                            }
+                        }
+                    }
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.add(
+                            egui::TextEdit::singleline(&mut state.diff_filter)
+                                .hint_text("🔎 Filter changes...")
+                                .desired_width(180.0),
+                        );
+                    });
+                });
+            });
+            ui.add_space(6.0);
+            if let Some(report) = &state.diff_cached_report {
+                ui.horizontal(|ui| {
+                    ui.label(
+                        RichText::new(format!(
+                            "Pages: +{} / ~{} / -{}   •   Blocks: +{} / ~{} / -{}   •   Tree Nodes: +{} / ~{} / -{}",
+                            report.added_pages,
+                            report.modified_pages,
+                            report.removed_pages,
+                            report.added_blocks,
+                            report.modified_blocks,
+                            report.removed_blocks,
+                            report.added_tree_nodes,
+                            report.modified_tree_nodes,
+                            report.removed_tree_nodes
+                        ))
+                        .size(12.0)
+                        .strong()
+                        .color(theme::ACCENT_PRIMARY),
+                    );
+                });
+                ui.add_space(4.0);
+                let q = state.diff_filter.trim().to_ascii_lowercase();
+                card(ui, |ui| {
+                    egui::ScrollArea::vertical()
+                        .id_salt("project_diff_entries_scroll")
+                        .max_height(ui.available_height() - 16.0)
+                        .show(ui, |ui| {
+                            if report.entries.is_empty() {
+                                ui.label(
+                                    RichText::new("✓ No structural differences detected.")
+                                        .size(12.0)
+                                        .color(theme::TEXT_SECONDARY),
+                                );
+                            }
+                            for entry in report.entries.iter().filter(|e| {
+                                q.is_empty()
+                                    || e.title.to_ascii_lowercase().contains(&q)
+                                    || e.object_type.to_ascii_lowercase().contains(&q)
+                                    || e.location.to_ascii_lowercase().contains(&q)
+                                    || e.detail.to_ascii_lowercase().contains(&q)
+                            }) {
+                                ui.horizontal(|ui| {
+                                    let badge_color = match entry.change_kind.as_str() {
+                                        "Added" => theme::ACCENT_PRIMARY,
+                                        "Removed" => egui::Color32::from_rgb(0xE8, 0x5D, 0x5D),
+                                        _ => theme::ACCENT_AMBER,
+                                    };
+                                    ui.label(
+                                        RichText::new(format!("[{}]", entry.change_kind))
+                                            .size(11.0)
+                                            .monospace()
+                                            .strong()
+                                            .color(badge_color),
+                                    );
+                                    ui.label(
+                                        RichText::new(format!("{}: {}", entry.object_kind, entry.title))
+                                            .size(12.0)
+                                            .strong()
+                                            .color(theme::TEXT_PRIMARY),
+                                    );
+                                    ui.label(
+                                        RichText::new(format!("({}) • {}", entry.object_type, entry.location))
+                                            .size(11.0)
+                                            .color(theme::TEXT_SECONDARY),
+                                    );
+                                    ui.label(
+                                        RichText::new(format!("— {}", entry.detail))
+                                            .size(11.0)
+                                            .color(theme::TEXT_MUTED),
+                                    );
+                                    if entry.change_kind != "Removed" {
+                                        ui.with_layout(
+                                            egui::Layout::right_to_left(egui::Align::Center),
+                                            |ui| {
+                                                if ui.small_button("↗ Jump").clicked() {
+                                                    out.push(AdminAction::SelectObject(
+                                                        entry.uuid.clone(),
+                                                    ));
+                                                }
+                                            },
+                                        );
+                                    }
+                                });
+                                ui.separator();
+                            }
+                        });
+                });
+            }
+        },
+    )
+}
+
+fn render_tech_report_wizard(
+    ctx: &egui::Context,
+    state: &mut AdminModalsState,
+    project: &LoxoneProject,
+    out: &mut Vec<AdminAction>,
+) -> bool {
+    let status = state.status.clone();
+    modal_window(
+        ctx,
+        "admin_tech_report_wizard",
+        "BOM & Technical Report Wizard (CTechReportWizard)",
+        [980.0, 660.0],
+        status.as_deref(),
+        |ui| {
+            let bom = loxone_core::build_project_bom(project);
+            let schedule = loxone_core::collect_terminal_schedule(project);
+            let total_wired = schedule.iter().filter(|t| t.is_wired).count();
+
+            ui.horizontal(|ui| {
+                ui.selectable_value(
+                    &mut state.tech_report_tab,
+                    0,
+                    format!("📦 Bill of Materials ({} devices)", bom.devices.len()),
+                );
+                ui.selectable_value(
+                    &mut state.tech_report_tab,
+                    1,
+                    format!(
+                        "🔌 DIN-Rail & Terminal Schedule ({total_wired}/{} wired)",
+                        schedule.len()
+                    ),
+                );
+                ui.separator();
+                ui.label(RichText::new("Filter:").size(12.0).color(theme::TEXT_SECONDARY));
+                ui.add(
+                    egui::TextEdit::singleline(&mut state.tech_report_filter)
+                        .desired_width(170.0)
+                        .hint_text("Board, room, serial, block…"),
+                );
+                if state.tech_report_tab == 1 {
+                    ui.checkbox(&mut state.tech_report_wired_only, "Wired only");
+                }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if button(ui, "📄 Export HTML Report", true).clicked() {
+                        let html = loxone_core::technical_report_html(project);
+                        let out_path = std::env::temp_dir().join("loxone_technical_report.html");
+                        if std::fs::write(&out_path, html).is_ok() {
+                            state.status =
+                                Some(format!("Saved HTML report to {}", out_path.display()));
+                        }
+                    }
+                    if button(ui, "🔌 Export Terminal CSV", false).clicked() {
+                        let csv = loxone_core::export_terminal_schedule_csv(project);
+                        let out_path = std::env::temp_dir().join("loxone_terminal_schedule.csv");
+                        if std::fs::write(&out_path, csv).is_ok() {
+                            state.status =
+                                Some(format!("Saved Terminal CSV to {}", out_path.display()));
+                        }
+                    }
+                    if button(ui, "📦 Export BOM CSV", false).clicked() {
+                        let csv = loxone_core::export_component_bom_csv(project);
+                        let out_path = std::env::temp_dir().join("loxone_component_bom.csv");
+                        if std::fs::write(&out_path, csv).is_ok() {
+                            state.status =
+                                Some(format!("Saved BOM CSV to {}", out_path.display()));
+                        }
+                    }
+                });
+            });
+
+            ui.add_space(6.0);
+            let q = state.tech_report_filter.trim().to_ascii_lowercase();
+
+            if state.tech_report_tab == 0 {
+                section_label(ui, "Hardware Part Totals");
+                ui.horizontal_wrapped(|ui| {
+                    for part in &bom.hardware_summaries {
+                        egui::Frame::NONE
+                            .fill(theme::BG_WIDGET)
+                            .stroke(Stroke::new(1.0_f32, theme::BORDER_SUBTLE))
+                            .corner_radius(CornerRadius::same(6))
+                            .inner_margin(Margin::symmetric(10, 6))
+                            .show(ui, |ui| {
+                                ui.label(
+                                    RichText::new(format!(
+                                        "{} × {} ({}/{} I/O wired)",
+                                        part.quantity,
+                                        part.part_type,
+                                        part.wired_channels,
+                                        part.total_channels
+                                    ))
+                                    .size(11.5)
+                                    .strong()
+                                    .color(theme::TEXT_PRIMARY),
+                                );
+                            });
+                    }
+                });
+
+                section_label(ui, "Provisioned Hardware & DIN Panel Placement");
+                card(ui, |ui| {
+                    egui::ScrollArea::vertical()
+                        .id_salt("tech_report_bom_scroll")
+                        .max_height(ui.available_height() - 16.0)
+                        .show(ui, |ui| {
+                            for dev in bom.devices.iter().filter(|d| {
+                                q.is_empty()
+                                    || d.title.to_ascii_lowercase().contains(&q)
+                                    || d.node_type.to_ascii_lowercase().contains(&q)
+                                    || d.serial.to_ascii_lowercase().contains(&q)
+                                    || d.distribution_board.to_ascii_lowercase().contains(&q)
+                                    || d.row_position.to_ascii_lowercase().contains(&q)
+                            }) {
+                                ui.horizontal(|ui| {
+                                    ui.label(
+                                        RichText::new(&dev.title)
+                                            .size(12.5)
+                                            .strong()
+                                            .color(theme::TEXT_PRIMARY),
+                                    );
+                                    ui.label(
+                                        RichText::new(format!("[{}]", dev.node_type))
+                                            .size(11.0)
+                                            .monospace()
+                                            .color(theme::ACCENT_PRIMARY),
+                                    );
+                                    ui.label(
+                                        RichText::new(format!(
+                                            "S/N: {} • Bus: {}",
+                                            if dev.serial.is_empty() {
+                                                "Unset"
+                                            } else {
+                                                &dev.serial
+                                            },
+                                            dev.parent_label
+                                        ))
+                                        .size(11.0)
+                                        .color(theme::TEXT_SECONDARY),
+                                    );
+                                    if !dev.distribution_board.is_empty()
+                                        || !dev.row_position.is_empty()
+                                    {
+                                        ui.label(
+                                            RichText::new(format!(
+                                                "• Panel: {} {}",
+                                                dev.distribution_board, dev.row_position
+                                            ))
+                                            .size(11.0)
+                                            .color(theme::ACCENT_AMBER),
+                                        );
+                                    }
+                                    ui.with_layout(
+                                        egui::Layout::right_to_left(egui::Align::Center),
+                                        |ui| {
+                                            if ui.small_button("↗ Select").clicked() {
+                                                out.push(AdminAction::SelectObject(
+                                                    dev.uuid.clone(),
+                                                ));
+                                            }
+                                            ui.label(
+                                                RichText::new(format!(
+                                                    "{}/{} channels wired",
+                                                    dev.wired_channels, dev.total_channels
+                                                ))
+                                                .size(11.0)
+                                                .color(theme::TEXT_MUTED),
+                                            );
+                                        },
+                                    );
+                                });
+                                ui.separator();
+                            }
+                        });
+                });
+            } else {
+                section_label(ui, "Physical Terminal to Schematic Block Mapping");
+                card(ui, |ui| {
+                    egui::ScrollArea::vertical()
+                        .id_salt("tech_report_schedule_scroll")
+                        .max_height(ui.available_height() - 16.0)
+                        .show(ui, |ui| {
+                            for term in schedule.iter().filter(|t| {
+                                if state.tech_report_wired_only && !t.is_wired {
+                                    return false;
+                                }
+                                q.is_empty()
+                                    || t.device_title.to_ascii_lowercase().contains(&q)
+                                    || t.channel_title.to_ascii_lowercase().contains(&q)
+                                    || t.terminal_label.to_ascii_lowercase().contains(&q)
+                                    || t.distribution_board.to_ascii_lowercase().contains(&q)
+                                    || t.room_title.to_ascii_lowercase().contains(&q)
+                                    || t.connected_blocks
+                                        .iter()
+                                        .any(|b| b.to_ascii_lowercase().contains(&q))
+                            }) {
+                                ui.horizontal(|ui| {
+                                    ui.label(
+                                        RichText::new(format!("[{}]", term.terminal_label))
+                                            .size(11.5)
+                                            .monospace()
+                                            .strong()
+                                            .color(if term.is_wired {
+                                                theme::ACCENT_PRIMARY
+                                            } else {
+                                                theme::TEXT_MUTED
+                                            }),
+                                    );
+                                    ui.label(
+                                        RichText::new(format!(
+                                            "{} → {}",
+                                            term.device_title, term.channel_title
+                                        ))
+                                        .size(12.0)
+                                        .strong()
+                                        .color(theme::TEXT_PRIMARY),
+                                    );
+                                    if !term.distribution_board.is_empty()
+                                        || !term.row_position.is_empty()
+                                    {
+                                        ui.label(
+                                            RichText::new(format!(
+                                                "({} {})",
+                                                term.distribution_board, term.row_position
+                                            ))
+                                            .size(11.0)
+                                            .color(theme::ACCENT_AMBER),
+                                        );
+                                    }
+                                    if !term.room_title.is_empty() {
+                                        ui.label(
+                                            RichText::new(format!("• {}", term.room_title))
+                                                .size(11.0)
+                                                .color(theme::TEXT_SECONDARY),
+                                        );
+                                    }
+                                    let conn_label = if term.connected_blocks.is_empty() {
+                                        if term.connected_pages.is_empty() {
+                                            "Unwired".to_string()
+                                        } else {
+                                            format!("Pages: {}", term.connected_pages.join(", "))
+                                        }
+                                    } else {
+                                        format!(
+                                            "⇄ {} ({})",
+                                            term.connected_blocks.join(", "),
+                                            term.connected_pages.join(", ")
+                                        )
+                                    };
+                                    ui.label(
+                                        RichText::new(conn_label)
+                                            .size(11.0)
+                                            .color(if term.is_wired {
+                                                theme::ACCENT_PRIMARY
+                                            } else {
+                                                theme::TEXT_MUTED
+                                            }),
+                                    );
+                                    ui.with_layout(
+                                        egui::Layout::right_to_left(egui::Align::Center),
+                                        |ui| {
+                                            if ui.small_button("↗ Go to").clicked() {
+                                                out.push(AdminAction::SelectObject(
+                                                    term.channel_uuid.clone(),
+                                                ));
+                                            }
+                                        },
+                                    );
+                                });
+                                ui.separator();
+                            }
+                        });
+                });
+            }
         },
     )
 }

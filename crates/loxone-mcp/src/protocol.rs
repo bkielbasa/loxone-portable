@@ -704,6 +704,107 @@ pub fn tool_definitions() -> Value {
                 }
             },
             {
+                "name": "tree_replace_device",
+                "description": "Replaces a hardware device's serial number in-place and updates commissioning metadata (description, distribution_board, row_position, lighting_group) while preserving child I/O channels and schematic wire links.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "device_uuid": { "type": "string", "description": "UUID of the hardware device node in Periphery/System tree." },
+                        "new_serial": { "type": "string", "description": "New Loxone serial number." },
+                        "description": { "type": "string" },
+                        "distribution_board": { "type": "string" },
+                        "row_position": { "type": "string" },
+                        "lighting_group": { "type": "string" }
+                    },
+                    "required": ["device_uuid", "new_serial"]
+                }
+            },
+            {
+                "name": "tree_resolve_serial_conflicts",
+                "description": "Detects and optionally resolves duplicate or unassigned ('00000000') hardware serial numbers across all Periphery/System devices.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "preview_only": { "type": "boolean", "description": "If true, only lists conflicts and planned serial assignments without mutating the project." }
+                    }
+                }
+            },
+            {
+                "name": "page_auto_layout",
+                "description": "Runs the topological Sugiyama-style schematic auto-layout engine on a page, arranging InputRefs on the left, function blocks in signal-flow columns, and OutputRefs on the right snapped to the 64-unit grid.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "page_uuid": { "type": "string", "description": "UUID of the schematic page to auto-layout." }
+                    },
+                    "required": ["page_uuid"]
+                }
+            },
+            {
+                "name": "todo_list",
+                "description": "Lists all To-Do / Memo notes across schematic pages.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {}
+                }
+            },
+            {
+                "name": "todo_add",
+                "description": "Adds a new To-Do / Memo note block to a schematic page.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "page_uuid": { "type": "string" },
+                        "title": { "type": "string" },
+                        "text": { "type": "string" },
+                        "px": { "type": "number" },
+                        "py": { "type": "number" }
+                    },
+                    "required": ["page_uuid", "title"]
+                }
+            },
+            {
+                "name": "todo_resolve",
+                "description": "Resolves (marks Done) or deletes a To-Do / Memo note by UUID.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "todo_uuid": { "type": "string" },
+                        "delete_block": { "type": "boolean" }
+                    },
+                    "required": ["todo_uuid"]
+                }
+            },
+            {
+                "name": "autopilot_rule_create",
+                "description": "Creates a Loxone Autopilot IF/AND/OR condition -> action rule on a schematic page.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "title": { "type": "string" },
+                        "page_uuid": { "type": "string" },
+                        "logic_op": { "type": "string", "enum": ["AND", "OR"] },
+                        "condition_source_uuids": { "type": "array", "items": { "type": "string" } },
+                        "target_block_uuid": { "type": "string" },
+                        "target_pin_key": { "type": "string" },
+                        "px": { "type": "number" },
+                        "py": { "type": "number" }
+                    },
+                    "required": ["title", "page_uuid"]
+                }
+            },
+            {
+                "name": "project_diff",
+                "description": "Compares the active project against another .Loxone file on disk (or compares two .Loxone files base_path vs target_path) and returns added, removed, and modified pages, blocks, and tree nodes.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "base_path": { "type": "string", "description": "Optional path to the baseline .Loxone file (defaults to loaded_path on disk)." },
+                        "target_path": { "type": "string", "description": "Optional path to the target .Loxone file (defaults to the active in-memory project)." }
+                    }
+                }
+            },
+            {
                 "name": "wizard_auto_configure_rooms",
                 "description": "Previews or executes the Auto Configuration room logic wizard to generate standard LightController2, AutoJalousie, HeatIRoomController2, and/or AudioZone blocks across rooms.",
                 "inputSchema": {
@@ -769,13 +870,13 @@ pub fn tool_definitions() -> Value {
             },
             {
                 "name": "report_export",
-                "description": "Generates a project report (page_svg, documentation_html, technical_report_html, project_analysis_csv, or component_bom_csv) and optionally writes it to output_path.",
+                "description": "Generates a project report (page_svg, documentation_html, technical_report_html, project_analysis_csv, component_bom_csv, or terminal_schedule_csv) and optionally writes it to output_path.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
                         "format": {
                             "type": "string",
-                            "enum": ["page_svg", "documentation_html", "technical_report_html", "project_analysis_csv", "component_bom_csv"],
+                            "enum": ["page_svg", "documentation_html", "technical_report_html", "project_analysis_csv", "component_bom_csv", "terminal_schedule_csv"],
                             "description": "Report format to generate."
                         },
                         "page_uuid": { "type": "string", "description": "Page UUID (required when format='page_svg' unless page_index is provided)." },
@@ -783,6 +884,27 @@ pub fn tool_definitions() -> Value {
                         "output_path": { "type": "string", "description": "Optional file path on disk to write the generated report." }
                     },
                     "required": ["format"]
+                }
+            },
+            {
+                "name": "project_bom_get",
+                "description": "Returns the structured Bill of Materials (BOM) including all hardware devices, DIN distribution board/row placement, wired channel counts, and part summaries.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "distribution_board": { "type": "string", "description": "Optional filter by Distribution Board (DistBoard)." }
+                    }
+                }
+            },
+            {
+                "name": "project_terminal_schedule_get",
+                "description": "Returns the physical DIN-Rail & Terminal Wiring Schedule mapping each device terminal (I1, AI1, Q1, AQ1, etc.) to its room, category, and wired schematic pages & function blocks.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "device_uuid": { "type": "string", "description": "Optional filter by hardware device UUID." },
+                        "wired_only": { "type": "boolean", "description": "If true, returns only terminals wired on a schematic page." }
+                    }
                 }
             }
         ]

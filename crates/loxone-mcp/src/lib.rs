@@ -215,7 +215,61 @@ mod tests {
             .unwrap()
             .contains("LightController2"));
 
-        // 8. Test Undo & Redo
+        // 8. Test Auto-Layout on Kitchen Logic page
+        let layout_res = call_tool(
+            &mut session,
+            "page_auto_layout",
+            json!({ "page_uuid": page_uuid }),
+        );
+        assert!(layout_res["moved_blocks"].as_u64().unwrap() > 0);
+        let page_after = call_tool(
+            &mut session,
+            "page_get",
+            json!({ "page_uuid": page_uuid }),
+        );
+        for blk in page_after["blocks"].as_array().unwrap() {
+            let px = blk["px"].as_f64().unwrap();
+            let py = blk["py"].as_f64().unwrap();
+            assert_eq!((px % 64.0).abs(), 0.0);
+            assert_eq!((py % 64.0).abs(), 0.0);
+        }
+
+        // 9. Test To-Do Manager and Autopilot Rule Designer (Stage 9)
+        let added_todo = call_tool(
+            &mut session,
+            "todo_add",
+            json!({
+                "page_uuid": page_uuid,
+                "title": "Verify island dimmer curve",
+                "text": "Check DALI minimum brightness"
+            }),
+        );
+        let todo_uuid = added_todo["todo_uuid"].as_str().unwrap().to_string();
+        let todos = call_tool(&mut session, "todo_list", json!({}));
+        assert_eq!(todos["count"], 1);
+        call_tool(
+            &mut session,
+            "todo_resolve",
+            json!({ "todo_uuid": todo_uuid, "delete_block": false }),
+        );
+        let todos_after = call_tool(&mut session, "todo_list", json!({}));
+        assert_eq!(todos_after["todos"][0]["is_resolved"], true);
+
+        let ap_rule = call_tool(
+            &mut session,
+            "autopilot_rule_create",
+            json!({
+                "title": "Island Trigger Rule",
+                "page_uuid": page_uuid,
+                "logic_op": "AND",
+                "condition_source_uuids": [in_ref_uuid],
+                "target_block_uuid": lc_uuid,
+                "target_pin_key": "Tr"
+            }),
+        );
+        assert!(ap_rule["rule_uuid"].as_str().is_some());
+
+        // 10. Test Undo & Redo
         let undo_res = call_tool(&mut session, "project_undo", json!({}));
         assert_eq!(undo_res["undone"], true);
         let redo_res = call_tool(&mut session, "project_redo", json!({}));
@@ -292,5 +346,66 @@ mod tests {
         assert_eq!(az_after["default_vol"], 28);
         assert_eq!(az_after["airplay_enabled"], true);
         assert_eq!(az_after["favorites"][0]["title"], "Chill Lounge");
+
+        // Stage 7: Device replacement & serial conflict resolution
+        let conflicts_preview = call_tool(
+            &mut session,
+            "tree_resolve_serial_conflicts",
+            json!({ "preview_only": true }),
+        );
+        let first_reassigned_uuid = conflicts_preview["reassignments"][0]["device_uuid"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let replaced = call_tool(
+            &mut session,
+            "tree_replace_device",
+            json!({
+                "device_uuid": first_reassigned_uuid,
+                "new_serial": "B030-99AA",
+                "distribution_board": "DB-Main",
+                "row_position": "R2",
+                "lighting_group": "LG-1"
+            }),
+        );
+        assert_eq!(replaced["serial"], "B03099AA");
+        assert_eq!(replaced["distribution_board"], "DB-Main");
+        assert_eq!(replaced["row_position"], "R2");
+        assert_eq!(replaced["lighting_group"], "LG-1");
+
+        let resolved = call_tool(
+            &mut session,
+            "tree_resolve_serial_conflicts",
+            json!({ "preview_only": false }),
+        );
+        assert!(resolved["resolved_count"].as_u64().unwrap() > 0);
+        let after_conflicts = call_tool(
+            &mut session,
+            "tree_resolve_serial_conflicts",
+            json!({ "preview_only": true }),
+        );
+        assert_eq!(after_conflicts["resolved_count"], 0);
+
+        // Stage 10: Project Diff against Sample.Loxone baseline on disk
+        let diff_res = call_tool(&mut session, "project_diff", json!({}));
+        assert!(diff_res["modified_blocks"].as_u64().unwrap() >= 1);
+        assert!(diff_res["modified_tree_nodes"].as_u64().unwrap() >= 1);
+        assert!(diff_res["total_changes"].as_u64().unwrap() >= 2);
+
+        // Stage 11: BOM and Terminal Schedule
+        let bom_res = call_tool(
+            &mut session,
+            "project_bom_get",
+            json!({ "distribution_board": "DB-Main" }),
+        );
+        assert_eq!(bom_res["device_count"], 1);
+        assert_eq!(bom_res["devices"][0]["serial"], "B03099AA");
+
+        let sched_res = call_tool(
+            &mut session,
+            "project_terminal_schedule_get",
+            json!({ "wired_only": true }),
+        );
+        assert!(sched_res["count"].as_u64().unwrap() > 0);
     }
 }
