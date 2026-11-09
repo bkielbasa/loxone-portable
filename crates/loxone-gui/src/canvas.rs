@@ -93,6 +93,17 @@ pub struct BlockInfoPopupState {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct SelectConnectionPopupState {
+    pub screen_pos: Pos2,
+    pub source_block_uuid: String,
+    pub source_pin_uuid: String,
+    pub source_pin_key: String,
+    pub source_is_output: bool,
+    pub target_block_uuid: String,
+    pub filter: String,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct RefBarChromeLayout {
     pub badge: String,
     pub capsule_rect: Rect,
@@ -119,6 +130,7 @@ pub struct CanvasInteractionState {
     pub inline_rename: Option<InlineRenameState>,
     pub show_pin_values_popup: Option<ShowPinValuesPopupState>,
     pub block_info_popup: Option<BlockInfoPopupState>,
+    pub select_connection_popup: Option<SelectConnectionPopupState>,
     pub custom_pin_visibility: HashMap<String, HashMap<String, bool>>,
     pub last_clicked_block_uuid: Option<String>,
 }
@@ -1192,6 +1204,29 @@ pub fn collect_block_selectable_pins<'a>(
     out
 }
 
+/// Collects all connectable signal pins (including schema-documented pins not yet instantiated in XML)
+/// for the Loxone Config 17 `Select Connection` (`Wybierz połączenie`) popup when dropping a wire on `block`.
+pub fn collect_block_connectable_pins(
+    block: &PageBlock,
+    xref: &XrefIndex,
+    target_side: PinSide,
+) -> Vec<DisplayPin> {
+    let (inputs, outputs) = collect_block_display_pins(block, xref, true);
+    let list = match target_side {
+        PinSide::Input => inputs,
+        PinSide::Output => outputs,
+    };
+    list.into_iter()
+        .filter(|dp| {
+            if let Some(pin) = block.pins.iter().find(|p| p.key == dp.key) {
+                !is_internal_parameter_pin(&block.block_type, pin) || is_pin_connected(pin, xref)
+            } else {
+                true
+            }
+        })
+        .collect()
+}
+
 const LIVE_ACTIVE_GREEN: Color32 = Color32::from_rgb(0x69, 0xC3, 0x50);
 const LIVE_INACTIVE_CAPSULE_BG: Color32 = Color32::from_rgb(0x22, 0x22, 0x22);
 const OFF_CAPSULE_BG: Color32 = Color32::from_rgb(0x1C, 0x1C, 0x1C);
@@ -1587,6 +1622,7 @@ pub fn render_page_canvas(
     let mut opened_live_popup_this_frame = false;
     let mut opened_pin_values_popup_this_frame = false;
     let mut opened_block_info_popup_this_frame = false;
+    let mut opened_select_connection_popup_this_frame = false;
     let multi_mod = ui.input(|i| i.modifiers.shift || i.modifiers.command || i.modifiers.ctrl);
     let pan_mod = ui.input(|i| i.key_down(egui::Key::Space) || i.modifiers.alt);
     let show_all_pins = !viewport.compact_pins || viewport.interaction.wiring_from.is_some();
@@ -1802,6 +1838,7 @@ pub fn render_page_canvas(
         viewport.interaction.inline_rename = None;
         viewport.interaction.show_pin_values_popup = None;
         viewport.interaction.block_info_popup = None;
+        viewport.interaction.select_connection_popup = None;
         viewport.interaction.resizing_block = None;
         viewport.interaction.marquee_start = None;
         viewport.interaction.marquee_current = None;
@@ -2118,11 +2155,62 @@ pub fn render_page_canvas(
                         source_pin_uuid,
                     });
                 }
+            } else if let Some(drop_pos) = pointer_pos.or(hover_pos) {
+                if let Some(hit_layout) = layouts
+                    .iter()
+                    .rev()
+                    .find(|l| l.rect.contains(drop_pos) && l.block.uuid != wire_drag.block_uuid && !l.block.is_note())
+                {
+                    let target_side = if wire_drag.is_output {
+                        PinSide::Input
+                    } else {
+                        PinSide::Output
+                    };
+                    let candidates = collect_block_connectable_pins(
+                        hit_layout.block,
+                        &project.xref,
+                        target_side,
+                    );
+                    if candidates.len() == 1 {
+                        let chosen = &candidates[0];
+                        let (target_block_uuid, target_pin_key, source_pin_uuid) =
+                            if wire_drag.is_output {
+                                (
+                                    hit_layout.block.uuid.clone(),
+                                    chosen.key.clone(),
+                                    wire_drag.pin_uuid.clone(),
+                                )
+                            } else {
+                                (
+                                    wire_drag.block_uuid.clone(),
+                                    wire_drag.pin_key.clone(),
+                                    chosen.uuid.clone(),
+                                )
+                            };
+                        action = Some(CanvasAction::ConnectPins {
+                            target_block_uuid,
+                            target_pin_key,
+                            source_pin_uuid,
+                        });
+                    } else if candidates.len() > 1 {
+                        opened_select_connection_popup_this_frame = true;
+                        viewport.interaction.select_connection_popup =
+                            Some(SelectConnectionPopupState {
+                                screen_pos: drop_pos,
+                                source_block_uuid: wire_drag.block_uuid,
+                                source_pin_uuid: wire_drag.pin_uuid,
+                                source_pin_key: wire_drag.pin_key,
+                                source_is_output: wire_drag.is_output,
+                                target_block_uuid: hit_layout.block.uuid.clone(),
+                                filter: String::new(),
+                            });
+                    }
+                }
             }
         }
     }
 
-    // Handle click-to-wire on pins
+    // Handle click-to-wire on pins (or click on target block body while wiring)
     if clicked {
         if let Some(pin_hit) = &hovered_pin_target {
             clicked_any_pin_or_wire = true;
@@ -2160,8 +2248,61 @@ pub fn render_page_canvas(
                     start_screen_pos: pin_hit.screen_pos,
                 });
             }
-        } else if viewport.interaction.wiring_from.is_some() {
-            viewport.interaction.wiring_from = None;
+        } else if let Some(wire_drag) = viewport.interaction.wiring_from.take() {
+            if let Some(click_pos) = pointer_pos.or(hover_pos) {
+                if let Some(hit_layout) = layouts
+                    .iter()
+                    .rev()
+                    .find(|l| l.rect.contains(click_pos) && l.block.uuid != wire_drag.block_uuid && !l.block.is_note())
+                {
+                    clicked_any_pin_or_wire = true;
+                    clicked_any_block = true;
+                    let target_side = if wire_drag.is_output {
+                        PinSide::Input
+                    } else {
+                        PinSide::Output
+                    };
+                    let candidates = collect_block_connectable_pins(
+                        hit_layout.block,
+                        &project.xref,
+                        target_side,
+                    );
+                    if candidates.len() == 1 {
+                        let chosen = &candidates[0];
+                        let (target_block_uuid, target_pin_key, source_pin_uuid) =
+                            if wire_drag.is_output {
+                                (
+                                    hit_layout.block.uuid.clone(),
+                                    chosen.key.clone(),
+                                    wire_drag.pin_uuid.clone(),
+                                )
+                            } else {
+                                (
+                                    wire_drag.block_uuid.clone(),
+                                    wire_drag.pin_key.clone(),
+                                    chosen.uuid.clone(),
+                                )
+                            };
+                        action = Some(CanvasAction::ConnectPins {
+                            target_block_uuid,
+                            target_pin_key,
+                            source_pin_uuid,
+                        });
+                    } else if candidates.len() > 1 {
+                        opened_select_connection_popup_this_frame = true;
+                        viewport.interaction.select_connection_popup =
+                            Some(SelectConnectionPopupState {
+                                screen_pos: click_pos,
+                                source_block_uuid: wire_drag.block_uuid,
+                                source_pin_uuid: wire_drag.pin_uuid,
+                                source_pin_key: wire_drag.pin_key,
+                                source_is_output: wire_drag.is_output,
+                                target_block_uuid: hit_layout.block.uuid.clone(),
+                                filter: String::new(),
+                            });
+                    }
+                }
+            }
         }
     }
 
@@ -4886,6 +5027,168 @@ pub fn render_page_canvas(
         }
     }
 
+    // Render active Loxone Config 17 "Select Connection" ("Wybierz połączenie") wire drop pin picker
+    if let Some(mut conn_popup) = viewport.interaction.select_connection_popup.clone() {
+        let mut close_conn_popup = false;
+        let mut picked_pin: Option<DisplayPin> = None;
+        if let Some(block) = page
+            .blocks
+            .iter()
+            .find(|b| b.uuid == conn_popup.target_block_uuid)
+        {
+            let target_side = if conn_popup.source_is_output {
+                PinSide::Input
+            } else {
+                PinSide::Output
+            };
+            let candidates =
+                collect_block_connectable_pins(block, &project.xref, target_side);
+            let area_resp = egui::Area::new(egui::Id::new("canvas_select_connection_popup"))
+                .order(egui::Order::Foreground)
+                .fixed_pos(conn_popup.screen_pos)
+                .show(ui.ctx(), |ui| {
+                    egui::Frame::popup(ui.style())
+                        .fill(Color32::from_rgb(0x23, 0x26, 0x2E))
+                        .stroke(Stroke::new(1.4_f32, LOXONE_GREEN))
+                        .corner_radius(CornerRadius::same(6))
+                        .inner_margin(egui::Margin::same(10))
+                        .show(ui, |ui| {
+                            ui.set_min_width(350.0);
+                            ui.set_max_width(450.0);
+                            ui.horizontal(|ui| {
+                                let title_str = if block.title.is_empty() {
+                                    &block.block_type
+                                } else {
+                                    &block.title
+                                };
+                                ui.label(
+                                    egui::RichText::new(format!(
+                                        "{} — {}",
+                                        crate::i18n::tr("Select Connection"),
+                                        title_str
+                                    ))
+                                    .strong()
+                                    .size(12.5)
+                                    .color(TEXT_PRIMARY),
+                                );
+                                ui.with_layout(
+                                    egui::Layout::right_to_left(egui::Align::Center),
+                                    |ui| {
+                                        if ui.small_button("×").clicked() {
+                                            close_conn_popup = true;
+                                        }
+                                    },
+                                );
+                            });
+                            ui.add_space(4.0);
+                            ui.add(
+                                egui::TextEdit::singleline(&mut conn_popup.filter)
+                                    .hint_text(crate::i18n::tr("Filter pins…"))
+                                    .desired_width(f32::INFINITY),
+                            );
+                            ui.separator();
+
+                            let needle = conn_popup.filter.trim().to_lowercase();
+                            egui::ScrollArea::vertical()
+                                .max_height(280.0)
+                                .show(ui, |ui| {
+                                    for dp in &candidates {
+                                        let is_out = dp.side == PinSide::Output;
+                                        let short_lbl =
+                                            loxone_core::miniserver::loxone_short_pin_label(
+                                                &block.block_type,
+                                                &dp.key,
+                                            );
+                                        let meta = loxone_core::miniserver::loxone_pin_metadata(
+                                            &block.block_type,
+                                            &dp.key,
+                                            is_out,
+                                        );
+                                        let full_name_tr = crate::i18n::tr(meta.full_name);
+                                        let desc_tr = crate::i18n::tr(meta.description);
+                                        if !needle.is_empty()
+                                            && !dp.key.to_lowercase().contains(&needle)
+                                            && !short_lbl.to_lowercase().contains(&needle)
+                                            && !full_name_tr.to_lowercase().contains(&needle)
+                                            && !desc_tr.to_lowercase().contains(&needle)
+                                        {
+                                            continue;
+                                        }
+                                        let badge_color = if meta.connector_badge == "⇄" {
+                                            Color32::from_rgb(0x88, 0x94, 0xA6)
+                                        } else if meta.is_analog {
+                                            WIRE_ANALOG
+                                        } else {
+                                            LIVE_ACTIVE_GREEN
+                                        };
+                                        let btn_text = format!(
+                                            "[{}] {:<5}  {}",
+                                            meta.connector_badge, short_lbl, full_name_tr
+                                        );
+                                        let btn_resp = ui.add_sized(
+                                            [ui.available_width(), 22.0],
+                                            egui::Button::new(
+                                                egui::RichText::new(btn_text)
+                                                    .monospace()
+                                                    .size(11.2)
+                                                    .color(badge_color),
+                                            )
+                                            .fill(Color32::from_rgb(0x1C, 0x20, 0x27)),
+                                        );
+                                        if btn_resp
+                                            .on_hover_text(format!("{}: {}", short_lbl, desc_tr))
+                                            .clicked()
+                                        {
+                                            picked_pin = Some(dp.clone());
+                                            close_conn_popup = true;
+                                        }
+                                    }
+                                });
+                        });
+                });
+            if clicked
+                && !opened_select_connection_popup_this_frame
+                && !area_resp.response.rect.contains(pointer_pos.unwrap_or_default())
+            {
+                close_conn_popup = true;
+            }
+        } else {
+            close_conn_popup = true;
+        }
+        if let Some(chosen) = picked_pin {
+            viewport
+                .interaction
+                .custom_pin_visibility
+                .entry(conn_popup.target_block_uuid.clone())
+                .or_default()
+                .insert(chosen.key.clone(), true);
+            let (target_block_uuid, target_pin_key, source_pin_uuid) =
+                if conn_popup.source_is_output {
+                    (
+                        conn_popup.target_block_uuid.clone(),
+                        chosen.key,
+                        conn_popup.source_pin_uuid.clone(),
+                    )
+                } else {
+                    (
+                        conn_popup.source_block_uuid.clone(),
+                        conn_popup.source_pin_key.clone(),
+                        chosen.uuid,
+                    )
+                };
+            action = Some(CanvasAction::ConnectPins {
+                target_block_uuid,
+                target_pin_key,
+                source_pin_uuid,
+            });
+        }
+        if close_conn_popup {
+            viewport.interaction.select_connection_popup = None;
+        } else {
+            viewport.interaction.select_connection_popup = Some(conn_popup);
+        }
+    }
+
     // Render two-line Loxone-style tooltip when hovering a pin on the canvas
     if let Some((b_uuid, p_key)) = &viewport.interaction.hovered_pin {
         if let Some(block) = page.blocks.iter().find(|b| &b.uuid == b_uuid) {
@@ -5639,5 +5942,54 @@ mod tests {
             let moves = compute_aligned_block_moves(&page, &uuids, mode);
             assert_eq!(moves.len(), 3);
         }
+    }
+
+    #[test]
+    fn test_stage5_select_connection_popup_and_connectable_pins() {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../Sample.Loxone");
+        let project = load_loxone_file(&path).expect("Sample.Loxone should parse");
+        let alarm_idx = project
+            .pages
+            .iter()
+            .position(|p| p.uuid == "19eb19ad-02ad-eae0-ffff51535bcccc04")
+            .expect("Alarm page should exist");
+        let alarm_page = &project.pages[alarm_idx];
+        let sys_alarm = alarm_page
+            .blocks
+            .iter()
+            .find(|b| b.title == "System alarmowy" && b.block_type == "Alarm")
+            .expect("System alarmowy block should exist");
+
+        let connectable_in =
+            collect_block_connectable_pins(sys_alarm, &project.xref, PinSide::Input);
+        let connectable_out =
+            collect_block_connectable_pins(sys_alarm, &project.xref, PinSide::Output);
+        assert!(connectable_in.iter().any(|p| p.key == "I1"));
+        assert!(connectable_out.iter().any(|p| p.key == "Q"));
+
+        let mut vp = CanvasViewport::default();
+        vp.fit_to_page(alarm_page, Vec2::new(1400.0, 900.0));
+        vp.interaction.select_connection_popup = Some(SelectConnectionPopupState {
+            screen_pos: Pos2::new(360.0, 220.0),
+            source_block_uuid: "src-block".to_string(),
+            source_pin_uuid: "src-pin".to_string(),
+            source_pin_key: "Q".to_string(),
+            source_is_output: true,
+            target_block_uuid: sys_alarm.uuid.clone(),
+            filter: String::new(),
+        });
+        let ctx = egui::Context::default();
+        let _ = ctx.run(egui::RawInput::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                let _ = render_page_canvas(
+                    ui,
+                    &project,
+                    alarm_idx,
+                    &mut vp,
+                    Some(&sys_alarm.uuid),
+                    None,
+                );
+            });
+        });
     }
 }

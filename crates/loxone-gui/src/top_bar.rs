@@ -276,6 +276,8 @@ pub enum TopBarAction {
     OpenBusMonitor(Option<BusMonitorProtocol>),
     OpenHealthCheck,
     ExportTechnicalReport,
+    OpenAutoConfiguration,
+    ExportComponentBomCsv,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2370,6 +2372,20 @@ fn render_ribbon_row_2(
                                 "Create and restore local .Loxone project snapshots",
                                 Color32::from_rgb(0xE4, 0xB3, 0x3B),
                                 TopBarAction::OpenProjectBackups,
+                            ),
+                            (
+                                "🪄",
+                                "Auto Configuration",
+                                "Auto-generate standard room logic blocks (Lighting, Shading, Climate, Audio) across selected rooms",
+                                LOXONE_GREEN,
+                                TopBarAction::OpenAutoConfiguration,
+                            ),
+                            (
+                                "📦",
+                                "Component List (BOM)",
+                                "Export Bill of Materials (BOM) CSV of hardware devices and function blocks",
+                                ACCENT_BLUE,
+                                TopBarAction::ExportComponentBomCsv,
                             ),
                         ];
                         for (icon, label, tip, tint, act) in admin_tiles {

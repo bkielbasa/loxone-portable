@@ -362,3 +362,61 @@ table{{border-collapse:collapse;width:100%;margin:8px 0 16px}}td,th{{border:1px 
     s.push_str("</table></body></html>\n");
     s
 }
+
+/// Generates a CSV Bill of Materials (BOM) / Component List (`Generate Component List`)
+/// covering all hardware devices, aggregated hardware counts by type, and function block usage.
+pub fn export_component_bom_csv(project: &LoxoneProject) -> String {
+    let hw_items = crate::periphery_provisioning::collect_provisioned_hardware(project);
+    let mut out =
+        String::from("PartGroup,ComponentType,Title,SerialNumber,BusOrPage,Quantity,IOChannels\n");
+    let esc = |s: &str| format!("\"{}\"", s.replace('"', "\"\""));
+
+    let mut hw_counts: std::collections::BTreeMap<String, (usize, usize)> =
+        std::collections::BTreeMap::new();
+    for d in &hw_items {
+        let entry = hw_counts.entry(d.node_type.clone()).or_insert((0, 0));
+        entry.0 += 1;
+        entry.1 += d.io_count;
+        let _ = writeln!(
+            out,
+            "Hardware,{},{},{},{},1,{}",
+            esc(&d.node_type),
+            esc(&d.title),
+            esc(&d.serial),
+            esc(&d.parent_label),
+            d.io_count
+        );
+    }
+
+    for (node_type, (count, total_io)) in &hw_counts {
+        let _ = writeln!(
+            out,
+            "HardwareSummary,{},{},\"\",\"\",{},{}",
+            esc(node_type),
+            esc(&format!("Total {node_type}")),
+            count,
+            total_io
+        );
+    }
+
+    let mut block_counts: std::collections::BTreeMap<String, usize> =
+        std::collections::BTreeMap::new();
+    for page in &project.pages {
+        for block in &page.blocks {
+            if !block.is_ref_bar() && !block.is_note() {
+                *block_counts.entry(block.block_type.clone()).or_insert(0) += 1;
+            }
+        }
+    }
+    for (block_type, count) in &block_counts {
+        let _ = writeln!(
+            out,
+            "FunctionBlockSummary,{},{},\"\",\"\",{},0",
+            esc(block_type),
+            esc(&format!("Total {block_type}")),
+            count
+        );
+    }
+
+    out
+}

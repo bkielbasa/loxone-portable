@@ -50,6 +50,24 @@ fn render_inspector_section_card(ui: &mut Ui, add_contents: impl FnOnce(&mut Ui)
         });
 }
 
+fn current_inspector_filter(ui: &Ui) -> String {
+    let filter_id = egui::Id::new("loxone_inspector_prop_filter");
+    ui.ctx()
+        .data_mut(|d| d.get_temp::<String>(filter_id).unwrap_or_default())
+        .trim()
+        .to_lowercase()
+}
+
+fn matches_inspector_filter(ui: &Ui, candidates: &[&str]) -> bool {
+    let f = current_inspector_filter(ui);
+    if f.is_empty() {
+        return true;
+    }
+    candidates.iter().any(|c| {
+        c.to_lowercase().contains(&f) || crate::i18n::tr(c).to_lowercase().contains(&f)
+    })
+}
+
 pub fn render_right_inspector(
     ui: &mut Ui,
     project: &LoxoneProject,
@@ -114,17 +132,34 @@ pub fn render_right_inspector(
     let mut prop_filter = ui
         .ctx()
         .data_mut(|d| d.get_temp::<String>(filter_id).unwrap_or_default());
-    if ui
-        .add(
-            TextEdit::singleline(&mut prop_filter)
-                .hint_text(tr("Filter…"))
-                .desired_width(f32::INFINITY),
-        )
-        .changed()
-    {
-        ui.ctx()
-            .data_mut(|d| d.insert_temp(filter_id, prop_filter.clone()));
-    }
+    ui.horizontal(|ui| {
+        let desired_w = if prop_filter.is_empty() {
+            ui.available_width()
+        } else {
+            (ui.available_width() - 26.0).max(80.0)
+        };
+        if ui
+            .add(
+                TextEdit::singleline(&mut prop_filter)
+                    .hint_text(tr("Filter…"))
+                    .desired_width(desired_w),
+            )
+            .changed()
+        {
+            ui.ctx()
+                .data_mut(|d| d.insert_temp(filter_id, prop_filter.clone()));
+        }
+        if !prop_filter.is_empty()
+            && ui
+                .small_button("✕")
+                .on_hover_text(tr("Clear filter"))
+                .clicked()
+        {
+            prop_filter.clear();
+            ui.ctx()
+                .data_mut(|d| d.insert_temp(filter_id, String::new()));
+        }
+    });
     ui.add_space(6.0);
 
     let Some(uuid) = selected_uuid else {
@@ -1026,6 +1061,26 @@ fn render_general_and_visu_section(
                 }
             });
 
+            // Alternative Visualization Title (VisuTitle) & Visualization Password (VisuPwd)
+            let visu_title_cur = get_raw_attr(raw_attributes, "VisuTitle").unwrap_or("");
+            render_singleline_attr_row(
+                ui,
+                control_uuid,
+                "VisuTitle",
+                "Alternative Title (VisuTitle)",
+                visu_title_cur,
+                edits,
+            );
+            let visu_pwd_cur = get_raw_attr(raw_attributes, "VisuPwd").unwrap_or("");
+            render_singleline_attr_row(
+                ui,
+                control_uuid,
+                "VisuPwd",
+                "Visualization Password (VisuPwd)",
+                visu_pwd_cur,
+                edits,
+            );
+
             // Loxone Config 17 9-dot Color Palette + custom RGB picker
             const LOXONE_COLOR_PALETTE: [[u8; 3]; 9] = [
                 [0x69, 0xC3, 0x50], // Loxone Green
@@ -1712,6 +1767,9 @@ fn render_value_kind_widget(
     current: &str,
     tooltip: &str,
 ) -> Option<String> {
+    if !matches_inspector_filter(ui, &[label, code_key, tooltip, current]) {
+        return None;
+    }
     let mut changed_val = None;
     let translated_lbl = crate::i18n::tr(label);
     let translated_tip = crate::i18n::tr(tooltip);
@@ -1734,12 +1792,18 @@ fn render_value_kind_widget(
             }
             ValueKind::Int => {
                 let mut v: i64 = current.parse().unwrap_or(0);
+                if ui.small_button("−").on_hover_text("-1").clicked() {
+                    changed_val = Some((v - 1).to_string());
+                }
                 let mut dv = DragValue::new(&mut v).speed(1.0);
                 if let Some(u) = unit {
                     dv = dv.suffix(format!(" {u}"));
                 }
                 if ui.add(dv).on_hover_text(tooltip).changed() {
                     changed_val = Some(v.to_string());
+                }
+                if ui.small_button("+").on_hover_text("+1").clicked() {
+                    changed_val = Some((v + 1).to_string());
                 }
             }
             ValueKind::Float
@@ -1749,6 +1813,14 @@ fn render_value_kind_widget(
             | ValueKind::TemperatureCelsius
             | ValueKind::Lux => {
                 let mut v: f64 = current.parse().unwrap_or(0.0);
+                let step = if matches!(kind, ValueKind::TemperatureCelsius) {
+                    0.5
+                } else {
+                    1.0
+                };
+                if ui.small_button("−").on_hover_text(format!("-{step}")).clicked() {
+                    changed_val = Some(format_clean_f64(v - step));
+                }
                 let suffix = unit.unwrap_or(match kind {
                     ValueKind::DurationSeconds => "s",
                     ValueKind::DurationMinutes => "min",
@@ -1763,6 +1835,9 @@ fn render_value_kind_widget(
                 }
                 if ui.add(dv).on_hover_text(tooltip).changed() {
                     changed_val = Some(format_clean_f64(v));
+                }
+                if ui.small_button("+").on_hover_text(format!("+{step}")).clicked() {
+                    changed_val = Some(format_clean_f64(v + step));
                 }
             }
             ValueKind::Enum(options) => {
@@ -1834,6 +1909,9 @@ fn render_singleline_attr_row(
     current: &str,
     edits: &mut Vec<ProjectEdit>,
 ) {
+    if !matches_inspector_filter(ui, &[label, attr_name, current]) {
+        return;
+    }
     let translated = crate::i18n::tr(label);
     ui.horizontal(|ui| {
         ui.label(RichText::new(format!("{translated}:")).size(11.0).color(TEXT_MUTED));
@@ -1845,7 +1923,11 @@ fn render_singleline_attr_row(
             edits.push(ProjectEdit::SetControlAttr {
                 control_uuid: control_uuid.to_string(),
                 attr_name: attr_name.to_string(),
-                value: Some(val),
+                value: if val.trim().is_empty() {
+                    None
+                } else {
+                    Some(val)
+                },
             });
         }
     });
@@ -1860,6 +1942,9 @@ fn render_child_tag_attr_row(
     current: &str,
     edits: &mut Vec<ProjectEdit>,
 ) {
+    if !matches_inspector_filter(ui, &[label, child_tag, attr_name, current]) {
+        return;
+    }
     let translated = crate::i18n::tr(label);
     ui.horizontal(|ui| {
         ui.label(RichText::new(format!("{translated}:")).size(11.0).color(TEXT_MUTED));
@@ -1872,7 +1957,11 @@ fn render_child_tag_attr_row(
                 control_uuid: control_uuid.to_string(),
                 child_tag: child_tag.to_string(),
                 attr_name: attr_name.to_string(),
-                value: Some(val),
+                value: if val.trim().is_empty() {
+                    None
+                } else {
+                    Some(val)
+                },
             });
         }
     });
@@ -2105,6 +2194,11 @@ fn render_documented_pins_section(
         .show(ui, |ui| {
             for pin in pins {
                 let doc = schema.and_then(|s| s.find_pin_doc(&pin.key));
+                let doc_lbl = doc.map(|d| d.label).unwrap_or("");
+                let doc_desc = doc.map(|d| d.description).unwrap_or("");
+                if !matches_inspector_filter(ui, &[&pin.key, doc_lbl, doc_desc]) {
+                    continue;
+                }
                 let dir_badge = match pin.pin_kind {
                     PinKind::Output => "OUT",
                     PinKind::Parameter => "PAR",

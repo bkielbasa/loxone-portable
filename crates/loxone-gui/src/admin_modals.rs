@@ -30,6 +30,7 @@ pub enum AdminModal {
     EditByType,
     FindAndReplace,
     ProjectBackups,
+    AutoConfiguration,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -81,6 +82,21 @@ pub struct ProjectBackupEntry {
     pub size_bytes: u64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AutoConfigRoomRow {
+    pub room_uuid: String,
+    pub room_title: String,
+    pub selected: bool,
+    pub has_lighting: bool,
+    pub has_shading: bool,
+    pub has_climate: bool,
+    pub has_audio: bool,
+    pub gen_lighting: bool,
+    pub gen_shading: bool,
+    pub gen_climate: bool,
+    pub gen_audio: bool,
+}
+
 pub struct AdminModalsState {
     pub open: AdminModal,
     pub status: Option<String>,
@@ -111,6 +127,8 @@ pub struct AdminModalsState {
     // Project Backups state
     pub backup_note: String,
     pub backups_list: Vec<ProjectBackupEntry>,
+    // Auto Configuration Wizard state
+    pub auto_config_rows: Vec<AutoConfigRoomRow>,
 }
 
 impl Default for AdminModalsState {
@@ -142,6 +160,7 @@ impl Default for AdminModalsState {
             find_in_attributes: false,
             backup_note: String::new(),
             backups_list: Vec::new(),
+            auto_config_rows: Vec::new(),
         }
     }
 }
@@ -262,6 +281,12 @@ impl AdminModalsState {
         self.status = None;
         self.backups_list = list_project_backups_in_dir(&project_backups_dir());
         self.open = AdminModal::ProjectBackups;
+    }
+
+    pub fn open_auto_configuration(&mut self, project: &LoxoneProject) {
+        self.status = None;
+        self.auto_config_rows = build_auto_config_room_rows(project);
+        self.open = AdminModal::AutoConfiguration;
     }
 
     pub fn close(&mut self) {
@@ -492,6 +517,9 @@ pub fn render_admin_modals(
                 AdminModal::EditByType => render_edit_by_type(ctx, state, project, &mut out),
                 AdminModal::FindAndReplace => render_find_and_replace(ctx, state, project, &mut out),
                 AdminModal::ProjectBackups => render_project_backups(ctx, state, project, &mut out),
+                AdminModal::AutoConfiguration => {
+                    render_auto_configuration(ctx, state, project, &mut out)
+                }
                 _ => true,
             }
         }
@@ -2291,6 +2319,300 @@ fn render_project_backups(
     keep && !close_after
 }
 
+// ---------------------------------------------------------------------------
+// Auto Configuration Wizard (`CWizardDialog`)
+// ---------------------------------------------------------------------------
+
+pub fn build_auto_config_room_rows(project: &LoxoneProject) -> Vec<AutoConfigRoomRow> {
+    let mut places: Vec<(&String, &loxone_core::model::Place)> = project.places.iter().collect();
+    places.sort_by(|a, b| a.1.title.cmp(&b.1.title));
+
+    let mut rows = Vec::new();
+    for (room_uuid, place) in places {
+        let mut has_lighting = false;
+        let mut has_shading = false;
+        let mut has_climate = false;
+        let mut has_audio = false;
+
+        for page in &project.pages {
+            let page_matches_room = page.title.eq_ignore_ascii_case(&place.title);
+            for block in &page.blocks {
+                let in_room = block.room_uuid.as_deref() == Some(room_uuid.as_str())
+                    || (block.room_uuid.is_none() && page_matches_room);
+                if !in_room {
+                    continue;
+                }
+                match block.block_type.as_str() {
+                    "LightController2" | "LightControllerV2" | "LightController" => {
+                        has_lighting = true;
+                    }
+                    "AutoJalousie" | "Jalousie" => {
+                        has_shading = true;
+                    }
+                    "HeatIRoomController2" | "IRoomControllerV2" | "IRoomController" => {
+                        has_climate = true;
+                    }
+                    "AudioZone" | "MusicPlayer" | "MusicServerZone" => {
+                        has_audio = true;
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        let missing_any = !has_lighting || !has_shading || !has_climate;
+        rows.push(AutoConfigRoomRow {
+            room_uuid: room_uuid.clone(),
+            room_title: place.title.clone(),
+            selected: missing_any,
+            has_lighting,
+            has_shading,
+            has_climate,
+            has_audio,
+            gen_lighting: !has_lighting,
+            gen_shading: !has_shading,
+            gen_climate: !has_climate,
+            gen_audio: false,
+        });
+    }
+    rows
+}
+
+pub fn build_auto_configuration_edits(
+    project: &LoxoneProject,
+    rows: &[AutoConfigRoomRow],
+) -> Option<(ProjectEdit, usize)> {
+    let mut edits = Vec::new();
+    let mut generated_blocks = 0usize;
+
+    let find_category_uuid = |group_hint: &str| -> Option<String> {
+        project
+            .categories
+            .values()
+            .find(|c| {
+                c.cat_group
+                    .as_deref()
+                    .is_some_and(|g| g.eq_ignore_ascii_case(group_hint))
+                    || c.title.to_lowercase().contains(&group_hint.to_lowercase())
+            })
+            .map(|c| c.uuid.clone())
+    };
+    let cat_lights = find_category_uuid("lights").or_else(|| find_category_uuid("oświetlenie"));
+    let cat_shading = find_category_uuid("shading").or_else(|| find_category_uuid("zacienienie"));
+    let cat_climate = find_category_uuid("climate")
+        .or_else(|| find_category_uuid("temperatura"))
+        .or_else(|| find_category_uuid("klimat"));
+    let cat_audio = find_category_uuid("multimedia").or_else(|| find_category_uuid("audio"));
+
+    for row in rows.iter().filter(|r| r.selected) {
+        let mut specs: Vec<(&str, String, Option<String>)> = Vec::new();
+        if row.gen_lighting {
+            specs.push((
+                "LightController2",
+                format!("{} — Lighting", row.room_title),
+                cat_lights.clone(),
+            ));
+        }
+        if row.gen_shading {
+            specs.push((
+                "AutoJalousie",
+                format!("{} — Shading", row.room_title),
+                cat_shading.clone(),
+            ));
+        }
+        if row.gen_climate {
+            specs.push((
+                "HeatIRoomController2",
+                format!("{} — Room Climate", row.room_title),
+                cat_climate.clone(),
+            ));
+        }
+        if row.gen_audio {
+            specs.push((
+                "AudioZone",
+                format!("{} — Audio", row.room_title),
+                cat_audio.clone(),
+            ));
+        }
+        if specs.is_empty() {
+            continue;
+        }
+
+        let (page_uuid, mut next_py) = if let Some(existing_page) = project
+            .pages
+            .iter()
+            .find(|p| p.title.eq_ignore_ascii_case(&row.room_title))
+        {
+            let max_py = existing_page
+                .blocks
+                .iter()
+                .filter(|b| b.has_position)
+                .map(|b| b.py2.max(b.py + 640.0))
+                .fold(192.0_f32, f32::max);
+            (existing_page.uuid.clone(), max_py + 256.0)
+        } else {
+            let new_page = loxone_core::factory::new_page(&row.room_title);
+            let pu = new_page.uuid.clone();
+            edits.push(ProjectEdit::AddPage { page: new_page });
+            (pu, 256.0_f32)
+        };
+
+        for (block_type, title, cat_uuid) in specs {
+            let mut blk = loxone_core::factory::new_page_block(block_type, &title, 1920.0, next_py);
+            blk.room_uuid = Some(row.room_uuid.clone());
+            blk.category_uuid = cat_uuid.clone();
+            let mut iodata_attrs = vec![("Pr".to_string(), row.room_uuid.clone())];
+            if let Some(cu) = cat_uuid {
+                iodata_attrs.push(("Cr".to_string(), cu));
+            }
+            blk.extra_children.push(loxone_core::model::RawNode {
+                tag: "IoData".to_string(),
+                attributes: iodata_attrs,
+                text: None,
+                children: Vec::new(),
+            });
+            next_py += 896.0;
+            generated_blocks += 1;
+            edits.push(ProjectEdit::AddPageBlock {
+                page_uuid: page_uuid.clone(),
+                block: blk,
+            });
+        }
+    }
+
+    if edits.is_empty() {
+        None
+    } else {
+        Some((ProjectEdit::Batch(edits), generated_blocks))
+    }
+}
+
+fn render_auto_configuration(
+    ctx: &egui::Context,
+    state: &mut AdminModalsState,
+    project: &LoxoneProject,
+    out: &mut Vec<AdminAction>,
+) -> bool {
+    let status = state.status.clone();
+    modal_window(
+        ctx,
+        "admin_auto_configuration",
+        "🪄 Auto Configuration Wizard (Room Logic Generator)",
+        [940.0, 580.0],
+        status.as_deref(),
+        |ui| {
+            ui.horizontal(|ui| {
+                ui.label(
+                    RichText::new(tr(
+                        "Select rooms and standard Loxone function blocks to generate automatically:",
+                    ))
+                    .size(12.0)
+                    .color(theme::TEXT_SECONDARY),
+                );
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let selected_rooms =
+                        state.auto_config_rows.iter().filter(|r| r.selected).count();
+                    let btn_lbl = format!(
+                        "🪄 {} ({})",
+                        tr("Generate Room Logic"),
+                        selected_rooms
+                    );
+                    if button(ui, &btn_lbl, selected_rooms > 0).clicked() && selected_rooms > 0 {
+                        if let Some((batch, count)) =
+                            build_auto_configuration_edits(project, &state.auto_config_rows)
+                        {
+                            out.push(AdminAction::Edit(batch));
+                            state.status = Some(format!(
+                                "Generated {count} standard room logic block(s) across {selected_rooms} room(s)."
+                            ));
+                        } else {
+                            state.status = Some(
+                                "No subsystems checked for the selected rooms.".to_string(),
+                            );
+                        }
+                    }
+                    if button(ui, "Select All Rooms", false).clicked() {
+                        for r in &mut state.auto_config_rows {
+                            r.selected = true;
+                        }
+                    }
+                    if button(ui, "Clear Selection", false).clicked() {
+                        for r in &mut state.auto_config_rows {
+                            r.selected = false;
+                        }
+                    }
+                });
+            });
+            ui.add_space(6.0);
+            card(ui, |ui| {
+                egui::ScrollArea::vertical()
+                    .id_salt("auto_config_rooms_scroll")
+                    .max_height(ui.available_height() - 16.0)
+                    .show(ui, |ui| {
+                        egui::Grid::new("auto_config_rooms_grid")
+                            .num_columns(6)
+                            .striped(true)
+                            .spacing([16.0, 6.0])
+                            .show(ui, |ui| {
+                                for h in [
+                                    "Room",
+                                    "Existing Blocks",
+                                    "💡 Lighting (LightController2)",
+                                    "🪟 Shading (AutoJalousie)",
+                                    "🌡 Climate (HeatIRoomController2)",
+                                    "🎵 Audio (AudioZone)",
+                                ] {
+                                    ui.label(
+                                        RichText::new(tr(h))
+                                            .size(11.0)
+                                            .strong()
+                                            .color(theme::TEXT_SECONDARY),
+                                    );
+                                }
+                                ui.end_row();
+                                for row in &mut state.auto_config_rows {
+                                    ui.checkbox(
+                                        &mut row.selected,
+                                        RichText::new(&row.room_title)
+                                            .strong()
+                                            .color(theme::TEXT_PRIMARY),
+                                    );
+                                    let mut badges = Vec::new();
+                                    if row.has_lighting {
+                                        badges.push("💡");
+                                    }
+                                    if row.has_shading {
+                                        badges.push("🪟");
+                                    }
+                                    if row.has_climate {
+                                        badges.push("🌡");
+                                    }
+                                    if row.has_audio {
+                                        badges.push("🎵");
+                                    }
+                                    let existing_str = if badges.is_empty() {
+                                        "—".to_string()
+                                    } else {
+                                        badges.join(" ")
+                                    };
+                                    ui.label(
+                                        RichText::new(existing_str)
+                                            .size(11.5)
+                                            .color(theme::TEXT_SECONDARY),
+                                    );
+                                    ui.checkbox(&mut row.gen_lighting, "");
+                                    ui.checkbox(&mut row.gen_shading, "");
+                                    ui.checkbox(&mut row.gen_climate, "");
+                                    ui.checkbox(&mut row.gen_audio, "");
+                                    ui.end_row();
+                                }
+                            });
+                    });
+            });
+        },
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2346,5 +2668,18 @@ mod tests {
         let listed = list_project_backups_in_dir(&tmp_dir);
         assert_eq!(listed.len(), 1);
         let _ = std::fs::remove_dir_all(&tmp_dir);
+
+        // 4. Auto Configuration Wizard & Component BOM CSV
+        let auto_rows = build_auto_config_room_rows(&project);
+        assert!(!auto_rows.is_empty());
+        let (auto_batch, gen_count) =
+            build_auto_configuration_edits(&project, &auto_rows).expect("should generate room logic");
+        assert!(gen_count > 0);
+        assert!(matches!(auto_batch, ProjectEdit::Batch(ref v) if !v.is_empty()));
+
+        let bom_csv = loxone_core::export::export_component_bom_csv(&project);
+        assert!(bom_csv.contains("PartGroup,ComponentType,Title,SerialNumber"));
+        assert!(bom_csv.contains("HardwareSummary"));
+        assert!(bom_csv.contains("FunctionBlockSummary"));
     }
 }

@@ -1598,6 +1598,14 @@ impl LoxonePortableApp {
             TopBarAction::ExportTechnicalReport => {
                 self.export_technical_report_html();
             }
+            TopBarAction::OpenAutoConfiguration => {
+                if let Some(proj) = &self.project {
+                    self.admin_modals.open_auto_configuration(proj);
+                }
+            }
+            TopBarAction::ExportComponentBomCsv => {
+                self.export_component_bom_csv_dialog();
+            }
         }
     }
 
@@ -2304,6 +2312,21 @@ impl LoxonePortableApp {
         if let Some(path) = rfd::FileDialog::new()
             .set_file_name(&default_name)
             .add_filter("CSV Report", &["csv"])
+            .save_file()
+        {
+            if let Err(e) = std::fs::write(&path, csv) {
+                self.error_banner = Some(format!("Failed to write {}: {}", path.display(), e));
+            }
+        }
+    }
+
+    pub fn export_component_bom_csv_dialog(&mut self) {
+        let Some(proj) = &self.project else { return };
+        let default_name = format!("{} - Component List BOM.csv", self.export_file_stem());
+        let csv = loxone_core::export::export_component_bom_csv(proj);
+        if let Some(path) = rfd::FileDialog::new()
+            .set_file_name(&default_name)
+            .add_filter("CSV Bill of Materials", &["csv"])
             .save_file()
         {
             if let Err(e) = std::fs::write(&path, csv) {
@@ -3035,6 +3058,12 @@ impl eframe::App for LoxonePortableApp {
                         }
                         LauncherAction::ConnectMiniserver => {
                             self.execute_palette_action(PaletteAction::ConnectMiniserver);
+                        }
+                        LauncherAction::CreateNewProject => {
+                            self.execute_top_bar_action(TopBarAction::NewProject);
+                        }
+                        LauncherAction::OpenMyMiniservers => {
+                            self.execute_top_bar_action(TopBarAction::OpenMyMiniservers);
                         }
                         LauncherAction::RefreshList => {
                             self.project_launcher.refresh();

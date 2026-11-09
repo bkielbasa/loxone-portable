@@ -209,6 +209,8 @@ pub enum LauncherAction {
     LoadProject(PathBuf),
     BrowseFileDialog,
     ConnectMiniserver,
+    CreateNewProject,
+    OpenMyMiniservers,
     RefreshList,
 }
 
@@ -216,6 +218,7 @@ pub enum LauncherAction {
 pub struct ProjectLauncherState {
     pub projects: Vec<DiscoveredProject>,
     pub filter_query: String,
+    pub source_filter: Option<ProjectSourceKind>,
 }
 
 impl Default for ProjectLauncherState {
@@ -223,6 +226,7 @@ impl Default for ProjectLauncherState {
         let mut state = Self {
             projects: Vec::new(),
             filter_query: String::new(),
+            source_filter: None,
         };
         state.refresh();
         state
@@ -247,6 +251,11 @@ impl ProjectLauncherState {
         self.projects
             .iter()
             .filter(|p| {
+                if let Some(sf) = self.source_filter {
+                    if p.source != sf {
+                        return false;
+                    }
+                }
                 q.is_empty()
                     || p.file_name.to_lowercase().contains(&q)
                     || p.path.to_string_lossy().to_lowercase().contains(&q)
@@ -262,8 +271,8 @@ pub fn render_project_launcher(
 ) -> Option<LauncherAction> {
     let mut action = None;
     let avail = ui.available_size();
-    let card_width = avail.x.clamp(420.0, 680.0) - 32.0;
-    let top_pad = ((avail.y - 500.0) * 0.35).max(20.0);
+    let card_width = avail.x.clamp(580.0, 920.0) - 32.0;
+    let top_pad = ((avail.y - 540.0) * 0.30).max(16.0);
 
     ui.vertical_centered(|ui| {
         ui.add_space(top_pad);
@@ -272,229 +281,302 @@ pub fn render_project_launcher(
             .fill(PANEL_BG)
             .stroke(Stroke::new(1.0_f32, BORDER_SUBTLE))
             .corner_radius(CornerRadius::same(10))
-            .inner_margin(Margin::symmetric(24, 20))
+            .inner_margin(Margin::symmetric(18, 18))
             .show(ui, |ui| {
                 ui.set_max_width(card_width);
                 ui.set_min_width(card_width);
 
-                // Header
                 ui.horizontal(|ui| {
-                    ui_icon(ui, LoxoneIcon::Miniserver, 20.0);
-                    ui.add_space(6.0);
-                    ui.vertical(|ui| {
-                        ui.label(
-                            RichText::new(crate::i18n::tr("Select a Loxone Project to Load"))
-                                .size(17.0)
-                                .strong()
-                                .color(TEXT_PRIMARY),
-                        );
-                        ui.label(
-                            RichText::new(crate::i18n::tr(
-                                "Choose a .Loxone project from your workspace, recent files, or local backups.",
-                            ))
-                            .size(12.0)
-                            .color(TEXT_MUTED),
-                        );
-                    });
-                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        if ui
-                            .button(RichText::new(crate::i18n::tr("🔄 Refresh")).size(11.5))
-                            .on_hover_text(crate::i18n::tr(
-                                "Rescan workspace, recent files, and local backups",
-                            ))
-                            .clicked()
-                        {
-                            action = Some(LauncherAction::RefreshList);
-                        }
-                        let proj_cnt = crate::i18n::tr_fmt(
-                            "{count} project(s)",
-                            &[("count", &state.projects.len().to_string())],
-                        );
-                        ui.label(
-                            RichText::new(proj_cnt)
-                                .size(11.5)
-                                .color(TEXT_MUTED),
-                        );
-                    });
-                });
-
-                ui.add_space(12.0);
-
-                // Search / Filter input
-                ui.horizontal(|ui| {
-                    ui.label(RichText::new("🔍").size(13.0).color(TEXT_MUTED));
-                    ui.add(
-                        egui::TextEdit::singleline(&mut state.filter_query)
-                            .hint_text(crate::i18n::tr("Filter projects by name or path…"))
-                            .desired_width(ui.available_width()),
-                    );
-                });
-
-                ui.add_space(10.0);
-                ui.separator();
-                ui.add_space(8.0);
-
-                let filtered = state.filtered_projects();
-                if filtered.is_empty() {
+                    // Loxone Config 17 Left Navigation Rail (Home, New Project, Open, Connect, My Miniservers)
                     Frame::new()
                         .fill(CARD_BG)
                         .stroke(Stroke::new(1.0_f32, BORDER_SUBTLE))
-                        .corner_radius(CornerRadius::same(6))
-                        .inner_margin(Margin::symmetric(16, 24))
+                        .corner_radius(CornerRadius::same(8))
+                        .inner_margin(Margin::symmetric(10, 12))
                         .show(ui, |ui| {
-                            ui.set_min_width(ui.available_width());
-                            ui.vertical_centered(|ui| {
+                            ui.set_width(168.0);
+                            ui.vertical(|ui| {
+                                ui.horizontal(|ui| {
+                                    ui_icon(ui, LoxoneIcon::Miniserver, 18.0);
+                                    ui.label(
+                                        RichText::new("Loxone Config")
+                                            .size(13.0)
+                                            .strong()
+                                            .color(crate::theme::LOXONE_GREEN),
+                                    );
+                                });
+                                ui.add_space(10.0);
+
+                                let nav_items: &[(&str, &str, Option<LauncherAction>, bool)] = &[
+                                    ("🏠", "Home", None, true),
+                                    ("📄", "New Project", Some(LauncherAction::CreateNewProject), false),
+                                    ("📂", "Open…", Some(LauncherAction::BrowseFileDialog), false),
+                                    ("🔌", "Connect", Some(LauncherAction::ConnectMiniserver), false),
+                                    ("🖥", "My Miniservers", Some(LauncherAction::OpenMyMiniservers), false),
+                                ];
+                                for (icon, label, nav_act, active) in nav_items {
+                                    let btn = egui::Button::new(
+                                        RichText::new(format!("{icon}  {}", crate::i18n::tr(label)))
+                                            .size(12.0)
+                                            .color(if *active {
+                                                Color32::from_rgb(0x0B, 0x16, 0x08)
+                                            } else {
+                                                TEXT_PRIMARY
+                                            })
+                                            .strong(),
+                                    )
+                                    .fill(if *active {
+                                        crate::theme::LOXONE_GREEN
+                                    } else {
+                                        Color32::TRANSPARENT
+                                    })
+                                    .min_size(Vec2::new(148.0, 28.0));
+                                    if ui.add(btn).clicked() {
+                                        if let Some(a) = nav_act {
+                                            action = Some(a.clone());
+                                        }
+                                    }
+                                    ui.add_space(3.0);
+                                }
+                            });
+                        });
+
+                    ui.add_space(12.0);
+
+                    // Right Main Content Area
+                    ui.vertical(|ui| {
+                        // Header
+                        ui.horizontal(|ui| {
+                            ui.vertical(|ui| {
                                 ui.label(
-                                    RichText::new(crate::i18n::tr("No .Loxone projects matched."))
-                                        .size(13.0)
-                                        .color(TEXT_MUTED),
+                                    RichText::new(crate::i18n::tr("Select a Loxone Project to Load"))
+                                        .size(17.0)
+                                        .strong()
+                                        .color(TEXT_PRIMARY),
                                 );
-                                ui.add_space(4.0);
                                 ui.label(
                                     RichText::new(crate::i18n::tr(
-                                        "Use 'Browse .Loxone File…' below or download a project from your Miniserver.",
+                                        "Choose a .Loxone project from your workspace, recent files, or local backups.",
                                     ))
-                                    .size(11.5)
+                                    .size(12.0)
                                     .color(TEXT_MUTED),
                                 );
                             });
+                            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                if ui
+                                    .button(RichText::new(crate::i18n::tr("🔄 Refresh")).size(11.5))
+                                    .on_hover_text(crate::i18n::tr(
+                                        "Rescan workspace, recent files, and local backups",
+                                    ))
+                                    .clicked()
+                                {
+                                    action = Some(LauncherAction::RefreshList);
+                                }
+                                let proj_cnt = crate::i18n::tr_fmt(
+                                    "{count} project(s)",
+                                    &[("count", &state.projects.len().to_string())],
+                                );
+                                ui.label(
+                                    RichText::new(proj_cnt)
+                                        .size(11.5)
+                                        .color(TEXT_MUTED),
+                                );
+                            });
                         });
-                } else {
-                    let list_paths: Vec<DiscoveredProject> =
-                        filtered.into_iter().cloned().collect();
-                    ScrollArea::vertical()
-                        .max_height(290.0)
-                        .auto_shrink([false, false])
-                        .show(ui, |ui| {
-                            for item in list_paths {
-                                let row_frame = Frame::new()
-                                    .fill(CARD_BG)
-                                    .stroke(Stroke::new(1.0_f32, BORDER_SUBTLE))
-                                    .corner_radius(CornerRadius::same(6))
-                                    .inner_margin(Margin::symmetric(14, 10));
 
-                                let inner = row_frame.show(ui, |ui| {
+                        ui.add_space(10.0);
+
+                        // Source filter tabs + Search input
+                        ui.horizontal(|ui| {
+                            for (sf, lbl) in [
+                                (None, crate::i18n::tr("All")),
+                                (Some(ProjectSourceKind::Recent), ProjectSourceKind::Recent.label()),
+                                (Some(ProjectSourceKind::Workspace), ProjectSourceKind::Workspace.label()),
+                                (Some(ProjectSourceKind::Backup), ProjectSourceKind::Backup.label()),
+                            ] {
+                                if ui
+                                    .selectable_label(state.source_filter == sf, lbl)
+                                    .clicked()
+                                {
+                                    state.source_filter = sf;
+                                }
+                            }
+                            ui.separator();
+                            ui.label(RichText::new("🔍").size(13.0).color(TEXT_MUTED));
+                            ui.add(
+                                egui::TextEdit::singleline(&mut state.filter_query)
+                                    .hint_text(crate::i18n::tr("Filter projects by name or path…"))
+                                    .desired_width(ui.available_width()),
+                            );
+                        });
+
+                        ui.add_space(8.0);
+                        ui.separator();
+                        ui.add_space(8.0);
+
+                        let filtered = state.filtered_projects();
+                        if filtered.is_empty() {
+                            Frame::new()
+                                .fill(CARD_BG)
+                                .stroke(Stroke::new(1.0_f32, BORDER_SUBTLE))
+                                .corner_radius(CornerRadius::same(6))
+                                .inner_margin(Margin::symmetric(16, 24))
+                                .show(ui, |ui| {
                                     ui.set_min_width(ui.available_width());
-                                    ui.horizontal(|ui| {
-                                        ui_icon(ui, LoxoneIcon::Page, 16.0);
-                                        ui.add_space(6.0);
-                                        ui.vertical(|ui| {
-                                            ui.horizontal(|ui| {
-                                                ui.label(
-                                                    RichText::new(&item.file_name)
-                                                        .size(13.5)
-                                                        .strong()
-                                                        .color(TEXT_PRIMARY),
-                                                );
-                                                Frame::new()
-                                                    .fill(item.source.color().gamma_multiply(0.18))
-                                                    .stroke(Stroke::new(
-                                                        1.0_f32,
-                                                        item.source.color().gamma_multiply(0.65),
-                                                    ))
-                                                    .corner_radius(CornerRadius::same(4))
-                                                    .inner_margin(Margin::symmetric(6, 1))
-                                                    .show(ui, |ui| {
-                                                        ui.label(
-                                                            RichText::new(item.source.label())
-                                                                .size(9.5)
-                                                                .strong()
-                                                                .color(item.source.color()),
-                                                        );
-                                                    });
-                                                ui.label(
-                                                    RichText::new(item.formatted_size())
-                                                        .size(11.0)
-                                                        .color(TEXT_MUTED),
-                                                );
-                                            });
-                                            ui.label(
-                                                RichText::new(item.path.display().to_string())
-                                                    .monospace()
-                                                    .size(10.5)
-                                                    .color(TEXT_MUTED),
-                                            );
-                                        });
-
-                                        ui.with_layout(
-                                            Layout::right_to_left(Align::Center),
-                                            |ui| {
-                                                if ui
-                                                    .add(
-                                                        egui::Button::new(
-                                                            RichText::new(crate::i18n::tr(
-                                                                "Load Project →",
-                                                            ))
-                                                            .size(12.0)
-                                                            .strong()
-                                                            .color(TEXT_PRIMARY),
-                                                        )
-                                                        .fill(ACCENT_BLUE.gamma_multiply(0.32))
-                                                        .stroke(Stroke::new(1.0_f32, ACCENT_BLUE))
-                                                        .min_size(Vec2::new(112.0, 28.0)),
-                                                    )
-                                                    .clicked()
-                                                {
-                                                    action = Some(LauncherAction::LoadProject(
-                                                        item.path.clone(),
-                                                    ));
-                                                }
-                                            },
+                                    ui.vertical_centered(|ui| {
+                                        ui.label(
+                                            RichText::new(crate::i18n::tr("No .Loxone projects matched."))
+                                                .size(13.0)
+                                                .color(TEXT_MUTED),
+                                        );
+                                        ui.add_space(4.0);
+                                        ui.label(
+                                            RichText::new(crate::i18n::tr(
+                                                "Use 'Browse .Loxone File…' below or download a project from your Miniserver.",
+                                            ))
+                                            .size(11.5)
+                                            .color(TEXT_MUTED),
                                         );
                                     });
                                 });
+                        } else {
+                            let list_paths: Vec<DiscoveredProject> =
+                                filtered.into_iter().cloned().collect();
+                            ScrollArea::vertical()
+                                .max_height(280.0)
+                                .auto_shrink([false, false])
+                                .show(ui, |ui| {
+                                    for item in list_paths {
+                                        let row_frame = Frame::new()
+                                            .fill(CARD_BG)
+                                            .stroke(Stroke::new(1.0_f32, BORDER_SUBTLE))
+                                            .corner_radius(CornerRadius::same(6))
+                                            .inner_margin(Margin::symmetric(14, 10));
 
-                                let row_resp = ui.interact(
-                                    inner.response.rect,
-                                    ui.id().with(("proj_row", &item.path)),
-                                    Sense::click(),
-                                );
-                                if row_resp.hovered() {
-                                    ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-                                }
-                                if row_resp.clicked() && action.is_none() {
-                                    action = Some(LauncherAction::LoadProject(item.path.clone()));
-                                }
-                                ui.add_space(6.0);
+                                        let inner = row_frame.show(ui, |ui| {
+                                            ui.set_min_width(ui.available_width());
+                                            ui.horizontal(|ui| {
+                                                ui_icon(ui, LoxoneIcon::Page, 16.0);
+                                                ui.add_space(6.0);
+                                                ui.vertical(|ui| {
+                                                    ui.horizontal(|ui| {
+                                                        ui.label(
+                                                            RichText::new(&item.file_name)
+                                                                .size(13.5)
+                                                                .strong()
+                                                                .color(TEXT_PRIMARY),
+                                                        );
+                                                        Frame::new()
+                                                            .fill(item.source.color().gamma_multiply(0.18))
+                                                            .stroke(Stroke::new(
+                                                                1.0_f32,
+                                                                item.source.color().gamma_multiply(0.65),
+                                                            ))
+                                                            .corner_radius(CornerRadius::same(4))
+                                                            .inner_margin(Margin::symmetric(6, 1))
+                                                            .show(ui, |ui| {
+                                                                ui.label(
+                                                                    RichText::new(item.source.label())
+                                                                        .size(9.5)
+                                                                        .strong()
+                                                                        .color(item.source.color()),
+                                                                );
+                                                            });
+                                                        ui.label(
+                                                            RichText::new(item.formatted_size())
+                                                                .size(11.0)
+                                                                .color(TEXT_MUTED),
+                                                        );
+                                                    });
+                                                    ui.label(
+                                                        RichText::new(item.path.display().to_string())
+                                                            .monospace()
+                                                            .size(10.5)
+                                                            .color(TEXT_MUTED),
+                                                    );
+                                                });
+
+                                                ui.with_layout(
+                                                    Layout::right_to_left(Align::Center),
+                                                    |ui| {
+                                                        if ui
+                                                            .add(
+                                                                egui::Button::new(
+                                                                    RichText::new(crate::i18n::tr(
+                                                                        "Load Project →",
+                                                                    ))
+                                                                    .size(12.0)
+                                                                    .strong()
+                                                                    .color(TEXT_PRIMARY),
+                                                                )
+                                                                .fill(ACCENT_BLUE.gamma_multiply(0.32))
+                                                                .stroke(Stroke::new(1.0_f32, ACCENT_BLUE))
+                                                                .min_size(Vec2::new(112.0, 28.0)),
+                                                            )
+                                                            .clicked()
+                                                        {
+                                                            action = Some(LauncherAction::LoadProject(
+                                                                item.path.clone(),
+                                                            ));
+                                                        }
+                                                    },
+                                                );
+                                            });
+                                        });
+
+                                        let row_resp = ui.interact(
+                                            inner.response.rect,
+                                            ui.id().with(("proj_row", &item.path)),
+                                            Sense::click(),
+                                        );
+                                        if row_resp.hovered() {
+                                            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                                        }
+                                        if row_resp.clicked() && action.is_none() {
+                                            action = Some(LauncherAction::LoadProject(item.path.clone()));
+                                        }
+                                        ui.add_space(6.0);
+                                    }
+                                });
+                        }
+
+                        ui.add_space(10.0);
+                        ui.separator();
+                        ui.add_space(10.0);
+
+                        // Bottom Action Buttons
+                        ui.horizontal(|ui| {
+                            if ui
+                                .add(
+                                    egui::Button::new(
+                                        RichText::new(crate::i18n::tr("📂 Browse .Loxone File… (Ctrl+O)"))
+                                            .size(12.5)
+                                            .color(TEXT_PRIMARY),
+                                    )
+                                    .min_size(Vec2::new(220.0, 32.0)),
+                                )
+                                .clicked()
+                            {
+                                action = Some(LauncherAction::BrowseFileDialog);
+                            }
+                            ui.add_space(8.0);
+                            if ui
+                                .add(
+                                    egui::Button::new(
+                                        RichText::new(crate::i18n::tr(
+                                            "⬇ Connect & Download from Miniserver… (Ctrl+Shift+D)",
+                                        ))
+                                        .size(12.5)
+                                        .color(TEXT_PRIMARY),
+                                    )
+                                    .min_size(Vec2::new(310.0, 32.0)),
+                                )
+                                .clicked()
+                            {
+                                action = Some(LauncherAction::ConnectMiniserver);
                             }
                         });
-                }
-
-                ui.add_space(10.0);
-                ui.separator();
-                ui.add_space(10.0);
-
-                // Bottom Action Buttons
-                ui.horizontal(|ui| {
-                    if ui
-                        .add(
-                            egui::Button::new(
-                                RichText::new(crate::i18n::tr("📂 Browse .Loxone File… (Ctrl+O)"))
-                                    .size(12.5)
-                                    .color(TEXT_PRIMARY),
-                            )
-                            .min_size(Vec2::new(220.0, 32.0)),
-                        )
-                        .clicked()
-                    {
-                        action = Some(LauncherAction::BrowseFileDialog);
-                    }
-                    ui.add_space(8.0);
-                    if ui
-                        .add(
-                            egui::Button::new(
-                                RichText::new(crate::i18n::tr(
-                                    "⬇ Connect & Download from Miniserver… (Ctrl+Shift+D)",
-                                ))
-                                .size(12.5)
-                                .color(TEXT_PRIMARY),
-                            )
-                            .min_size(Vec2::new(310.0, 32.0)),
-                        )
-                        .clicked()
-                    {
-                        action = Some(LauncherAction::ConnectMiniserver);
-                    }
+                    });
                 });
             });
     });
