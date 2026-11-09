@@ -124,6 +124,23 @@ pub fn ensure_schema_pins_on_block(block: &mut PageBlock) {
             pin_kind: PinKind::Input,
             incoming_links: Vec::new(),
         });
+    } else if !block.is_ref_bar() && !block.is_note() && block.pins.is_empty() {
+        block.pins.push(ConnectorPin {
+            uuid: generate_loxone_uuid(),
+            key: "I".to_string(),
+            default_value: None,
+            inverted: false,
+            pin_kind: PinKind::Input,
+            incoming_links: Vec::new(),
+        });
+        block.pins.push(ConnectorPin {
+            uuid: generate_loxone_uuid(),
+            key: "Q".to_string(),
+            default_value: None,
+            inverted: false,
+            pin_kind: PinKind::Output,
+            incoming_links: Vec::new(),
+        });
     }
 }
 

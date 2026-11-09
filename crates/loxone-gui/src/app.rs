@@ -1426,6 +1426,59 @@ impl LoxonePortableApp {
             TopBarAction::OpenSelectedDocs => {
                 self.show_right_panel = true;
             }
+            TopBarAction::OpenEditByType => {
+                if let Some(proj) = &self.project {
+                    let init_type = self
+                        .selected_uuid
+                        .as_deref()
+                        .and_then(|u| proj.xref.objects_by_uuid.get(u))
+                        .map(|s| s.object_type.clone());
+                    self.admin_modals
+                        .open_edit_by_type(proj, init_type.as_deref());
+                }
+            }
+            TopBarAction::OpenFindAndReplace => {
+                if self.project.is_some() {
+                    self.admin_modals.open_find_and_replace();
+                }
+            }
+            TopBarAction::OpenProjectBackups => {
+                if self.project.is_some() {
+                    self.admin_modals.open_project_backups();
+                }
+            }
+            TopBarAction::AlignSelectedBlocks(mode) => {
+                let moves_opt = self.project.as_ref().and_then(|proj| {
+                    let page = proj.pages.get(self.active_page_index)?;
+                    let moves = crate::canvas::compute_aligned_block_moves(
+                        page,
+                        &self.viewport.interaction.selected_blocks,
+                        mode,
+                    );
+                    (!moves.is_empty()).then(|| (page.uuid.clone(), moves))
+                });
+                if let Some((page_uuid, moves)) = moves_opt {
+                    self.handle_canvas_action(CanvasAction::MoveBlocks { page_uuid, moves });
+                }
+            }
+            TopBarAction::SetSimulationDateTime(iso) => {
+                if let (Some(proj), Some(dt)) = (
+                    &self.project,
+                    loxone_core::SimulatedDateTime::parse_iso(&iso),
+                ) {
+                    if !self.simulator.enabled {
+                        self.simulator.start(proj);
+                        self.live_view_enabled = true;
+                    }
+                    self.simulator.set_simulated_time(proj, dt);
+                }
+            }
+            TopBarAction::AdvanceSimulationSeconds(secs) => {
+                if let Some(proj) = &self.project {
+                    self.simulator.advance_seconds(proj, secs);
+                    self.live_view_enabled = true;
+                }
+            }
         }
     }
 
@@ -2256,6 +2309,9 @@ impl LoxonePortableApp {
         if ctx.input(|i| i.key_pressed(Key::F5)) || (cmd_or_ctrl && ctx.input(|i| i.key_pressed(Key::F))) {
             self.quick_search_open = !self.quick_search_open;
         }
+        if cmd_or_ctrl && ctx.input(|i| i.key_pressed(Key::H)) && self.project.is_some() {
+            self.admin_modals.open_find_and_replace();
+        }
         if cmd_or_ctrl && ctx.input(|i| i.key_pressed(Key::N)) {
             self.create_new_blank_project();
         }
@@ -2927,13 +2983,32 @@ impl eframe::App for LoxonePortableApp {
             self.execute_edit(edit);
         }
 
-        // Project administration dialogs (properties, users, modes, network search)
+        // Project administration dialogs (properties, users, modes, network search, edit by type, find & replace, backups)
         for act in render_admin_modals(ctx, &mut self.admin_modals, self.project.as_ref()) {
             match act {
                 AdminAction::Edit(edit) => self.execute_edit(edit),
                 AdminAction::UseMiniserver(address) => {
                     self.miniserver_modal.host = address;
                     self.open_miniserver_modal();
+                }
+                AdminAction::RestoreBackupFile(path) => {
+                    self.load_file(&path);
+                }
+                AdminAction::SelectObject(uuid) => {
+                    let nav = self
+                        .project
+                        .as_ref()
+                        .and_then(|p| p.xref.objects_by_uuid.get(&uuid))
+                        .map(|s| s.location.clone());
+                    if let Some(ObjectLocation::PageBlock { page_index, .. }) = nav {
+                        self.execute_palette_action(PaletteAction::NavigateToBlock {
+                            page_index,
+                            block_uuid: uuid,
+                        });
+                    } else {
+                        self.selected_uuid = Some(uuid);
+                        self.show_right_panel = true;
+                    }
                 }
             }
         }

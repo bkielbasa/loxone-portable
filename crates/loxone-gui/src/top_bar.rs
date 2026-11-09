@@ -167,6 +167,12 @@ pub enum TopBarAction {
     ToggleQuickSearch,
     OpenWebInterface,
     ToggleInspectorDockSide,
+    OpenEditByType,
+    OpenFindAndReplace,
+    OpenProjectBackups,
+    AlignSelectedBlocks(crate::canvas::MultiSelectAlign),
+    SetSimulationDateTime(String),
+    AdvanceSimulationSeconds(i64),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1238,6 +1244,76 @@ fn render_ribbon_chip(
     resp.on_hover_text(tooltip_tr)
 }
 
+fn sim_datetime_draft_id() -> egui::Id {
+    egui::Id::new("loxone_sim_datetime_draft")
+}
+
+fn render_simulation_datetime_capsule(ui: &mut Ui, has_project: bool) -> Option<TopBarAction> {
+    let mut action = None;
+    let mut draft = ui.ctx().data(|d| {
+        d.get_temp::<String>(sim_datetime_draft_id())
+            .unwrap_or_else(|| loxone_core::SimulatedDateTime::now_utc().format_iso())
+    });
+    Frame::new()
+        .fill(CAPSULE_BG)
+        .stroke(Stroke::new(1.0_f32, BORDER_SUBTLE))
+        .corner_radius(CornerRadius::same(7))
+        .inner_margin(Margin::symmetric(5, 2))
+        .show(ui, |ui| {
+            ui.spacing_mut().item_spacing.x = 3.0;
+            ui.label(RichText::new("🕒").size(11.0).color(LOXONE_GREEN));
+            let te_resp = ui
+                .add_enabled(
+                    has_project,
+                    egui::TextEdit::singleline(&mut draft)
+                        .font(egui::FontId::monospace(10.8))
+                        .desired_width(134.0),
+                )
+                .on_hover_text(crate::i18n::tr(
+                    "Simulation Date & Time (YYYY-MM-DD HH:MM:SS) — press Enter to apply",
+                ));
+            if te_resp.changed() {
+                ui.ctx().data_mut(|d| {
+                    d.insert_temp(sim_datetime_draft_id(), draft.clone());
+                });
+            }
+            if te_resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                action = Some(TopBarAction::SetSimulationDateTime(draft.clone()));
+            }
+            for (lbl, secs, tip) in [
+                ("+1m", 60_i64, "Advance simulation clock by +1 minute"),
+                ("+1h", 3600_i64, "Advance simulation clock by +1 hour"),
+                ("+1d", 86_400_i64, "Advance simulation clock by +1 day"),
+            ] {
+                if ui
+                    .add_enabled(
+                        has_project,
+                        egui::Button::new(
+                            RichText::new(lbl)
+                                .monospace()
+                                .size(10.2)
+                                .color(TEXT_PRIMARY),
+                        )
+                        .fill(CARD_BG)
+                        .corner_radius(CornerRadius::same(4)),
+                    )
+                    .on_hover_text(crate::i18n::tr(tip))
+                    .clicked()
+                {
+                    if let Some(mut parsed) = loxone_core::SimulatedDateTime::parse_iso(&draft) {
+                        parsed.advance_seconds(secs);
+                        let next_iso = parsed.format_iso();
+                        ui.ctx().data_mut(|d| {
+                            d.insert_temp(sim_datetime_draft_id(), next_iso);
+                        });
+                    }
+                    action = Some(TopBarAction::AdvanceSimulationSeconds(secs));
+                }
+            }
+        });
+    action
+}
+
 #[allow(clippy::too_many_arguments)]
 fn render_ribbon_row_1(
     ui: &mut Ui,
@@ -1364,6 +1440,45 @@ fn render_ribbon_row_1(
                     .clicked()
                 {
                     action = Some(TopBarAction::ExportDocumentation);
+                    ui.close_menu();
+                }
+                if ui
+                    .add_enabled(
+                        project.is_some(),
+                        egui::Button::new(format!(
+                            "📋  {}",
+                            crate::i18n::tr("Edit Objects of Same Type")
+                        )),
+                    )
+                    .clicked()
+                {
+                    action = Some(TopBarAction::OpenEditByType);
+                    ui.close_menu();
+                }
+                if ui
+                    .add_enabled(
+                        project.is_some(),
+                        egui::Button::new(format!(
+                            "🔍  {}  (Ctrl+H)",
+                            crate::i18n::tr("Find & Replace")
+                        )),
+                    )
+                    .clicked()
+                {
+                    action = Some(TopBarAction::OpenFindAndReplace);
+                    ui.close_menu();
+                }
+                if ui
+                    .add_enabled(
+                        project.is_some(),
+                        egui::Button::new(format!(
+                            "🗄  {}",
+                            crate::i18n::tr("Project Backups")
+                        )),
+                    )
+                    .clicked()
+                {
+                    action = Some(TopBarAction::OpenProjectBackups);
                     ui.close_menu();
                 }
                 ui.separator();
@@ -2132,6 +2247,27 @@ fn render_ribbon_row_2(
                                 Color32::from_rgb(0x52, 0xB7, 0x88),
                                 TopBarAction::ExportDocumentation,
                             ),
+                            (
+                                "📋",
+                                "Edit by Type",
+                                "Bulk edit Title, Description, Room, Category, and Rating across all objects of the same type",
+                                LOXONE_GREEN,
+                                TopBarAction::OpenEditByType,
+                            ),
+                            (
+                                "🔍",
+                                "Find & Replace",
+                                "Search and replace text across block titles, descriptions, and attributes (Ctrl+H / ⌘H)",
+                                ACCENT_BLUE,
+                                TopBarAction::OpenFindAndReplace,
+                            ),
+                            (
+                                "🗄",
+                                "Project Backups",
+                                "Create and restore local .Loxone project snapshots",
+                                Color32::from_rgb(0xE4, 0xB3, 0x3B),
+                                TopBarAction::OpenProjectBackups,
+                            ),
                         ];
                         for (icon, label, tip, tint, act) in admin_tiles {
                             if render_ribbon_chip(ui, icon, label, tip, has_project, *tint)
@@ -2141,6 +2277,29 @@ fn render_ribbon_row_2(
                                 action = Some(act.clone());
                             }
                         }
+                        ui.menu_button(
+                            RichText::new(format!("📐 {}", crate::i18n::tr("Align Blocks")))
+                                .size(11.2)
+                                .color(TEXT_PRIMARY),
+                            |ui| {
+                                for (lbl, mode) in [
+                                    (crate::i18n::tr("⇤ Align Left"), crate::canvas::MultiSelectAlign::AlignLeft),
+                                    (crate::i18n::tr("⫿ Align Center (H)"), crate::canvas::MultiSelectAlign::AlignCenterHorizontal),
+                                    (crate::i18n::tr("⇥ Align Right"), crate::canvas::MultiSelectAlign::AlignRight),
+                                    (crate::i18n::tr("⤒ Align Top"), crate::canvas::MultiSelectAlign::AlignTop),
+                                    (crate::i18n::tr("⫼ Align Middle (V)"), crate::canvas::MultiSelectAlign::AlignMiddleVertical),
+                                    (crate::i18n::tr("⤓ Align Bottom"), crate::canvas::MultiSelectAlign::AlignBottom),
+                                    (crate::i18n::tr("⇔ Distribute Horizontally"), crate::canvas::MultiSelectAlign::DistributeHorizontally),
+                                    (crate::i18n::tr("⇕ Distribute Vertically"), crate::canvas::MultiSelectAlign::DistributeVertically),
+                                    (crate::i18n::tr("⊞ Snap to Grid"), crate::canvas::MultiSelectAlign::SnapToGrid),
+                                ] {
+                                    if ui.button(lbl).clicked() {
+                                        action = Some(TopBarAction::AlignSelectedBlocks(mode));
+                                        ui.close_menu();
+                                    }
+                                }
+                            },
+                        );
                     });
             }
             RibbonTab::Miniserver => {
@@ -2251,6 +2410,9 @@ fn render_ribbon_row_2(
                             action = Some(TopBarAction::ResetSimulation);
                         }
                     });
+                if let Some(sim_act) = render_simulation_datetime_capsule(ui, has_project) {
+                    action = Some(sim_act);
+                }
             }
             RibbonTab::View => {
                 let diag_items = vec![
@@ -2456,6 +2618,9 @@ fn render_ribbon_row_2(
                             action = Some(TopBarAction::ResetSimulation);
                         }
                     });
+                if let Some(sim_act) = render_simulation_datetime_capsule(ui, has_project) {
+                    action = Some(sim_act);
+                }
             }
         }
 

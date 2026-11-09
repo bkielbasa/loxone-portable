@@ -178,7 +178,32 @@ impl Default for CanvasViewport {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MultiSelectAlign {
     AlignLeft,
+    AlignCenterHorizontal,
+    AlignRight,
     AlignTop,
+    AlignMiddleVertical,
+    AlignBottom,
+    DistributeHorizontally,
+    DistributeVertically,
+    SnapToGrid,
+}
+
+fn block_loxone_footprint(block: &PageBlock) -> (f32, f32) {
+    let bw = if block.is_note() {
+        (block.px2 - block.px).max(512.0)
+    } else if block.is_ref_bar() {
+        1680.0
+    } else {
+        1888.0
+    };
+    let bh = if block.is_note() {
+        (block.py2 - block.py).max(192.0)
+    } else if block.is_ref_bar() {
+        240.0
+    } else {
+        640.0
+    };
+    (bw, bh)
 }
 
 /// Computes the Loxone coordinate bounding box `(min_lx, min_ly)..(max_lx, max_ly)`
@@ -257,18 +282,33 @@ pub fn minimap_pos_to_loxone(bounds: Rect, minimap_rect: Rect, pos: Pos2) -> (f3
     )
 }
 
-/// Computes grid-snapped `(block_uuid, px, py)` moves for aligning 2+ selected blocks
-/// on `page` either to the minimum `px` (`AlignLeft`) or minimum `py` (`AlignTop`).
+/// Computes grid-snapped `(block_uuid, px, py)` moves for aligning or distributing selected blocks
+/// on `page` according to `mode`.
 pub fn compute_aligned_block_moves(
     page: &Page,
     selected_uuids: &[String],
     mode: MultiSelectAlign,
 ) -> Vec<(String, f32, f32)> {
-    let selected: Vec<&PageBlock> = page
+    let mut selected: Vec<&PageBlock> = page
         .blocks
         .iter()
         .filter(|b| b.has_position && selected_uuids.contains(&b.uuid))
         .collect();
+    if mode == MultiSelectAlign::SnapToGrid {
+        if selected.is_empty() {
+            selected = page.blocks.iter().filter(|b| b.has_position).collect();
+        }
+        return selected
+            .into_iter()
+            .map(|b| {
+                (
+                    b.uuid.clone(),
+                    snap_to_loxone_grid(b.px).max(0.0),
+                    snap_to_loxone_grid(b.py).max(0.0),
+                )
+            })
+            .collect();
+    }
     if selected.len() < 2 {
         return Vec::new();
     }
@@ -285,6 +325,45 @@ pub fn compute_aligned_block_moves(
                 .map(|b| (b.uuid.clone(), target_px, snap_to_loxone_grid(b.py).max(0.0)))
                 .collect()
         }
+        MultiSelectAlign::AlignCenterHorizontal => {
+            let min_px = selected
+                .iter()
+                .map(|b| b.px)
+                .fold(f32::INFINITY, f32::min);
+            let max_right = selected
+                .iter()
+                .map(|b| b.px + block_loxone_footprint(b).0)
+                .fold(f32::NEG_INFINITY, f32::max);
+            let center_x = (min_px + max_right) * 0.5;
+            selected
+                .into_iter()
+                .map(|b| {
+                    let (bw, _) = block_loxone_footprint(b);
+                    (
+                        b.uuid.clone(),
+                        snap_to_loxone_grid(center_x - bw * 0.5).max(0.0),
+                        snap_to_loxone_grid(b.py).max(0.0),
+                    )
+                })
+                .collect()
+        }
+        MultiSelectAlign::AlignRight => {
+            let max_right = selected
+                .iter()
+                .map(|b| b.px + block_loxone_footprint(b).0)
+                .fold(f32::NEG_INFINITY, f32::max);
+            selected
+                .into_iter()
+                .map(|b| {
+                    let (bw, _) = block_loxone_footprint(b);
+                    (
+                        b.uuid.clone(),
+                        snap_to_loxone_grid(max_right - bw).max(0.0),
+                        snap_to_loxone_grid(b.py).max(0.0),
+                    )
+                })
+                .collect()
+        }
         MultiSelectAlign::AlignTop => {
             let min_py = selected
                 .iter()
@@ -296,6 +375,78 @@ pub fn compute_aligned_block_moves(
                 .map(|b| (b.uuid.clone(), snap_to_loxone_grid(b.px).max(0.0), target_py))
                 .collect()
         }
+        MultiSelectAlign::AlignMiddleVertical => {
+            let min_py = selected
+                .iter()
+                .map(|b| b.py)
+                .fold(f32::INFINITY, f32::min);
+            let max_bottom = selected
+                .iter()
+                .map(|b| b.py + block_loxone_footprint(b).1)
+                .fold(f32::NEG_INFINITY, f32::max);
+            let center_y = (min_py + max_bottom) * 0.5;
+            selected
+                .into_iter()
+                .map(|b| {
+                    let (_, bh) = block_loxone_footprint(b);
+                    (
+                        b.uuid.clone(),
+                        snap_to_loxone_grid(b.px).max(0.0),
+                        snap_to_loxone_grid(center_y - bh * 0.5).max(0.0),
+                    )
+                })
+                .collect()
+        }
+        MultiSelectAlign::AlignBottom => {
+            let max_bottom = selected
+                .iter()
+                .map(|b| b.py + block_loxone_footprint(b).1)
+                .fold(f32::NEG_INFINITY, f32::max);
+            selected
+                .into_iter()
+                .map(|b| {
+                    let (_, bh) = block_loxone_footprint(b);
+                    (
+                        b.uuid.clone(),
+                        snap_to_loxone_grid(b.px).max(0.0),
+                        snap_to_loxone_grid(max_bottom - bh).max(0.0),
+                    )
+                })
+                .collect()
+        }
+        MultiSelectAlign::DistributeHorizontally => {
+            selected.sort_by(|a, b| a.px.partial_cmp(&b.px).unwrap_or(std::cmp::Ordering::Equal));
+            let min_px = selected.first().map(|b| b.px).unwrap_or(0.0);
+            let max_px = selected.last().map(|b| b.px).unwrap_or(min_px);
+            let n = selected.len();
+            let span = (max_px - min_px).max((n.saturating_sub(1) as f32) * 2304.0);
+            let step = span / ((n - 1) as f32);
+            selected
+                .into_iter()
+                .enumerate()
+                .map(|(idx, b)| {
+                    let target_px = snap_to_loxone_grid(min_px + (idx as f32) * step).max(0.0);
+                    (b.uuid.clone(), target_px, snap_to_loxone_grid(b.py).max(0.0))
+                })
+                .collect()
+        }
+        MultiSelectAlign::DistributeVertically => {
+            selected.sort_by(|a, b| a.py.partial_cmp(&b.py).unwrap_or(std::cmp::Ordering::Equal));
+            let min_py = selected.first().map(|b| b.py).unwrap_or(0.0);
+            let max_py = selected.last().map(|b| b.py).unwrap_or(min_py);
+            let n = selected.len();
+            let span = (max_py - min_py).max((n.saturating_sub(1) as f32) * 896.0);
+            let step = span / ((n - 1) as f32);
+            selected
+                .into_iter()
+                .enumerate()
+                .map(|(idx, b)| {
+                    let target_py = snap_to_loxone_grid(min_py + (idx as f32) * step).max(0.0);
+                    (b.uuid.clone(), snap_to_loxone_grid(b.px).max(0.0), target_py)
+                })
+                .collect()
+        }
+        MultiSelectAlign::SnapToGrid => unreachable!(),
     }
 }
 
@@ -1684,7 +1835,7 @@ pub fn render_page_canvas(
     );
     let minimap_visible = viewport.show_minimap && page_bounds.is_some();
     let bottom_toolbar_w = if viewport.interaction.selected_blocks.len() > 1 {
-        244.0
+        388.0
     } else {
         106.0
     };
@@ -3859,26 +4010,24 @@ pub fn render_page_canvas(
     }
 
     if viewport.interaction.selected_blocks.len() > 1 {
-        let tb_left_rect = Rect::from_min_size(
-            Pos2::new(bottom_toolbar_rect.min.x + 4.0, bottom_toolbar_rect.min.y + 3.0),
-            Vec2::new(66.0, 20.0),
-        );
-        let tb_top_rect = Rect::from_min_size(
-            Pos2::new(tb_left_rect.max.x + 4.0, bottom_toolbar_rect.min.y + 3.0),
-            Vec2::new(64.0, 20.0),
-        );
-        for (btn_rect, label, mode) in [
-            (
-                tb_left_rect,
-                crate::i18n::tr("⇤ Left"),
-                MultiSelectAlign::AlignLeft,
-            ),
-            (
-                tb_top_rect,
-                crate::i18n::tr("⤒ Top"),
-                MultiSelectAlign::AlignTop,
-            ),
-        ] {
+        let align_buttons = [
+            (crate::i18n::tr("⇤"), MultiSelectAlign::AlignLeft),
+            (crate::i18n::tr("⫿"), MultiSelectAlign::AlignCenterHorizontal),
+            (crate::i18n::tr("⇥"), MultiSelectAlign::AlignRight),
+            (crate::i18n::tr("⤒"), MultiSelectAlign::AlignTop),
+            (crate::i18n::tr("⤓"), MultiSelectAlign::AlignBottom),
+            (crate::i18n::tr("⇔"), MultiSelectAlign::DistributeHorizontally),
+            (crate::i18n::tr("⇕"), MultiSelectAlign::DistributeVertically),
+            (crate::i18n::tr("⊞"), MultiSelectAlign::SnapToGrid),
+        ];
+        for (idx, (label, mode)) in align_buttons.into_iter().enumerate() {
+            let btn_rect = Rect::from_min_size(
+                Pos2::new(
+                    bottom_toolbar_rect.min.x + 4.0 + (idx as f32) * 34.0,
+                    bottom_toolbar_rect.min.y + 3.0,
+                ),
+                Vec2::new(30.0, 20.0),
+            );
             let hovered = hover_pos.is_some_and(|hp| btn_rect.contains(hp));
             painter.rect(
                 btn_rect,
@@ -3898,7 +4047,7 @@ pub fn render_page_canvas(
                 btn_rect.center(),
                 Align2::CENTER_CENTER,
                 label,
-                FontId::proportional(10.5),
+                FontId::proportional(11.0),
                 if hovered { LOXONE_GREEN } else { TEXT_PRIMARY },
             );
             if clicked && pointer_pos.is_some_and(|p| btn_rect.contains(p)) {
@@ -4087,6 +4236,40 @@ pub fn render_page_canvas(
                                 }
                                 ui.separator();
                                 let multi_count = viewport.interaction.selected_blocks.len();
+                                if multi_count > 1 {
+                                    ui.menu_button(
+                                        crate::i18n::tr("📐 Align Blocks"),
+                                        |ui| {
+                                            for (lbl, mode) in [
+                                                (crate::i18n::tr("⇤ Align Left"), MultiSelectAlign::AlignLeft),
+                                                (crate::i18n::tr("⫿ Align Center (H)"), MultiSelectAlign::AlignCenterHorizontal),
+                                                (crate::i18n::tr("⇥ Align Right"), MultiSelectAlign::AlignRight),
+                                                (crate::i18n::tr("⤒ Align Top"), MultiSelectAlign::AlignTop),
+                                                (crate::i18n::tr("⫼ Align Middle (V)"), MultiSelectAlign::AlignMiddleVertical),
+                                                (crate::i18n::tr("⤓ Align Bottom"), MultiSelectAlign::AlignBottom),
+                                                (crate::i18n::tr("⇔ Distribute Horizontally"), MultiSelectAlign::DistributeHorizontally),
+                                                (crate::i18n::tr("⇕ Distribute Vertically"), MultiSelectAlign::DistributeVertically),
+                                                (crate::i18n::tr("⊞ Snap to Grid"), MultiSelectAlign::SnapToGrid),
+                                            ] {
+                                                if ui.button(lbl).clicked() {
+                                                    let moves = compute_aligned_block_moves(
+                                                        page,
+                                                        &viewport.interaction.selected_blocks,
+                                                        mode,
+                                                    );
+                                                    if !moves.is_empty() {
+                                                        action = Some(CanvasAction::MoveBlocks {
+                                                            page_uuid: page_uuid.clone(),
+                                                            moves,
+                                                        });
+                                                    }
+                                                    close_menu = true;
+                                                    ui.close_menu();
+                                                }
+                                            }
+                                        },
+                                    );
+                                }
                                 if multi_count > 1
                                     && viewport.interaction.selected_blocks.contains(block_uuid)
                                 {
@@ -5431,5 +5614,30 @@ mod tests {
                 );
             });
         });
+    }
+
+    #[test]
+    fn test_stage3_full_align_and_distribute_block_moves() {
+        let mut page = loxone_core::factory::new_page("Align Test");
+        let b1 = loxone_core::factory::new_page_block("And", "B1", 64.0, 64.0);
+        let b2 = loxone_core::factory::new_page_block("Or", "B2", 512.0, 256.0);
+        let b3 = loxone_core::factory::new_page_block("Not", "B3", 1024.0, 640.0);
+        let uuids = vec![b1.uuid.clone(), b2.uuid.clone(), b3.uuid.clone()];
+        page.blocks = vec![b1, b2, b3];
+
+        for mode in [
+            MultiSelectAlign::AlignLeft,
+            MultiSelectAlign::AlignCenterHorizontal,
+            MultiSelectAlign::AlignRight,
+            MultiSelectAlign::AlignTop,
+            MultiSelectAlign::AlignMiddleVertical,
+            MultiSelectAlign::AlignBottom,
+            MultiSelectAlign::DistributeHorizontally,
+            MultiSelectAlign::DistributeVertically,
+            MultiSelectAlign::SnapToGrid,
+        ] {
+            let moves = compute_aligned_block_moves(&page, &uuids, mode);
+            assert_eq!(moves.len(), 3);
+        }
     }
 }

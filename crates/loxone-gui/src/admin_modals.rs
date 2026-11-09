@@ -27,6 +27,9 @@ pub enum AdminModal {
     Users,
     Modes,
     Network,
+    EditByType,
+    FindAndReplace,
+    ProjectBackups,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -39,9 +42,45 @@ enum UsersTab {
 pub enum AdminAction {
     Edit(ProjectEdit),
     UseMiniserver(String),
+    RestoreBackupFile(std::path::PathBuf),
+    SelectObject(String),
 }
 
-#[derive(Default)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SameTypeObjectRow {
+    pub uuid: String,
+    pub is_page_block: bool,
+    pub location_label: String,
+    pub title: String,
+    pub orig_title: String,
+    pub desc: String,
+    pub orig_desc: String,
+    pub room_uuid: String,
+    pub orig_room_uuid: String,
+    pub category_uuid: String,
+    pub orig_category_uuid: String,
+    pub rating: String,
+    pub orig_rating: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FindReplaceMatch {
+    pub uuid: String,
+    pub object_type: String,
+    pub location_label: String,
+    pub field_name: String,
+    pub before: String,
+    pub after: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct ProjectBackupEntry {
+    pub path: std::path::PathBuf,
+    pub file_name: String,
+    pub timestamp_display: String,
+    pub size_bytes: u64,
+}
+
 pub struct AdminModalsState {
     pub open: AdminModal,
     pub status: Option<String>,
@@ -58,6 +97,53 @@ pub struct AdminModalsState {
     net_rx: Option<Receiver<Result<Vec<DiscoveredMiniserver>, String>>>,
     net_results: Vec<DiscoveredMiniserver>,
     net_status: Option<String>,
+    // Edit Objects of Same Type state
+    pub selected_edit_type: String,
+    pub edit_type_filter: String,
+    pub edit_by_type_rows: Vec<SameTypeObjectRow>,
+    // Find & Replace state
+    pub find_query: String,
+    pub replace_with: String,
+    pub find_case_sensitive: bool,
+    pub find_in_titles: bool,
+    pub find_in_descriptions: bool,
+    pub find_in_attributes: bool,
+    // Project Backups state
+    pub backup_note: String,
+    pub backups_list: Vec<ProjectBackupEntry>,
+}
+
+impl Default for AdminModalsState {
+    fn default() -> Self {
+        Self {
+            open: AdminModal::None,
+            status: None,
+            props_draft: Vec::new(),
+            users_tab: UsersTab::Users,
+            selected_user: None,
+            selected_group: None,
+            user_draft: Vec::new(),
+            user_draft_for: None,
+            new_name: String::new(),
+            new_cal_title: String::new(),
+            new_cal_mode: 0,
+            preview: None,
+            net_rx: None,
+            net_results: Vec::new(),
+            net_status: None,
+            selected_edit_type: String::new(),
+            edit_type_filter: String::new(),
+            edit_by_type_rows: Vec::new(),
+            find_query: String::new(),
+            replace_with: String::new(),
+            find_case_sensitive: false,
+            find_in_titles: true,
+            find_in_descriptions: true,
+            find_in_attributes: false,
+            backup_note: String::new(),
+            backups_list: Vec::new(),
+        }
+    }
 }
 
 /// Editable `Document` attributes: (section, attribute, label).
@@ -144,6 +230,38 @@ impl AdminModalsState {
         if self.net_rx.is_none() && self.net_results.is_empty() {
             self.start_search();
         }
+    }
+
+    pub fn open_edit_by_type(&mut self, project: &LoxoneProject, initial_type: Option<&str>) {
+        self.status = None;
+        let types = collect_editable_object_types(project);
+        let chosen = initial_type
+            .filter(|t| types.iter().any(|(ty, _)| ty == *t))
+            .map(str::to_string)
+            .or_else(|| {
+                if !self.selected_edit_type.is_empty()
+                    && types.iter().any(|(ty, _)| ty == &self.selected_edit_type)
+                {
+                    Some(self.selected_edit_type.clone())
+                } else {
+                    types.first().map(|(ty, _)| ty.clone())
+                }
+            })
+            .unwrap_or_default();
+        self.selected_edit_type = chosen.clone();
+        self.edit_by_type_rows = build_same_type_object_rows(project, &chosen);
+        self.open = AdminModal::EditByType;
+    }
+
+    pub fn open_find_and_replace(&mut self) {
+        self.status = None;
+        self.open = AdminModal::FindAndReplace;
+    }
+
+    pub fn open_project_backups(&mut self) {
+        self.status = None;
+        self.backups_list = list_project_backups_in_dir(&project_backups_dir());
+        self.open = AdminModal::ProjectBackups;
     }
 
     pub fn close(&mut self) {
@@ -371,6 +489,9 @@ pub fn render_admin_modals(
                 AdminModal::Properties => render_properties(ctx, state, project, &mut out),
                 AdminModal::Users => render_users(ctx, state, project, &mut out),
                 AdminModal::Modes => render_modes(ctx, state, project, &mut out),
+                AdminModal::EditByType => render_edit_by_type(ctx, state, project, &mut out),
+                AdminModal::FindAndReplace => render_find_and_replace(ctx, state, project, &mut out),
+                AdminModal::ProjectBackups => render_project_backups(ctx, state, project, &mut out),
                 _ => true,
             }
         }
@@ -1218,6 +1339,958 @@ fn render_network(
     keep && !close_after
 }
 
+// ---------------------------------------------------------------------------
+// Edit Objects of Same Type (`CObjectTypeConfigurationDialog`)
+// ---------------------------------------------------------------------------
+
+pub fn collect_editable_object_types(project: &LoxoneProject) -> Vec<(String, usize)> {
+    let mut counts: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+    for page in &project.pages {
+        for block in &page.blocks {
+            if !block.is_ref_bar() && !block.is_note() {
+                *counts.entry(block.block_type.clone()).or_insert(0) += 1;
+            }
+        }
+    }
+    fn walk_tree(node: &TreeNode, counts: &mut std::collections::BTreeMap<String, usize>) {
+        if !matches!(
+            node.control_type.as_str(),
+            "PlaceCaption"
+                | "CategoryCaption"
+                | "PageCaption"
+                | "PeripheryCaption"
+                | "MemoryCaption"
+                | "UserCaption"
+                | "UsergroupCaption"
+                | "OperatingModeCaption"
+                | "CalendarCaption"
+        ) && !node.uuid.is_empty()
+        {
+            *counts.entry(node.control_type.clone()).or_insert(0) += 1;
+        }
+        for child in &node.children {
+            walk_tree(child, counts);
+        }
+    }
+    for root in &project.periphery_tree {
+        walk_tree(root, &mut counts);
+    }
+    for root in &project.system_tree {
+        walk_tree(root, &mut counts);
+    }
+    let mut list: Vec<(String, usize)> = counts.into_iter().collect();
+    list.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    list
+}
+
+pub fn build_same_type_object_rows(
+    project: &LoxoneProject,
+    object_type: &str,
+) -> Vec<SameTypeObjectRow> {
+    let mut rows = Vec::new();
+    for page in &project.pages {
+        for block in &page.blocks {
+            if block.block_type == object_type && !block.is_ref_bar() && !block.is_note() {
+                let desc = block.attr("Desc").unwrap_or_default().to_string();
+                let room = block.room_uuid.clone().unwrap_or_default();
+                let cat = block.category_uuid.clone().unwrap_or_default();
+                let rate = block.attr("Rate").unwrap_or("0").to_string();
+                rows.push(SameTypeObjectRow {
+                    uuid: block.uuid.clone(),
+                    is_page_block: true,
+                    location_label: page.title.clone(),
+                    title: block.title.clone(),
+                    orig_title: block.title.clone(),
+                    desc: desc.clone(),
+                    orig_desc: desc,
+                    room_uuid: room.clone(),
+                    orig_room_uuid: room,
+                    category_uuid: cat.clone(),
+                    orig_category_uuid: cat,
+                    rating: rate.clone(),
+                    orig_rating: rate,
+                });
+            }
+        }
+    }
+    fn walk_nodes(
+        node: &TreeNode,
+        parent_label: &str,
+        object_type: &str,
+        rows: &mut Vec<SameTypeObjectRow>,
+    ) {
+        let loc = if parent_label.is_empty() {
+            node.title.clone()
+        } else {
+            format!("{parent_label} / {}", node.title)
+        };
+        if node.control_type == object_type && !node.uuid.is_empty() {
+            let desc = node.attr("Desc").unwrap_or_default().to_string();
+            let room = node
+                .room_uuid
+                .clone()
+                .or_else(|| node.attr("Place").map(str::to_string))
+                .unwrap_or_default();
+            let cat = node
+                .category_uuid
+                .clone()
+                .or_else(|| node.attr("Cat").map(str::to_string))
+                .unwrap_or_default();
+            let rate = node.attr("Rate").unwrap_or("0").to_string();
+            rows.push(SameTypeObjectRow {
+                uuid: node.uuid.clone(),
+                is_page_block: false,
+                location_label: parent_label.to_string(),
+                title: node.title.clone(),
+                orig_title: node.title.clone(),
+                desc: desc.clone(),
+                orig_desc: desc,
+                room_uuid: room.clone(),
+                orig_room_uuid: room,
+                category_uuid: cat.clone(),
+                orig_category_uuid: cat,
+                rating: rate.clone(),
+                orig_rating: rate,
+            });
+        }
+        for child in &node.children {
+            walk_nodes(child, &loc, object_type, rows);
+        }
+    }
+    for root in &project.periphery_tree {
+        walk_nodes(root, "", object_type, &mut rows);
+    }
+    for root in &project.system_tree {
+        walk_nodes(root, "", object_type, &mut rows);
+    }
+    rows
+}
+
+pub fn build_same_type_batch_edit(rows: &[SameTypeObjectRow]) -> Option<ProjectEdit> {
+    let mut edits = Vec::new();
+    for r in rows {
+        if r.title != r.orig_title {
+            edits.push(ProjectEdit::SetControlAttr {
+                control_uuid: r.uuid.clone(),
+                attr_name: "Title".to_string(),
+                value: Some(r.title.clone()),
+            });
+        }
+        if r.desc != r.orig_desc {
+            edits.push(ProjectEdit::SetControlAttr {
+                control_uuid: r.uuid.clone(),
+                attr_name: "Desc".to_string(),
+                value: if r.desc.is_empty() {
+                    None
+                } else {
+                    Some(r.desc.clone())
+                },
+            });
+        }
+        if r.room_uuid != r.orig_room_uuid {
+            edits.push(ProjectEdit::SetControlAttr {
+                control_uuid: r.uuid.clone(),
+                attr_name: "Place".to_string(),
+                value: if r.room_uuid.is_empty() {
+                    None
+                } else {
+                    Some(r.room_uuid.clone())
+                },
+            });
+        }
+        if r.category_uuid != r.orig_category_uuid {
+            edits.push(ProjectEdit::SetControlAttr {
+                control_uuid: r.uuid.clone(),
+                attr_name: "Cat".to_string(),
+                value: if r.category_uuid.is_empty() {
+                    None
+                } else {
+                    Some(r.category_uuid.clone())
+                },
+            });
+        }
+        if r.rating != r.orig_rating {
+            edits.push(ProjectEdit::SetControlAttr {
+                control_uuid: r.uuid.clone(),
+                attr_name: "Rate".to_string(),
+                value: Some(r.rating.clone()),
+            });
+        }
+    }
+    if edits.is_empty() {
+        None
+    } else {
+        Some(ProjectEdit::Batch(edits))
+    }
+}
+
+fn render_edit_by_type(
+    ctx: &egui::Context,
+    state: &mut AdminModalsState,
+    project: &LoxoneProject,
+    out: &mut Vec<AdminAction>,
+) -> bool {
+    let status = state.status.clone();
+    let types = collect_editable_object_types(project);
+    modal_window(
+        ctx,
+        "admin_edit_by_type",
+        "📋 Edit Objects of Same Type",
+        [1080.0, 680.0],
+        status.as_deref(),
+        |ui| {
+            ui.horizontal(|ui| {
+                ui.label(
+                    RichText::new(tr("Object Type:"))
+                        .strong()
+                        .color(theme::TEXT_SECONDARY),
+                );
+                let current_label = if state.selected_edit_type.is_empty() {
+                    tr("Select type…").to_string()
+                } else {
+                    format!(
+                        "{} ({})",
+                        crate::i18n::block_display_name(&state.selected_edit_type),
+                        state.selected_edit_type
+                    )
+                };
+                egui::ComboBox::from_id_salt("edit_by_type_selector")
+                    .selected_text(current_label)
+                    .width(290.0)
+                    .show_ui(ui, |ui| {
+                        for (ty, cnt) in &types {
+                            let lbl = format!(
+                                "{} ({}) — {cnt}",
+                                crate::i18n::block_display_name(ty),
+                                ty
+                            );
+                            if ui
+                                .selectable_label(&state.selected_edit_type == ty, lbl)
+                                .clicked()
+                            {
+                                state.selected_edit_type = ty.clone();
+                                state.edit_by_type_rows =
+                                    build_same_type_object_rows(project, ty);
+                            }
+                        }
+                    });
+
+                ui.add_space(10.0);
+                ui.add(
+                    egui::TextEdit::singleline(&mut state.edit_type_filter)
+                        .hint_text(tr("Filter rows by title or page…"))
+                        .desired_width(210.0),
+                );
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let pending = build_same_type_batch_edit(&state.edit_by_type_rows);
+                    if button(ui, "✔ Apply Batch Changes", pending.is_some()).clicked() {
+                        if let Some(batch) = pending {
+                            out.push(AdminAction::Edit(batch));
+                            for r in &mut state.edit_by_type_rows {
+                                r.orig_title = r.title.clone();
+                                r.orig_desc = r.desc.clone();
+                                r.orig_room_uuid = r.room_uuid.clone();
+                                r.orig_category_uuid = r.category_uuid.clone();
+                                r.orig_rating = r.rating.clone();
+                            }
+                            state.status = Some(
+                                tr("Applied batch changes across objects of same type.")
+                                    .to_string(),
+                            );
+                        }
+                    }
+                });
+            });
+
+            ui.add_space(6.0);
+            let filter_lc = state.edit_type_filter.trim().to_ascii_lowercase();
+            card(ui, |ui| {
+                egui::ScrollArea::vertical()
+                    .id_salt("edit_by_type_scroll")
+                    .max_height(ui.available_height() - 16.0)
+                    .show(ui, |ui| {
+                        egui::Grid::new("edit_by_type_grid")
+                            .num_columns(6)
+                            .striped(true)
+                            .spacing([10.0, 6.0])
+                            .show(ui, |ui| {
+                                for h in [
+                                    "Location",
+                                    "Title",
+                                    "Description",
+                                    "Room",
+                                    "Category",
+                                    "Rating",
+                                ] {
+                                    ui.label(
+                                        RichText::new(tr(h))
+                                            .size(11.0)
+                                            .strong()
+                                            .color(theme::TEXT_SECONDARY),
+                                    );
+                                }
+                                ui.end_row();
+
+                                for row in &mut state.edit_by_type_rows {
+                                    if !filter_lc.is_empty()
+                                        && !row.title.to_ascii_lowercase().contains(&filter_lc)
+                                        && !row
+                                            .location_label
+                                            .to_ascii_lowercase()
+                                            .contains(&filter_lc)
+                                    {
+                                        continue;
+                                    }
+                                    if ui
+                                        .link(
+                                            RichText::new(&row.location_label)
+                                                .size(11.5)
+                                                .color(theme::ACCENT_PRIMARY),
+                                        )
+                                        .on_hover_text(tr("Select object in editor"))
+                                        .clicked()
+                                    {
+                                        out.push(AdminAction::SelectObject(row.uuid.clone()));
+                                    }
+                                    ui.add(
+                                        egui::TextEdit::singleline(&mut row.title)
+                                            .desired_width(200.0),
+                                    );
+                                    ui.add(
+                                        egui::TextEdit::singleline(&mut row.desc)
+                                            .desired_width(180.0),
+                                    );
+                                    let room_lbl = project
+                                        .places
+                                        .get(&row.room_uuid)
+                                        .map(|p| p.title.as_str())
+                                        .unwrap_or("—");
+                                    egui::ComboBox::from_id_salt(format!("ebt_room_{}", row.uuid))
+                                        .selected_text(room_lbl)
+                                        .width(135.0)
+                                        .show_ui(ui, |ui| {
+                                            if ui
+                                                .selectable_label(row.room_uuid.is_empty(), "—")
+                                                .clicked()
+                                            {
+                                                row.room_uuid.clear();
+                                            }
+                                            for (u, place) in &project.places {
+                                                if ui
+                                                    .selectable_label(
+                                                        &row.room_uuid == u,
+                                                        &place.title,
+                                                    )
+                                                    .clicked()
+                                                {
+                                                    row.room_uuid = u.clone();
+                                                }
+                                            }
+                                        });
+                                    let cat_lbl = project
+                                        .categories
+                                        .get(&row.category_uuid)
+                                        .map(|c| c.title.as_str())
+                                        .unwrap_or("—");
+                                    egui::ComboBox::from_id_salt(format!("ebt_cat_{}", row.uuid))
+                                        .selected_text(cat_lbl)
+                                        .width(135.0)
+                                        .show_ui(ui, |ui| {
+                                            if ui
+                                                .selectable_label(row.category_uuid.is_empty(), "—")
+                                                .clicked()
+                                            {
+                                                row.category_uuid.clear();
+                                            }
+                                            for (u, cat) in &project.categories {
+                                                if ui
+                                                    .selectable_label(
+                                                        &row.category_uuid == u,
+                                                        &cat.title,
+                                                    )
+                                                    .clicked()
+                                                {
+                                                    row.category_uuid = u.clone();
+                                                }
+                                            }
+                                        });
+                                    egui::ComboBox::from_id_salt(format!("ebt_rate_{}", row.uuid))
+                                        .selected_text(format!("★ {}", row.rating))
+                                        .width(65.0)
+                                        .show_ui(ui, |ui| {
+                                            for r_val in ["0", "1", "2", "3", "4", "5"] {
+                                                if ui
+                                                    .selectable_label(
+                                                        row.rating == r_val,
+                                                        format!("★ {r_val}"),
+                                                    )
+                                                    .clicked()
+                                                {
+                                                    row.rating = r_val.to_string();
+                                                }
+                                            }
+                                        });
+                                    ui.end_row();
+                                }
+                            });
+                    });
+            });
+        },
+    )
+}
+
+// ---------------------------------------------------------------------------
+// Find & Replace (`Ctrl+H` / `⌘H`)
+// ---------------------------------------------------------------------------
+
+fn replace_substring(src: &str, needle: &str, replacement: &str, case_sensitive: bool) -> Option<String> {
+    if needle.is_empty() {
+        return None;
+    }
+    if case_sensitive {
+        if src.contains(needle) {
+            Some(src.replace(needle, replacement))
+        } else {
+            None
+        }
+    } else {
+        let src_lc = src.to_lowercase();
+        let needle_lc = needle.to_lowercase();
+        if !src_lc.contains(&needle_lc) {
+            return None;
+        }
+        let mut out = String::with_capacity(src.len());
+        let mut last_idx = 0;
+        for (idx, _) in src_lc.match_indices(&needle_lc) {
+            if idx >= last_idx && src.is_char_boundary(idx) && src.is_char_boundary(idx + needle.len()) {
+                out.push_str(&src[last_idx..idx]);
+                out.push_str(replacement);
+                last_idx = idx + needle.len();
+            }
+        }
+        if last_idx == 0 {
+            return None;
+        }
+        out.push_str(&src[last_idx..]);
+        Some(out)
+    }
+}
+
+pub fn preview_find_and_replace(
+    project: &LoxoneProject,
+    query: &str,
+    replacement: &str,
+    case_sensitive: bool,
+    in_titles: bool,
+    in_descriptions: bool,
+    in_attributes: bool,
+) -> Vec<FindReplaceMatch> {
+    let mut matches = Vec::new();
+    if query.trim().is_empty() {
+        return matches;
+    }
+    for page in &project.pages {
+        for block in &page.blocks {
+            if block.is_ref_bar() || block.is_note() {
+                continue;
+            }
+            if in_titles {
+                if let Some(after) =
+                    replace_substring(&block.title, query, replacement, case_sensitive)
+                {
+                    matches.push(FindReplaceMatch {
+                        uuid: block.uuid.clone(),
+                        object_type: block.block_type.clone(),
+                        location_label: page.title.clone(),
+                        field_name: "Title".to_string(),
+                        before: block.title.clone(),
+                        after,
+                    });
+                }
+            }
+            if in_descriptions {
+                if let Some(desc) = block.attr("Desc") {
+                    if let Some(after) = replace_substring(desc, query, replacement, case_sensitive)
+                    {
+                        matches.push(FindReplaceMatch {
+                            uuid: block.uuid.clone(),
+                            object_type: block.block_type.clone(),
+                            location_label: page.title.clone(),
+                            field_name: "Desc".to_string(),
+                            before: desc.to_string(),
+                            after,
+                        });
+                    }
+                }
+            }
+            if in_attributes {
+                for (k, v) in &block.raw_attributes {
+                    if matches!(k.as_str(), "U" | "Type" | "Title" | "Desc" | "Place" | "Cat") {
+                        continue;
+                    }
+                    if let Some(after) = replace_substring(v, query, replacement, case_sensitive) {
+                        matches.push(FindReplaceMatch {
+                            uuid: block.uuid.clone(),
+                            object_type: block.block_type.clone(),
+                            location_label: page.title.clone(),
+                            field_name: k.clone(),
+                            before: v.clone(),
+                            after,
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    fn walk_tree_matches(
+        node: &TreeNode,
+        parent: &str,
+        query: &str,
+        replacement: &str,
+        case_sensitive: bool,
+        in_titles: bool,
+        in_descriptions: bool,
+        in_attributes: bool,
+        matches: &mut Vec<FindReplaceMatch>,
+    ) {
+        if !node.uuid.is_empty() {
+            if in_titles {
+                if let Some(after) =
+                    replace_substring(&node.title, query, replacement, case_sensitive)
+                {
+                    matches.push(FindReplaceMatch {
+                        uuid: node.uuid.clone(),
+                        object_type: node.control_type.clone(),
+                        location_label: parent.to_string(),
+                        field_name: "Title".to_string(),
+                        before: node.title.clone(),
+                        after,
+                    });
+                }
+            }
+            if in_descriptions {
+                if let Some(desc) = node.attr("Desc") {
+                    if let Some(after) = replace_substring(desc, query, replacement, case_sensitive)
+                    {
+                        matches.push(FindReplaceMatch {
+                            uuid: node.uuid.clone(),
+                            object_type: node.control_type.clone(),
+                            location_label: parent.to_string(),
+                            field_name: "Desc".to_string(),
+                            before: desc.to_string(),
+                            after,
+                        });
+                    }
+                }
+            }
+            if in_attributes {
+                for (k, v) in &node.raw_attributes {
+                    if matches!(k.as_str(), "U" | "Type" | "Title" | "Desc" | "Place" | "Cat") {
+                        continue;
+                    }
+                    if let Some(after) = replace_substring(v, query, replacement, case_sensitive) {
+                        matches.push(FindReplaceMatch {
+                            uuid: node.uuid.clone(),
+                            object_type: node.control_type.clone(),
+                            location_label: parent.to_string(),
+                            field_name: k.clone(),
+                            before: v.clone(),
+                            after,
+                        });
+                    }
+                }
+            }
+        }
+        let next_parent = if parent.is_empty() {
+            node.title.clone()
+        } else {
+            format!("{parent} / {}", node.title)
+        };
+        for child in &node.children {
+            walk_tree_matches(
+                child,
+                &next_parent,
+                query,
+                replacement,
+                case_sensitive,
+                in_titles,
+                in_descriptions,
+                in_attributes,
+                matches,
+            );
+        }
+    }
+
+    for root in &project.periphery_tree {
+        walk_tree_matches(
+            root,
+            "",
+            query,
+            replacement,
+            case_sensitive,
+            in_titles,
+            in_descriptions,
+            in_attributes,
+            &mut matches,
+        );
+    }
+    for root in &project.system_tree {
+        walk_tree_matches(
+            root,
+            "",
+            query,
+            replacement,
+            case_sensitive,
+            in_titles,
+            in_descriptions,
+            in_attributes,
+            &mut matches,
+        );
+    }
+    matches
+}
+
+pub fn build_find_and_replace_batch_edit(matches: &[FindReplaceMatch]) -> Option<ProjectEdit> {
+    if matches.is_empty() {
+        return None;
+    }
+    let edits: Vec<ProjectEdit> = matches
+        .iter()
+        .map(|m| ProjectEdit::SetControlAttr {
+            control_uuid: m.uuid.clone(),
+            attr_name: m.field_name.clone(),
+            value: Some(m.after.clone()),
+        })
+        .collect();
+    Some(ProjectEdit::Batch(edits))
+}
+
+fn render_find_and_replace(
+    ctx: &egui::Context,
+    state: &mut AdminModalsState,
+    project: &LoxoneProject,
+    out: &mut Vec<AdminAction>,
+) -> bool {
+    let status = state.status.clone();
+    let matches = preview_find_and_replace(
+        project,
+        &state.find_query,
+        &state.replace_with,
+        state.find_case_sensitive,
+        state.find_in_titles,
+        state.find_in_descriptions,
+        state.find_in_attributes,
+    );
+    modal_window(
+        ctx,
+        "admin_find_and_replace",
+        "🔍 Find & Replace (Ctrl+H)",
+        [960.0, 620.0],
+        status.as_deref(),
+        |ui| {
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(tr("Find:")).strong().color(theme::TEXT_SECONDARY));
+                ui.add(
+                    egui::TextEdit::singleline(&mut state.find_query)
+                        .hint_text(tr("Search text…"))
+                        .desired_width(210.0),
+                );
+                ui.add_space(8.0);
+                ui.label(
+                    RichText::new(tr("Replace with:"))
+                        .strong()
+                        .color(theme::TEXT_SECONDARY),
+                );
+                ui.add(
+                    egui::TextEdit::singleline(&mut state.replace_with)
+                        .hint_text(tr("Replacement text…"))
+                        .desired_width(210.0),
+                );
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let btn_label = format!("✔ {} ({})", tr("Replace All"), matches.len());
+                    if button(ui, &btn_label, !matches.is_empty()).clicked() && !matches.is_empty()
+                    {
+                        if let Some(batch) = build_find_and_replace_batch_edit(&matches) {
+                            let count = matches.len();
+                            out.push(AdminAction::Edit(batch));
+                            state.status = Some(format!("Replaced {count} match(es)."));
+                        }
+                    }
+                });
+            });
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                ui.checkbox(&mut state.find_case_sensitive, tr("Case sensitive"));
+                ui.checkbox(&mut state.find_in_titles, tr("Titles"));
+                ui.checkbox(&mut state.find_in_descriptions, tr("Descriptions"));
+                ui.checkbox(&mut state.find_in_attributes, tr("Attributes"));
+            });
+            ui.add_space(6.0);
+            card(ui, |ui| {
+                egui::ScrollArea::vertical()
+                    .id_salt("find_replace_scroll")
+                    .max_height(ui.available_height() - 16.0)
+                    .show(ui, |ui| {
+                        egui::Grid::new("find_replace_grid")
+                            .num_columns(5)
+                            .striped(true)
+                            .spacing([12.0, 6.0])
+                            .show(ui, |ui| {
+                                for h in ["Object Type", "Location", "Field", "Before", "After"] {
+                                    ui.label(
+                                        RichText::new(tr(h))
+                                            .size(11.0)
+                                            .strong()
+                                            .color(theme::TEXT_SECONDARY),
+                                    );
+                                }
+                                ui.end_row();
+                                for m in &matches {
+                                    ui.label(
+                                        RichText::new(&m.object_type)
+                                            .monospace()
+                                            .size(11.0)
+                                            .color(theme::TEXT_SECONDARY),
+                                    );
+                                    if ui
+                                        .link(
+                                            RichText::new(&m.location_label)
+                                                .size(11.5)
+                                                .color(theme::ACCENT_PRIMARY),
+                                        )
+                                        .clicked()
+                                    {
+                                        out.push(AdminAction::SelectObject(m.uuid.clone()));
+                                    }
+                                    ui.label(
+                                        RichText::new(&m.field_name)
+                                            .monospace()
+                                            .size(11.0)
+                                            .color(theme::TEXT_SECONDARY),
+                                    );
+                                    ui.label(
+                                        RichText::new(&m.before)
+                                            .size(11.5)
+                                            .color(theme::TEXT_PRIMARY),
+                                    );
+                                    ui.label(
+                                        RichText::new(&m.after)
+                                            .size(11.5)
+                                            .strong()
+                                            .color(theme::ACCENT_PRIMARY),
+                                    );
+                                    ui.end_row();
+                                }
+                            });
+                    });
+            });
+        },
+    )
+}
+
+// ---------------------------------------------------------------------------
+// Project Backups (`CProjectBackupsDialog`)
+// ---------------------------------------------------------------------------
+
+pub fn project_backups_dir() -> std::path::PathBuf {
+    let base = std::env::var("HOME")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| std::path::PathBuf::from("."));
+    base.join(".config")
+        .join("loxone-portable")
+        .join("backups")
+}
+
+pub fn save_project_backup_to_dir(
+    project: &LoxoneProject,
+    dir: &std::path::Path,
+    note: &str,
+) -> Result<std::path::PathBuf, String> {
+    let xml = project
+        .raw_xml
+        .as_deref()
+        .ok_or_else(|| "Project has no raw XML to back up.".to_string())?;
+    std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    let dt = loxone_core::SimulatedDateTime::now_utc();
+    let slug: String = project
+        .metadata
+        .title
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+        .collect();
+    let note_slug: String = note
+        .trim()
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+        .collect();
+    let suffix = if note_slug.is_empty() {
+        String::new()
+    } else {
+        format!("_{note_slug}")
+    };
+    let file_name = format!(
+        "{}_{:04}{:02}{:02}_{:02}{:02}{:02}{}.Loxone",
+        if slug.is_empty() { "Project" } else { &slug },
+        dt.year,
+        dt.month,
+        dt.day,
+        dt.hour,
+        dt.minute,
+        dt.second,
+        suffix
+    );
+    let path = dir.join(file_name);
+    std::fs::write(&path, xml).map_err(|e| e.to_string())?;
+    Ok(path)
+}
+
+pub fn list_project_backups_in_dir(dir: &std::path::Path) -> Vec<ProjectBackupEntry> {
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut entries = Vec::new();
+    for entry in rd.flatten() {
+        let path = entry.path();
+        if path
+            .extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("Loxone"))
+        {
+            let Ok(meta) = entry.metadata() else {
+                continue;
+            };
+            let secs = meta
+                .modified()
+                .ok()
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_secs() as i64)
+                .unwrap_or(0);
+            let dt = loxone_core::SimulatedDateTime::from_epoch_seconds(secs);
+            entries.push(ProjectBackupEntry {
+                file_name: path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("Backup.Loxone")
+                    .to_string(),
+                path,
+                timestamp_display: dt.format_iso(),
+                size_bytes: meta.len(),
+            });
+        }
+    }
+    entries.sort_by(|a, b| b.timestamp_display.cmp(&a.timestamp_display));
+    entries
+}
+
+fn render_project_backups(
+    ctx: &egui::Context,
+    state: &mut AdminModalsState,
+    project: &LoxoneProject,
+    out: &mut Vec<AdminAction>,
+) -> bool {
+    let status = state.status.clone();
+    let mut close_after = false;
+    let keep = modal_window(
+        ctx,
+        "admin_project_backups",
+        "🗄 Project Backups",
+        [860.0, 540.0],
+        status.as_deref(),
+        |ui| {
+            ui.horizontal(|ui| {
+                ui.label(
+                    RichText::new(tr("Snapshot label:"))
+                        .strong()
+                        .color(theme::TEXT_SECONDARY),
+                );
+                ui.add(
+                    egui::TextEdit::singleline(&mut state.backup_note)
+                        .hint_text(tr("Optional note, e.g. Before HVAC changes"))
+                        .desired_width(260.0),
+                );
+                if button(ui, "💾 Create Snapshot Now", true).clicked() {
+                    let dir = project_backups_dir();
+                    match save_project_backup_to_dir(project, &dir, &state.backup_note) {
+                        Ok(saved) => {
+                            state.status =
+                                Some(format!("Saved backup snapshot: {}", saved.display()));
+                            state.backup_note.clear();
+                            state.backups_list = list_project_backups_in_dir(&dir);
+                        }
+                        Err(err) => {
+                            state.status = Some(format!("Backup failed: {err}"));
+                        }
+                    }
+                }
+            });
+            ui.add_space(8.0);
+            card(ui, |ui| {
+                egui::ScrollArea::vertical()
+                    .id_salt("project_backups_scroll")
+                    .max_height(ui.available_height() - 16.0)
+                    .show(ui, |ui| {
+                        if state.backups_list.is_empty() {
+                            ui.label(
+                                RichText::new(tr("No local project backups created yet."))
+                                    .color(theme::TEXT_SECONDARY),
+                            );
+                        }
+                        egui::Grid::new("project_backups_grid")
+                            .num_columns(4)
+                            .striped(true)
+                            .spacing([14.0, 6.0])
+                            .show(ui, |ui| {
+                                for h in ["Backup File", "Timestamp", "Size", ""] {
+                                    ui.label(
+                                        RichText::new(tr(h))
+                                            .size(11.0)
+                                            .strong()
+                                            .color(theme::TEXT_SECONDARY),
+                                    );
+                                }
+                                ui.end_row();
+                                let mut to_delete = None;
+                                for b in &state.backups_list {
+                                    ui.label(
+                                        RichText::new(&b.file_name)
+                                            .monospace()
+                                            .color(theme::TEXT_PRIMARY),
+                                    );
+                                    ui.label(
+                                        RichText::new(&b.timestamp_display)
+                                            .monospace()
+                                            .color(theme::TEXT_SECONDARY),
+                                    );
+                                    ui.label(
+                                        RichText::new(format!("{:.1} KB", b.size_bytes as f64 / 1024.0))
+                                            .monospace()
+                                            .color(theme::TEXT_SECONDARY),
+                                    );
+                                    ui.horizontal(|ui| {
+                                        if button(ui, "📂 Restore", true).clicked() {
+                                            out.push(AdminAction::RestoreBackupFile(b.path.clone()));
+                                            close_after = true;
+                                        }
+                                        if ui.small_button("🗑").clicked() {
+                                            to_delete = Some(b.path.clone());
+                                        }
+                                    });
+                                    ui.end_row();
+                                }
+                                if let Some(del_path) = to_delete {
+                                    let _ = std::fs::remove_file(&del_path);
+                                    state.backups_list =
+                                        list_project_backups_in_dir(&project_backups_dir());
+                                }
+                            });
+                    });
+            });
+        },
+    );
+    keep && !close_after
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1228,5 +2301,50 @@ mod tests {
         assert_eq!(days_from_civil(2024, 2, 29), 19782);
         assert_eq!(weekday_mon0(2024, 1, 1), 0); // Monday
         assert_eq!(weekday_mon0(1970, 1, 1), 3); // Thursday
+    }
+
+    #[test]
+    fn test_stage3_edit_by_type_find_replace_and_backups() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("Sample.Loxone");
+        let project = loxone_core::parser::load_loxone_file(&path).expect("load Sample.Loxone");
+
+        // 1. Edit Objects of Same Type
+        let types = collect_editable_object_types(&project);
+        assert!(!types.is_empty());
+        let mut rows = build_same_type_object_rows(&project, "LightController2");
+        assert!(!rows.is_empty());
+        rows[0].title = "Updated Salon Lighting".to_string();
+        let batch = build_same_type_batch_edit(&rows).expect("should produce batch edit");
+        assert!(matches!(batch, ProjectEdit::Batch(ref v) if v.len() == 1));
+
+        // 2. Find & Replace
+        let matches = preview_find_and_replace(
+            &project,
+            "Oświetlenie",
+            "Światło",
+            false,
+            true,
+            true,
+            false,
+        );
+        assert!(!matches.is_empty());
+        let fr_batch =
+            build_find_and_replace_batch_edit(&matches).expect("find/replace batch edit");
+        assert!(matches!(fr_batch, ProjectEdit::Batch(ref v) if v.len() == matches.len()));
+
+        // 3. Project Backups in temporary directory
+        let tmp_dir = std::env::temp_dir().join("loxone_portable_stage3_test_backups");
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+        let saved_path =
+            save_project_backup_to_dir(&project, &tmp_dir, "stage3").expect("save backup");
+        assert!(saved_path.exists());
+        let listed = list_project_backups_in_dir(&tmp_dir);
+        assert_eq!(listed.len(), 1);
+        let _ = std::fs::remove_dir_all(&tmp_dir);
     }
 }

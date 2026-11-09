@@ -3,6 +3,154 @@ use std::collections::BTreeMap;
 use crate::miniserver::{LiveControlSnapshot, LiveValueStore};
 use crate::model::{ConnectorPin, LoxoneProject, Page, PageBlock};
 
+/// Simulated wall-clock date and time (`YYYY-MM-DD HH:MM:SS`) for testing schedules,
+/// daytimers, alarm clocks, operating modes, and room controllers in [`OfflineSimulator`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SimulatedDateTime {
+    pub year: i32,
+    pub month: u8,
+    pub day: u8,
+    pub hour: u8,
+    pub minute: u8,
+    pub second: u8,
+}
+
+impl Default for SimulatedDateTime {
+    fn default() -> Self {
+        Self::now_utc()
+    }
+}
+
+impl SimulatedDateTime {
+    pub const fn new(year: i32, month: u8, day: u8, hour: u8, minute: u8, second: u8) -> Self {
+        Self {
+            year,
+            month,
+            day,
+            hour,
+            minute,
+            second,
+        }
+    }
+
+    pub fn now_utc() -> Self {
+        let secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(1_776_513_600);
+        Self::from_epoch_seconds(secs)
+    }
+
+    pub fn to_epoch_seconds(self) -> i64 {
+        let y = self.year as i64;
+        let m = self.month.clamp(1, 12) as u32;
+        let d = self.day.clamp(1, 31) as u32;
+        let y_adj = if m <= 2 { y - 1 } else { y };
+        let era = if y_adj >= 0 { y_adj } else { y_adj - 399 } / 400;
+        let yoe = y_adj - era * 400;
+        let mp = if m > 2 { m as i64 - 3 } else { m as i64 + 9 };
+        let doy = (153 * mp + 2) / 5 + d as i64 - 1;
+        let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+        let days = era * 146_097 + doe - 719_468;
+        days * 86_400
+            + (self.hour as i64) * 3600
+            + (self.minute as i64) * 60
+            + (self.second as i64)
+    }
+
+    pub fn from_epoch_seconds(secs: i64) -> Self {
+        let days = secs.div_euclid(86_400);
+        let rem = secs.rem_euclid(86_400);
+        let hour = (rem / 3600) as u8;
+        let minute = ((rem % 3600) / 60) as u8;
+        let second = (rem % 60) as u8;
+
+        let z = days + 719_468;
+        let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+        let doe = z - era * 146_097;
+        let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+        let y = yoe + era * 400;
+        let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+        let mp = (5 * doy + 2) / 153;
+        let d = (doy - (153 * mp + 2) / 5 + 1) as u8;
+        let m = (if mp < 10 { mp + 3 } else { mp - 9 }) as u8;
+        let year = (if m <= 2 { y + 1 } else { y }) as i32;
+        Self {
+            year,
+            month: m,
+            day: d,
+            hour,
+            minute,
+            second,
+        }
+    }
+
+    pub fn advance_seconds(&mut self, delta_secs: i64) {
+        *self = Self::from_epoch_seconds(self.to_epoch_seconds() + delta_secs);
+    }
+
+    pub fn format_iso(self) -> String {
+        format!(
+            "{:04}-{:02}-{:02} {:02}:{:02}:{:02}",
+            self.year, self.month, self.day, self.hour, self.minute, self.second
+        )
+    }
+
+    /// Parses `"YYYY-MM-DD HH:MM:SS"`, `"YYYY-MM-DD HH:MM"`, or `"DD.MM.YYYY HH:MM:SS"`.
+    pub fn parse_iso(raw: &str) -> Option<Self> {
+        let s = raw.trim();
+        let (date_part, time_part) = s.split_once([' ', 'T']).unwrap_or((s, "00:00:00"));
+        let (year, month, day) = if date_part.contains('-') {
+            let mut it = date_part.split('-');
+            let y: i32 = it.next()?.trim().parse().ok()?;
+            let m: u8 = it.next()?.trim().parse().ok()?;
+            let d: u8 = it.next()?.trim().parse().ok()?;
+            (y, m, d)
+        } else if date_part.contains('.') {
+            let mut it = date_part.split('.');
+            let d: u8 = it.next()?.trim().parse().ok()?;
+            let m: u8 = it.next()?.trim().parse().ok()?;
+            let y: i32 = it.next()?.trim().parse().ok()?;
+            (y, m, d)
+        } else {
+            return None;
+        };
+        if !(1..=12).contains(&month) || !(1..=31).contains(&day) {
+            return None;
+        }
+        let mut t_it = time_part.trim().split(':');
+        let hour: u8 = t_it.next().unwrap_or("0").trim().parse().ok()?;
+        let minute: u8 = t_it.next().unwrap_or("0").trim().parse().ok()?;
+        let second: u8 = t_it.next().unwrap_or("0").trim().parse().ok()?;
+        if hour > 23 || minute > 59 || second > 59 {
+            return None;
+        }
+        Some(Self {
+            year,
+            month,
+            day,
+            hour,
+            minute,
+            second,
+        })
+    }
+
+    /// Weekday with Monday = 0 .. Sunday = 6.
+    pub fn weekday_mon0(self) -> u8 {
+        let days = self.to_epoch_seconds().div_euclid(86_400);
+        (days + 3).rem_euclid(7) as u8
+    }
+
+    pub fn weekday_short_name(self) -> &'static str {
+        const NAMES: [&str; 7] = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+        NAMES[self.weekday_mon0() as usize]
+    }
+
+    pub fn minutes_since_midnight(self) -> u16 {
+        (self.hour as u16) * 60 + (self.minute as u16)
+    }
+}
+
 /// Pure offline logic simulation engine for Loxone schematics.
 ///
 /// Produces and updates a [`LiveValueStore`] directly from the project's pages, blocks,
@@ -14,6 +162,7 @@ pub struct OfflineSimulator {
     pub enabled: bool,
     pub live_store: LiveValueStore,
     pub tick_count: u64,
+    pub simulated_time: SimulatedDateTime,
     pub forced_inputs: BTreeMap<String, String>,
     pub block_latches: BTreeMap<String, f64>,
 }
@@ -101,6 +250,7 @@ impl OfflineSimulator {
             self.start(project);
         }
         self.tick_count += 1;
+        self.simulated_time.advance_seconds(1);
 
         for page in &project.pages {
             for block in &page.blocks {
@@ -136,6 +286,24 @@ impl OfflineSimulator {
             }
         }
 
+        self.recompute(project);
+    }
+
+    /// Sets the simulated wall-clock date/time (`YYYY-MM-DD HH:MM:SS`) and recomputes time-based blocks.
+    pub fn set_simulated_time(&mut self, project: &LoxoneProject, dt: SimulatedDateTime) {
+        self.simulated_time = dt;
+        if self.enabled {
+            self.recompute(project);
+        }
+    }
+
+    /// Advances the simulated wall-clock date/time by `delta_secs` and recomputes all blocks.
+    pub fn advance_seconds(&mut self, project: &LoxoneProject, delta_secs: i64) {
+        if !self.enabled {
+            self.start(project);
+        }
+        self.tick_count = self.tick_count.wrapping_add(1);
+        self.simulated_time.advance_seconds(delta_secs);
         self.recompute(project);
     }
 
@@ -450,6 +618,56 @@ impl OfflineSimulator {
                 self.set_block_output_pin(&block.uuid, "Q", &val_str, true);
                 self.set_block_output_pin(&block.uuid, "AQ", &val_str, false);
             }
+            "Daytimer" | "Schedule" | "IRC2Daytimer" => {
+                let reset =
+                    self.max_input_for_keys(block, page, project, &["R", "Reset", "Dis", "Off"]);
+                if reset > 0.0 {
+                    self.write_digital_outputs(block, 0.0);
+                    self.set_block_output_pin(&block.uuid, "AQ", "0", false);
+                } else {
+                    let start_min = block
+                        .attr("StartMin")
+                        .and_then(|s| s.parse::<u16>().ok())
+                        .unwrap_or(6 * 60);
+                    let end_min = block
+                        .attr("EndMin")
+                        .and_then(|s| s.parse::<u16>().ok())
+                        .unwrap_or(22 * 60);
+                    let cur_min = self.simulated_time.minutes_since_midnight();
+                    let active = cur_min >= start_min && cur_min < end_min;
+                    let q = if active { 1.0 } else { 0.0 };
+                    self.write_digital_outputs(block, q);
+                    self.set_block_output_pin(
+                        &block.uuid,
+                        "AQ",
+                        if active { "1" } else { "0" },
+                        false,
+                    );
+                }
+            }
+            "AlarmClock" => {
+                let dis = self.max_input_for_keys(block, page, project, &["Dis", "R", "Reset"]);
+                let target_min = block
+                    .attr("AlarmMin")
+                    .and_then(|s| s.parse::<u16>().ok())
+                    .unwrap_or(7 * 60);
+                let cur_min = self.simulated_time.minutes_since_midnight();
+                let active = dis <= 0.0 && cur_min == target_min;
+                self.write_digital_outputs(block, if active { 1.0 } else { 0.0 });
+            }
+            "HeatIRoomController2" | "IRoomControllerV2" | "IRoomController" => {
+                let cur_min = self.simulated_time.minutes_since_midnight();
+                let comfort = (6 * 60..22 * 60).contains(&cur_min);
+                let target_temp = if comfort { "21.5" } else { "19.0" };
+                self.set_block_output_pin(&block.uuid, "TempTarget", target_temp, true);
+                self.set_block_output_pin(&block.uuid, "T", target_temp, false);
+                self.set_block_output_pin(
+                    &block.uuid,
+                    "Qh",
+                    if comfort { "1" } else { "0" },
+                    false,
+                );
+            }
             _ => {}
         }
     }
@@ -511,7 +729,13 @@ impl OfflineSimulator {
                     self.live_store
                         .resolve_pin_by_uuid(&link.source_pin_uuid, page, project, 0)
                 {
-                    values.push(parse_signal_numeric(&sig.raw));
+                    let raw_v = parse_signal_numeric(&sig.raw);
+                    let v = if pin.inverted {
+                        if raw_v > 0.0 { 0.0 } else { 1.0 }
+                    } else {
+                        raw_v
+                    };
+                    values.push(v);
                 }
             }
         }
@@ -570,12 +794,19 @@ impl OfflineSimulator {
         page: &Page,
         project: &LoxoneProject,
     ) -> Option<f64> {
+        let apply_inv = |v: f64| -> f64 {
+            if pin.inverted {
+                if v > 0.0 { 0.0 } else { 1.0 }
+            } else {
+                v
+            }
+        };
         if let Some(ov) = self
             .live_store
             .pin_overrides
             .get(&(block.uuid.clone(), pin.key.clone()))
         {
-            return Some(parse_signal_numeric(ov));
+            return Some(apply_inv(parse_signal_numeric(ov)));
         }
 
         let mut acc: Option<f64> = None;
@@ -591,13 +822,13 @@ impl OfflineSimulator {
                 acc = Some(acc.map_or(v, |prev| prev.max(v)));
             }
         }
-        if acc.is_some() {
-            return acc;
+        if let Some(v) = acc {
+            return Some(apply_inv(v));
         }
 
         if let Some(def) = &pin.default_value {
             if !def.is_empty() {
-                return Some(parse_signal_numeric(def));
+                return Some(apply_inv(parse_signal_numeric(def)));
             }
         }
         None
@@ -805,5 +1036,63 @@ mod tests {
             .find(|p| p.key == "OutputAPI")
             .unwrap();
         assert!(sim.live_store.resolve_pin_signal(light_blk, light_out, page_ref, &project).is_active);
+    }
+
+    #[test]
+    fn test_simulated_datetime_and_time_based_blocks() {
+        let dt = SimulatedDateTime::parse_iso("2026-04-18 06:59:59").expect("parse iso");
+        assert_eq!(dt.format_iso(), "2026-04-18 06:59:59");
+        assert_eq!(dt.weekday_short_name(), "Sat");
+
+        let xml = std::fs::read_to_string("../../Sample.Loxone")
+            .expect("Sample.Loxone fixture should exist");
+        let mut project = crate::parser::parse_loxone_xml(&xml).expect("parse should succeed");
+
+        let mut page = new_page("Time Simulation Page");
+        let daytimer = new_page_block("Daytimer", "Working Hours", 64.0, 64.0);
+        let dt_uuid = daytimer.uuid.clone();
+        let alarm_clock = new_page_block("AlarmClock", "Wake Up 07:00", 320.0, 64.0);
+        let ac_uuid = alarm_clock.uuid.clone();
+
+        page.blocks.push(daytimer);
+        page.blocks.push(alarm_clock);
+        project.pages.push(page);
+        project.xref = crate::xref::XrefIndex::build(&project);
+
+        let mut sim = OfflineSimulator::new();
+        sim.start(&project);
+        sim.set_simulated_time(&project, dt);
+
+        let page_ref = project
+            .pages
+            .iter()
+            .find(|p| p.title == "Time Simulation Page")
+            .unwrap();
+        let dt_blk = page_ref.blocks.iter().find(|b| b.uuid == dt_uuid).unwrap();
+        let dt_q = dt_blk
+            .pins
+            .iter()
+            .find(|p| matches!(p.key.as_str(), "Q" | "O" | "AQ"))
+            .unwrap();
+        let ac_blk = page_ref.blocks.iter().find(|b| b.uuid == ac_uuid).unwrap();
+        let ac_q = ac_blk
+            .pins
+            .iter()
+            .find(|p| matches!(p.key.as_str(), "Q" | "O" | "AQ"))
+            .unwrap();
+
+        // At 06:59:59, Daytimer (06:00..22:00) is active, AlarmClock (07:00) is not
+        assert!(sim.live_store.resolve_pin_signal(dt_blk, dt_q, page_ref, &project).is_active);
+        assert!(!sim.live_store.resolve_pin_signal(ac_blk, ac_q, page_ref, &project).is_active);
+
+        // Step +1s -> 07:00:00 -> AlarmClock triggers!
+        sim.step_tick(&project);
+        assert_eq!(sim.simulated_time.format_iso(), "2026-04-18 07:00:00");
+        assert!(sim.live_store.resolve_pin_signal(ac_blk, ac_q, page_ref, &project).is_active);
+
+        // Advance +16 hours -> 23:00:00 -> Daytimer turns off
+        sim.advance_seconds(&project, 16 * 3600);
+        assert_eq!(sim.simulated_time.format_iso(), "2026-04-18 23:00:00");
+        assert!(!sim.live_store.resolve_pin_signal(dt_blk, dt_q, page_ref, &project).is_active);
     }
 }
