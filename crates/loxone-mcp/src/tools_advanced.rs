@@ -1,5 +1,8 @@
 use std::path::Path;
 
+use loxone_core::advanced_blocks_config::{
+    collect_audio_out_channels, collect_audio_zone_candidates, AudioFavoritePreset, AudioZoneConfig,
+};
 use loxone_core::efm_config::{EfmConfig, EfmNode, EfmNodeType};
 use loxone_core::export::{
     export_component_bom_csv, page_to_svg, project_documentation_html, technical_report_html,
@@ -578,6 +581,196 @@ fn call_advanced_tool_part2(
                     }
                 }
                 cfg.to_project_edits(block)
+            };
+            match session.apply_edit(edit) {
+                Ok(()) => JsonRpcResponse::tool_ok(
+                    id,
+                    json!({ "block_uuid": block_uuid, "updated": true }),
+                ),
+                Err(e) => JsonRpcResponse::tool_err(id, e),
+            }
+        }
+        "config_audio_zone_get" => {
+            let Some(block_uuid) = args.get("block_uuid").and_then(Value::as_str) else {
+                return JsonRpcResponse::tool_err(id, "Missing required parameter 'block_uuid'");
+            };
+            let Some(proj) = session.project() else {
+                return JsonRpcResponse::tool_err(id, "No project loaded");
+            };
+            let Some(block) = proj
+                .pages
+                .iter()
+                .flat_map(|p| p.blocks.iter())
+                .find(|b| b.uuid == block_uuid)
+            else {
+                return JsonRpcResponse::tool_err(id, format!("Block '{block_uuid}' not found"));
+            };
+            let cfg = AudioZoneConfig::from_block(block, proj);
+            let all_channels = collect_audio_out_channels(proj);
+            let zone_candidates = collect_audio_zone_candidates(proj, block_uuid);
+
+            let channels_json: Vec<Value> = all_channels
+                .iter()
+                .map(|ch| {
+                    json!({
+                        "uuid": ch.uuid,
+                        "title": ch.title,
+                        "parent_title": ch.parent_title,
+                        "assigned": cfg.is_channel_assigned(&ch.uuid),
+                        "max_vol": cfg.channel_max_vol(ch),
+                        "line_out_vol": cfg.channel_line_out_vol(ch),
+                        "gain_db": cfg.channel_gain(ch)
+                    })
+                })
+                .collect();
+            let favorites_json: Vec<Value> = cfg
+                .favorites
+                .iter()
+                .map(|f| {
+                    json!({
+                        "slot": f.slot,
+                        "title": f.title,
+                        "source_uri": f.source_uri
+                    })
+                })
+                .collect();
+            let candidates_json: Vec<Value> = zone_candidates
+                .iter()
+                .map(|c| {
+                    json!({
+                        "uuid": c.uuid,
+                        "title": c.title,
+                        "block_type": c.block_type,
+                        "room_name": c.room_name,
+                        "grouped": cfg.is_player_grouped(&c.uuid)
+                    })
+                })
+                .collect();
+
+            JsonRpcResponse::tool_ok(
+                id,
+                json!({
+                    "block_uuid": block.uuid,
+                    "title": block.title,
+                    "block_type": block.block_type,
+                    "speaker_cfg": cfg.speaker_cfg,
+                    "presence_enabled": cfg.presence_enabled,
+                    "airplay_enabled": cfg.airplay_enabled,
+                    "spotify_enabled": cfg.spotify_enabled,
+                    "high_pass_filter": cfg.high_pass_filter,
+                    "default_vol": cfg.default_vol,
+                    "max_vol": cfg.max_vol,
+                    "step_vol": cfg.step_vol,
+                    "alarm_vol": cfg.alarm_vol,
+                    "bell_vol": cfg.bell_vol,
+                    "buzzer_vol": cfg.buzzer_vol,
+                    "tts_vol": cfg.tts_vol,
+                    "assigned_channel_uuids": cfg.assigned_channel_uuids,
+                    "master_player_uuid": cfg.master_player_uuid,
+                    "grouped_player_uuids": cfg.grouped_player_uuids,
+                    "favorites": favorites_json,
+                    "available_channels": channels_json,
+                    "available_zone_candidates": candidates_json
+                }),
+            )
+        }
+        "config_audio_zone_set" => {
+            let Some(block_uuid) = args.get("block_uuid").and_then(Value::as_str) else {
+                return JsonRpcResponse::tool_err(id, "Missing required parameter 'block_uuid'");
+            };
+            let edit = {
+                let Some(proj) = session.project() else {
+                    return JsonRpcResponse::tool_err(id, "No project loaded");
+                };
+                let Some((page_uuid, block)) = proj.pages.iter().find_map(|p| {
+                    p.blocks
+                        .iter()
+                        .find(|b| b.uuid == block_uuid)
+                        .map(|b| (p.uuid.clone(), b))
+                }) else {
+                    return JsonRpcResponse::tool_err(id, format!("Block '{block_uuid}' not found"));
+                };
+                let all_channels = collect_audio_out_channels(proj);
+                let mut cfg = AudioZoneConfig::from_block(block, proj);
+
+                if let Some(v) = args.get("speaker_cfg").and_then(Value::as_u64) {
+                    cfg.speaker_cfg = v as u32;
+                }
+                if let Some(v) = args.get("presence_enabled").and_then(Value::as_bool) {
+                    cfg.presence_enabled = v;
+                }
+                if let Some(v) = args.get("airplay_enabled").and_then(Value::as_bool) {
+                    cfg.airplay_enabled = v;
+                }
+                if let Some(v) = args.get("spotify_enabled").and_then(Value::as_bool) {
+                    cfg.spotify_enabled = v;
+                }
+                if let Some(v) = args.get("high_pass_filter").and_then(Value::as_bool) {
+                    cfg.high_pass_filter = v;
+                }
+                if let Some(v) = args.get("default_vol").and_then(Value::as_u64) {
+                    cfg.default_vol = v as u32;
+                }
+                if let Some(v) = args.get("max_vol").and_then(Value::as_u64) {
+                    cfg.max_vol = v as u32;
+                }
+                if let Some(v) = args.get("step_vol").and_then(Value::as_u64) {
+                    cfg.step_vol = v as u32;
+                }
+                if let Some(v) = args.get("alarm_vol").and_then(Value::as_u64) {
+                    cfg.alarm_vol = v as u32;
+                }
+                if let Some(v) = args.get("bell_vol").and_then(Value::as_u64) {
+                    cfg.bell_vol = v as u32;
+                }
+                if let Some(v) = args.get("buzzer_vol").and_then(Value::as_u64) {
+                    cfg.buzzer_vol = v as u32;
+                }
+                if let Some(v) = args.get("tts_vol").and_then(Value::as_u64) {
+                    cfg.tts_vol = v as u32;
+                }
+                if let Some(arr) = args.get("assigned_channel_uuids").and_then(Value::as_array) {
+                    cfg.assigned_channel_uuids = arr
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .map(str::to_string)
+                        .collect();
+                }
+                if let Some(mst) = args.get("master_player_uuid") {
+                    cfg.master_player_uuid = mst
+                        .as_str()
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty())
+                        .map(str::to_string);
+                }
+                if let Some(arr) = args.get("grouped_player_uuids").and_then(Value::as_array) {
+                    cfg.grouped_player_uuids = arr
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .map(str::to_string)
+                        .collect();
+                }
+                if let Some(favs) = args.get("favorites").and_then(Value::as_array) {
+                    cfg.favorites = favs
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(idx, f)| {
+                            let title = f.get("title")?.as_str()?.to_string();
+                            let source_uri = f.get("source_uri")?.as_str()?.to_string();
+                            let slot = f
+                                .get("slot")
+                                .and_then(Value::as_u64)
+                                .map(|s| s as u32)
+                                .unwrap_or((idx as u32) + 1);
+                            Some(AudioFavoritePreset {
+                                slot,
+                                title,
+                                source_uri,
+                            })
+                        })
+                        .collect();
+                }
+                cfg.to_project_edit(&page_uuid, block_uuid, &all_channels)
             };
             match session.apply_edit(edit) {
                 Ok(()) => JsonRpcResponse::tool_ok(

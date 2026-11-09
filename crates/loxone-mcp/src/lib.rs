@@ -261,5 +261,36 @@ mod tests {
             }),
         );
         assert!(fr["match_count"].as_u64().unwrap() > 0);
+
+        // AudioZone / MusicPlayer configuration & Player Group / Favorites
+        let mp_uuid = "19eb19a5-0392-28eb-ffff51535bcccc04";
+        let az_before = call_tool(
+            &mut session,
+            "config_audio_zone_get",
+            json!({ "block_uuid": mp_uuid }),
+        );
+        assert_eq!(az_before["default_vol"], 20);
+        assert_eq!(az_before["assigned_channel_uuids"].as_array().unwrap().len(), 4);
+
+        call_tool(
+            &mut session,
+            "config_audio_zone_set",
+            json!({
+                "block_uuid": mp_uuid,
+                "default_vol": 28,
+                "airplay_enabled": true,
+                "favorites": [
+                    { "slot": 1, "title": "Chill Lounge", "source_uri": "tunein://s12345" }
+                ]
+            }),
+        );
+        let az_after = call_tool(
+            &mut session,
+            "config_audio_zone_get",
+            json!({ "block_uuid": mp_uuid }),
+        );
+        assert_eq!(az_after["default_vol"], 28);
+        assert_eq!(az_after["airplay_enabled"], true);
+        assert_eq!(az_after["favorites"][0]["title"], "Chill Lounge");
     }
 }

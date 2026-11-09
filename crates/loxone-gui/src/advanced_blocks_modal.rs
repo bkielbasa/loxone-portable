@@ -3,9 +3,10 @@ use egui::{
     ScrollArea, Stroke, TextEdit, Vec2,
 };
 use loxone_core::advanced_blocks_config::{
-    collect_audio_out_channels, collect_central_candidates, collect_irc_candidates,
-    collect_presence_sensor_candidates, AccessBlockConfig, AudioZoneConfig, CentralBlockConfig,
-    ClimateControllerConfig, PresenceBlockConfig, SequenceConfig, ShadingBlockConfig,
+    collect_audio_out_channels, collect_audio_zone_candidates, collect_central_candidates,
+    collect_irc_candidates, collect_presence_sensor_candidates, AccessBlockConfig, AudioZoneConfig,
+    CentralBlockConfig, ClimateControllerConfig, PresenceBlockConfig, SequenceConfig,
+    ShadingBlockConfig,
 };
 use loxone_core::model::LoxoneProject;
 use loxone_core::writer::ProjectEdit;
@@ -227,7 +228,7 @@ pub fn render_advanced_blocks_modal(
                         render_central_body(ui, cfg, proj, &block_type, filter_ref);
                     }
                     ActiveAdvancedModal::AudioZone(cfg) => {
-                        render_audio_zone_body(ui, cfg, proj);
+                        render_audio_zone_body(ui, cfg, proj, &block_uuid);
                     }
                     ActiveAdvancedModal::Climate(cfg) => {
                         render_climate_body(ui, cfg, proj, filter_ref);
@@ -442,93 +443,168 @@ fn render_audio_zone_body(
     ui: &mut egui::Ui,
     cfg: &mut AudioZoneConfig,
     project: &LoxoneProject,
+    block_uuid: &str,
 ) {
     let channels = collect_audio_out_channels(project);
+    let zone_candidates = collect_audio_zone_candidates(project, block_uuid);
+
     ui.columns(2, |cols| {
-        // Left column: Streaming, Speaker Config & Volume Presets
+        // Left column: Streaming, Speaker Config, Volume Presets & Favorites
         egui::Frame::NONE
             .fill(CARD_BG)
             .stroke(Stroke::new(1.0_f32, BORDER_SUBTLE))
             .corner_radius(CornerRadius::same(8))
             .inner_margin(egui::Margin::same(12))
             .show(&mut cols[0], |ui| {
-                ui.label(
-                    RichText::new(tr("ZONE & STREAMING SERVICES"))
-                        .size(11.0)
-                        .strong()
-                        .color(LOXONE_GREEN),
-                );
-                ui.add_space(6.0);
-                ui.horizontal(|ui| {
-                    ui.label(tr("Speaker Mode (SpCfg):"));
-                    ComboBox::from_id_salt("audio_spcfg_combo")
-                        .selected_text(match cfg.speaker_cfg {
-                            1 => tr("1 — Mono"),
-                            2 => tr("2 — Stereo"),
-                            4 => tr("4 — Quad / Multi-Channel"),
-                            _ => tr("Custom"),
-                        })
-                        .show_ui(ui, |ui| {
-                            ui.selectable_value(&mut cfg.speaker_cfg, 1, tr("1 — Mono"));
-                            ui.selectable_value(&mut cfg.speaker_cfg, 2, tr("2 — Stereo"));
-                            ui.selectable_value(
-                                &mut cfg.speaker_cfg,
-                                4,
-                                tr("4 — Quad / Multi-Channel"),
-                            );
-                        });
-                });
-                ui.checkbox(&mut cfg.presence_enabled, tr("Presence Auto-Activation (PR)"));
-                ui.checkbox(&mut cfg.airplay_enabled, tr("Apple AirPlay 2 Receiver (APL)"));
-                ui.checkbox(&mut cfg.spotify_enabled, tr("Spotify Connect Receiver (SPC)"));
-                ui.checkbox(&mut cfg.high_pass_filter, tr("Speaker High-Pass Filter (HPF)"));
-
-                ui.add_space(10.0);
-                ui.separator();
-                ui.add_space(8.0);
-                ui.label(
-                    RichText::new(tr("VOLUME PRESETS (%)"))
-                        .size(11.0)
-                        .strong()
-                        .color(LOXONE_GREEN),
-                );
-                ui.add_space(6.0);
-
-                egui::Grid::new("audio_vol_grid")
-                    .num_columns(2)
-                    .spacing([16.0, 6.0])
+                ScrollArea::vertical()
+                    .id_salt("audio_left_scroll")
+                    .max_height(395.0)
                     .show(ui, |ui| {
-                        ui.label(tr("Default Volume (DefVol):"));
-                        ui.add(DragValue::new(&mut cfg.default_vol).range(0..=100).suffix("%"));
-                        ui.end_row();
+                        ui.label(
+                            RichText::new(tr("ZONE & STREAMING SERVICES"))
+                                .size(11.0)
+                                .strong()
+                                .color(LOXONE_GREEN),
+                        );
+                        ui.add_space(6.0);
+                        ui.horizontal(|ui| {
+                            ui.label(tr("Speaker Mode (SpCfg):"));
+                            ComboBox::from_id_salt("audio_spcfg_combo")
+                                .selected_text(match cfg.speaker_cfg {
+                                    1 => tr("1 — Mono"),
+                                    2 => tr("2 — Stereo"),
+                                    4 => tr("4 — Quad / Multi-Channel"),
+                                    _ => tr("Custom"),
+                                })
+                                .show_ui(ui, |ui| {
+                                    ui.selectable_value(&mut cfg.speaker_cfg, 1, tr("1 — Mono"));
+                                    ui.selectable_value(&mut cfg.speaker_cfg, 2, tr("2 — Stereo"));
+                                    ui.selectable_value(
+                                        &mut cfg.speaker_cfg,
+                                        4,
+                                        tr("4 — Quad / Multi-Channel"),
+                                    );
+                                });
+                        });
+                        ui.checkbox(&mut cfg.presence_enabled, tr("Presence Auto-Activation (PR)"));
+                        ui.checkbox(&mut cfg.airplay_enabled, tr("Apple AirPlay 2 Receiver (APL)"));
+                        ui.checkbox(&mut cfg.spotify_enabled, tr("Spotify Connect Receiver (SPC)"));
+                        ui.checkbox(&mut cfg.high_pass_filter, tr("Speaker High-Pass Filter (HPF)"));
 
-                        ui.label(tr("Max Volume Limit (MaxVol):"));
-                        ui.add(DragValue::new(&mut cfg.max_vol).range(1..=100).suffix("%"));
-                        ui.end_row();
+                        ui.add_space(8.0);
+                        ui.separator();
+                        ui.add_space(6.0);
+                        ui.label(
+                            RichText::new(tr("VOLUME PRESETS (%)"))
+                                .size(11.0)
+                                .strong()
+                                .color(LOXONE_GREEN),
+                        );
+                        ui.add_space(4.0);
 
-                        ui.label(tr("Volume Step (Step):"));
-                        ui.add(DragValue::new(&mut cfg.step_vol).range(1..=20).suffix("%"));
-                        ui.end_row();
+                        egui::Grid::new("audio_vol_grid")
+                            .num_columns(2)
+                            .spacing([16.0, 5.0])
+                            .show(ui, |ui| {
+                                ui.label(tr("Default Volume (DefVol):"));
+                                ui.add(
+                                    DragValue::new(&mut cfg.default_vol)
+                                        .range(0..=100)
+                                        .suffix("%"),
+                                );
+                                ui.end_row();
 
-                        ui.label(tr("Alarm Volume (AlarmVol):"));
-                        ui.add(DragValue::new(&mut cfg.alarm_vol).range(0..=100).suffix("%"));
-                        ui.end_row();
+                                ui.label(tr("Max Volume Limit (MaxVol):"));
+                                ui.add(
+                                    DragValue::new(&mut cfg.max_vol).range(1..=100).suffix("%"),
+                                );
+                                ui.end_row();
 
-                        ui.label(tr("Doorbell Volume (BellVol):"));
-                        ui.add(DragValue::new(&mut cfg.bell_vol).range(0..=100).suffix("%"));
-                        ui.end_row();
+                                ui.label(tr("Volume Step (Step):"));
+                                ui.add(
+                                    DragValue::new(&mut cfg.step_vol).range(1..=20).suffix("%"),
+                                );
+                                ui.end_row();
 
-                        ui.label(tr("Buzzer Volume (BuzzVol):"));
-                        ui.add(DragValue::new(&mut cfg.buzzer_vol).range(0..=100).suffix("%"));
-                        ui.end_row();
+                                ui.label(tr("Alarm Volume (AlarmVol):"));
+                                ui.add(
+                                    DragValue::new(&mut cfg.alarm_vol)
+                                        .range(0..=100)
+                                        .suffix("%"),
+                                );
+                                ui.end_row();
 
-                        ui.label(tr("Text-To-Speech (TTSVol):"));
-                        ui.add(DragValue::new(&mut cfg.tts_vol).range(0..=100).suffix("%"));
-                        ui.end_row();
+                                ui.label(tr("Doorbell Volume (BellVol):"));
+                                ui.add(
+                                    DragValue::new(&mut cfg.bell_vol).range(0..=100).suffix("%"),
+                                );
+                                ui.end_row();
+
+                                ui.label(tr("Buzzer Volume (BuzzVol):"));
+                                ui.add(
+                                    DragValue::new(&mut cfg.buzzer_vol)
+                                        .range(0..=100)
+                                        .suffix("%"),
+                                );
+                                ui.end_row();
+
+                                ui.label(tr("Text-To-Speech (TTSVol):"));
+                                ui.add(
+                                    DragValue::new(&mut cfg.tts_vol).range(0..=100).suffix("%"),
+                                );
+                                ui.end_row();
+                            });
+
+                        ui.add_space(8.0);
+                        ui.separator();
+                        ui.add_space(6.0);
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                RichText::new(tr("ROOM AUDIO FAVORITES / PRESETS"))
+                                    .size(11.0)
+                                    .strong()
+                                    .color(LOXONE_GREEN),
+                            );
+                            if ui.small_button(tr("+ Add Preset")).clicked() {
+                                let next_idx = cfg.favorites.len() + 1;
+                                cfg.add_favorite(
+                                    format!("Favorite {next_idx}"),
+                                    "tunein://station".to_string(),
+                                );
+                            }
+                        });
+                        ui.add_space(4.0);
+                        let mut remove_fav_idx = None;
+                        for (idx, fav) in cfg.favorites.iter_mut().enumerate() {
+                            ui.horizontal(|ui| {
+                                ui.label(
+                                    RichText::new(format!("#{}", fav.slot))
+                                        .size(11.0)
+                                        .monospace()
+                                        .color(LOXONE_GREEN),
+                                );
+                                ui.add(
+                                    TextEdit::singleline(&mut fav.title)
+                                        .hint_text("Preset name")
+                                        .desired_width(110.0),
+                                );
+                                ui.add(
+                                    TextEdit::singleline(&mut fav.source_uri)
+                                        .hint_text("URI / Source")
+                                        .desired_width(135.0),
+                                );
+                                if ui.small_button("✕").clicked() {
+                                    remove_fav_idx = Some(idx);
+                                }
+                            });
+                        }
+                        if let Some(idx) = remove_fav_idx {
+                            cfg.remove_favorite(idx);
+                        }
                     });
             });
 
-        // Right column: Audioserver Output Channels (`AudioOut`)
+        // Right column: Audioserver Output Channels (`AudioOut`) + Player Group Sync
         egui::Frame::NONE
             .fill(CARD_BG)
             .stroke(Stroke::new(1.0_f32, BORDER_SUBTLE))
@@ -545,10 +621,10 @@ fn render_audio_zone_body(
                     .strong()
                     .color(LOXONE_GREEN),
                 );
-                ui.add_space(6.0);
+                ui.add_space(4.0);
                 ScrollArea::vertical()
                     .id_salt("audio_channels_scroll")
-                    .max_height(340.0)
+                    .max_height(215.0)
                     .show(ui, |ui| {
                         for ch in &channels {
                             let mut assigned = cfg.is_channel_assigned(&ch.uuid);
@@ -577,17 +653,130 @@ fn render_audio_zone_body(
                                                     .color(TEXT_PRIMARY),
                                             );
                                             ui.label(
-                                                RichText::new(format!(
-                                                    "{} • Max {}%",
-                                                    ch.parent_title, ch.max_vol
-                                                ))
-                                                .size(10.5)
-                                                .color(TEXT_MUTED),
+                                                RichText::new(&ch.parent_title)
+                                                    .size(10.5)
+                                                    .color(TEXT_MUTED),
                                             );
                                         });
                                     });
+                                    if assigned {
+                                        let mut mxv = cfg.channel_max_vol(ch);
+                                        let mut voll = cfg.channel_line_out_vol(ch);
+                                        let mut vg = cfg.channel_gain(ch);
+                                        ui.horizontal(|ui| {
+                                            ui.label(
+                                                RichText::new("Max (MxV):")
+                                                    .size(10.5)
+                                                    .color(TEXT_MUTED),
+                                            );
+                                            if ui
+                                                .add(
+                                                    DragValue::new(&mut mxv)
+                                                        .range(1..=100)
+                                                        .suffix("%"),
+                                                )
+                                                .changed()
+                                            {
+                                                cfg.set_channel_max_vol(&ch.uuid, mxv);
+                                            }
+                                            ui.label(
+                                                RichText::new("Line (VOLL):")
+                                                    .size(10.5)
+                                                    .color(TEXT_MUTED),
+                                            );
+                                            if ui
+                                                .add(
+                                                    DragValue::new(&mut voll)
+                                                        .range(0..=100)
+                                                        .suffix("%"),
+                                                )
+                                                .changed()
+                                            {
+                                                cfg.set_channel_line_out_vol(&ch.uuid, voll);
+                                            }
+                                            ui.label(
+                                                RichText::new("Gain (Vg):")
+                                                    .size(10.5)
+                                                    .color(TEXT_MUTED),
+                                            );
+                                            if ui
+                                                .add(
+                                                    DragValue::new(&mut vg)
+                                                        .range(-12..=12)
+                                                        .suffix("dB"),
+                                                )
+                                                .changed()
+                                            {
+                                                cfg.set_channel_gain(&ch.uuid, vg);
+                                            }
+                                        });
+                                    }
                                 });
                             ui.add_space(4.0);
+                        }
+                    });
+
+                ui.add_space(8.0);
+                ui.separator();
+                ui.add_space(6.0);
+                ui.label(
+                    RichText::new(format!(
+                        "{} ({})",
+                        tr("PLAYER GROUP & MULTI-ROOM SYNC"),
+                        cfg.grouped_player_uuids.len()
+                    ))
+                    .size(11.0)
+                    .strong()
+                    .color(LOXONE_GREEN),
+                );
+                ui.add_space(4.0);
+                let selected_master_label = cfg
+                    .master_player_uuid
+                    .as_deref()
+                    .and_then(|u| zone_candidates.iter().find(|c| c.uuid == u))
+                    .map(|c| format!("{} ({})", c.title, c.room_name))
+                    .unwrap_or_else(|| tr("Independent / Group Master").to_string());
+                ui.horizontal(|ui| {
+                    ui.label(tr("Master Zone (Mst):"));
+                    ComboBox::from_id_salt("audio_master_zone_combo")
+                        .selected_text(selected_master_label)
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(
+                                &mut cfg.master_player_uuid,
+                                None,
+                                tr("Independent / Group Master"),
+                            );
+                            for cand in &zone_candidates {
+                                ui.selectable_value(
+                                    &mut cfg.master_player_uuid,
+                                    Some(cand.uuid.clone()),
+                                    format!("{} ({})", cand.title, cand.room_name),
+                                );
+                            }
+                        });
+                });
+                ui.add_space(4.0);
+                ScrollArea::vertical()
+                    .id_salt("audio_group_members_scroll")
+                    .max_height(110.0)
+                    .show(ui, |ui| {
+                        for cand in &zone_candidates {
+                            let mut grouped = cfg.is_player_grouped(&cand.uuid);
+                            ui.horizontal(|ui| {
+                                if ui.checkbox(&mut grouped, "").changed() {
+                                    cfg.toggle_grouped_player(&cand.uuid);
+                                }
+                                ui.label(
+                                    RichText::new(&cand.title)
+                                        .size(11.5)
+                                        .color(TEXT_PRIMARY),
+                                );
+                                ui.label(
+                                    RichText::new(format!("• {}", cand.room_name))
+                                        .size(10.5)
+                                        .color(TEXT_MUTED),
+                                );
+                            });
                         }
                     });
             });
