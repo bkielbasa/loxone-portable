@@ -281,6 +281,8 @@ pub enum TopBarAction {
     AutoLayoutActivePage,
     OpenTodoList,
     OpenAutopilotDesigner,
+    OpenProjectDiff,
+    NewProjectTab,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1793,6 +1795,20 @@ fn render_ribbon_row_1(
                                 action = Some(TopBarAction::CloseProject);
                             }
                         });
+                    let new_tab_btn = ui
+                        .add(
+                            egui::Button::new(
+                                RichText::new("＋").size(11.0).color(LOXONE_GREEN),
+                            )
+                            .fill(Color32::TRANSPARENT)
+                            .corner_radius(CornerRadius::same(4)),
+                        )
+                        .on_hover_text(crate::i18n::tr(
+                            "Park current project tab and open/create another project",
+                        ));
+                    if new_tab_btn.clicked() {
+                        action = Some(TopBarAction::NewProjectTab);
+                    }
                 }
             });
 
@@ -2410,6 +2426,13 @@ fn render_ribbon_row_2(
                                 "Create IF / AND / OR condition → action Autopilot logic rules",
                                 ACCENT_BLUE,
                                 TopBarAction::OpenAutopilotDesigner,
+                            ),
+                            (
+                                "⚖",
+                                "Compare Projects",
+                                "Compare the active project against its saved baseline or another .Loxone file",
+                                LOXONE_GREEN,
+                                TopBarAction::OpenProjectDiff,
                             ),
                         ];
                         for (icon, label, tip, tint, act) in admin_tiles {

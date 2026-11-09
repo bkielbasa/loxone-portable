@@ -887,6 +887,239 @@ pub fn merge_remote_project_server_priority(
     Ok(summary)
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProjectDiffEntry {
+    pub change_kind: String,
+    pub object_kind: String,
+    pub uuid: String,
+    pub title: String,
+    pub object_type: String,
+    pub location: String,
+    pub detail: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProjectDiffReport {
+    pub base_title: String,
+    pub target_title: String,
+    pub base_save_level: Option<u32>,
+    pub target_save_level: Option<u32>,
+    pub added_pages: usize,
+    pub removed_pages: usize,
+    pub modified_pages: usize,
+    pub added_blocks: usize,
+    pub removed_blocks: usize,
+    pub modified_blocks: usize,
+    pub added_tree_nodes: usize,
+    pub removed_tree_nodes: usize,
+    pub modified_tree_nodes: usize,
+    pub entries: Vec<ProjectDiffEntry>,
+}
+
+/// Compares `base` and `target` `.Loxone` projects and returns a structured `ProjectDiffReport`
+/// detailing added, removed, and modified schematic pages, function blocks, wires, and tree nodes.
+pub fn compare_projects(base: &LoxoneProject, target: &LoxoneProject) -> ProjectDiffReport {
+    let mut entries = Vec::new();
+    let mut added_pages = 0usize;
+    let mut removed_pages = 0usize;
+    let mut modified_pages = 0usize;
+    let mut added_blocks = 0usize;
+    let mut removed_blocks = 0usize;
+    let mut modified_blocks = 0usize;
+    let mut added_tree_nodes = 0usize;
+    let mut removed_tree_nodes = 0usize;
+    let mut modified_tree_nodes = 0usize;
+
+    let base_pages: HashMap<&str, &Page> =
+        base.pages.iter().map(|p| (p.uuid.as_str(), p)).collect();
+    let target_pages: HashMap<&str, &Page> =
+        target.pages.iter().map(|p| (p.uuid.as_str(), p)).collect();
+
+    for t_page in &target.pages {
+        match base_pages.get(t_page.uuid.as_str()) {
+            None => {
+                added_pages += 1;
+                entries.push(ProjectDiffEntry {
+                    change_kind: "Added".to_string(),
+                    object_kind: "Page".to_string(),
+                    uuid: t_page.uuid.clone(),
+                    title: t_page.title.clone(),
+                    object_type: "Page".to_string(),
+                    location: "Pages".to_string(),
+                    detail: format!("Added page ({} blocks)", t_page.blocks.len()),
+                });
+            }
+            Some(b_page)
+                if b_page.title != t_page.title
+                    || b_page.room_uuid != t_page.room_uuid
+                    || b_page.category_uuid != t_page.category_uuid =>
+            {
+                modified_pages += 1;
+                entries.push(ProjectDiffEntry {
+                    change_kind: "Modified".to_string(),
+                    object_kind: "Page".to_string(),
+                    uuid: t_page.uuid.clone(),
+                    title: t_page.title.clone(),
+                    object_type: "Page".to_string(),
+                    location: "Pages".to_string(),
+                    detail: format!("Renamed '{}' -> '{}'", b_page.title, t_page.title),
+                });
+            }
+            _ => {}
+        }
+    }
+    for b_page in &base.pages {
+        if !target_pages.contains_key(b_page.uuid.as_str()) {
+            removed_pages += 1;
+            entries.push(ProjectDiffEntry {
+                change_kind: "Removed".to_string(),
+                object_kind: "Page".to_string(),
+                uuid: b_page.uuid.clone(),
+                title: b_page.title.clone(),
+                object_type: "Page".to_string(),
+                location: "Pages".to_string(),
+                detail: "Removed schematic page".to_string(),
+            });
+        }
+    }
+
+    let base_blocks = collect_blocks_map(base);
+    let target_blocks = collect_blocks_map(target);
+    for (uuid, (t_page, t_blk)) in &target_blocks {
+        match base_blocks.get(uuid) {
+            None => {
+                added_blocks += 1;
+                entries.push(ProjectDiffEntry {
+                    change_kind: "Added".to_string(),
+                    object_kind: "Block".to_string(),
+                    uuid: uuid.clone(),
+                    title: t_blk.title.clone(),
+                    object_type: t_blk.block_type.clone(),
+                    location: t_page.title.clone(),
+                    detail: format!("Added {} at ({:.0}, {:.0})", t_blk.block_type, t_blk.px, t_blk.py),
+                });
+            }
+            Some((_, b_blk)) if b_blk != t_blk => {
+                modified_blocks += 1;
+                let mut diffs = Vec::new();
+                if b_blk.title != t_blk.title {
+                    diffs.push(format!("title '{}' -> '{}'", b_blk.title, t_blk.title));
+                }
+                if (b_blk.px - t_blk.px).abs() > 0.5 || (b_blk.py - t_blk.py).abs() > 0.5 {
+                    diffs.push(format!(
+                        "pos ({:.0},{:.0}) -> ({:.0},{:.0})",
+                        b_blk.px, b_blk.py, t_blk.px, t_blk.py
+                    ));
+                }
+                if b_blk.pins != t_blk.pins {
+                    diffs.push("pins/wires changed".to_string());
+                }
+                if b_blk.raw_attributes != t_blk.raw_attributes {
+                    diffs.push("attributes changed".to_string());
+                }
+                entries.push(ProjectDiffEntry {
+                    change_kind: "Modified".to_string(),
+                    object_kind: "Block".to_string(),
+                    uuid: uuid.clone(),
+                    title: t_blk.title.clone(),
+                    object_type: t_blk.block_type.clone(),
+                    location: t_page.title.clone(),
+                    detail: if diffs.is_empty() {
+                        "Modified block".to_string()
+                    } else {
+                        diffs.join(", ")
+                    },
+                });
+            }
+            _ => {}
+        }
+    }
+    for (uuid, (b_page, b_blk)) in &base_blocks {
+        if !target_blocks.contains_key(uuid) {
+            removed_blocks += 1;
+            entries.push(ProjectDiffEntry {
+                change_kind: "Removed".to_string(),
+                object_kind: "Block".to_string(),
+                uuid: uuid.clone(),
+                title: b_blk.title.clone(),
+                object_type: b_blk.block_type.clone(),
+                location: b_page.title.clone(),
+                detail: format!("Removed {} from '{}'", b_blk.block_type, b_page.title),
+            });
+        }
+    }
+
+    let base_nodes = all_tree_nodes_map(base);
+    let target_nodes = all_tree_nodes_map(target);
+    for (uuid, t_node) in &target_nodes {
+        match base_nodes.get(uuid) {
+            None => {
+                added_tree_nodes += 1;
+                entries.push(ProjectDiffEntry {
+                    change_kind: "Added".to_string(),
+                    object_kind: "TreeNode".to_string(),
+                    uuid: uuid.clone(),
+                    title: t_node.title.clone(),
+                    object_type: t_node.control_type.clone(),
+                    location: format!("{:?}", t_node.section),
+                    detail: format!("Added {} in {:?}", t_node.control_type, t_node.section),
+                });
+            }
+            Some(b_node) if !tree_node_shallow_eq(b_node, t_node) => {
+                modified_tree_nodes += 1;
+                entries.push(ProjectDiffEntry {
+                    change_kind: "Modified".to_string(),
+                    object_kind: "TreeNode".to_string(),
+                    uuid: uuid.clone(),
+                    title: t_node.title.clone(),
+                    object_type: t_node.control_type.clone(),
+                    location: format!("{:?}", t_node.section),
+                    detail: format!("Modified {} in {:?}", t_node.control_type, t_node.section),
+                });
+            }
+            _ => {}
+        }
+    }
+    for (uuid, b_node) in &base_nodes {
+        if !target_nodes.contains_key(uuid) {
+            removed_tree_nodes += 1;
+            entries.push(ProjectDiffEntry {
+                change_kind: "Removed".to_string(),
+                object_kind: "TreeNode".to_string(),
+                uuid: uuid.clone(),
+                title: b_node.title.clone(),
+                object_type: b_node.control_type.clone(),
+                location: format!("{:?}", b_node.section),
+                detail: format!("Removed {} from {:?}", b_node.control_type, b_node.section),
+            });
+        }
+    }
+
+    entries.sort_by(|a, b| {
+        a.object_kind
+            .cmp(&b.object_kind)
+            .then_with(|| a.change_kind.cmp(&b.change_kind))
+            .then_with(|| a.title.cmp(&b.title))
+    });
+
+    ProjectDiffReport {
+        base_title: base.metadata.title.clone(),
+        target_title: target.metadata.title.clone(),
+        base_save_level: base.metadata.save_level,
+        target_save_level: target.metadata.save_level,
+        added_pages,
+        removed_pages,
+        modified_pages,
+        added_blocks,
+        removed_blocks,
+        modified_blocks,
+        added_tree_nodes,
+        removed_tree_nodes,
+        modified_tree_nodes,
+        entries,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

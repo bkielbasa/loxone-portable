@@ -34,6 +34,7 @@ pub enum AdminModal {
     AutoConfiguration,
     TodoList,
     AutopilotDesigner,
+    ProjectDiff,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -144,6 +145,10 @@ pub struct AdminModalsState {
     pub ap_selected_conditions: Vec<String>,
     pub ap_target_block_uuid: String,
     pub ap_target_pin_key: String,
+    // Project Diff / Compare state (Stage 10)
+    pub diff_compare_path: String,
+    pub diff_filter: String,
+    pub diff_cached_report: Option<loxone_core::ProjectDiffReport>,
 }
 
 impl Default for AdminModalsState {
@@ -186,6 +191,9 @@ impl Default for AdminModalsState {
             ap_selected_conditions: Vec::new(),
             ap_target_block_uuid: String::new(),
             ap_target_pin_key: "Tr".to_string(),
+            diff_compare_path: String::new(),
+            diff_filter: String::new(),
+            diff_cached_report: None,
         }
     }
 }
@@ -335,6 +343,21 @@ impl AdminModalsState {
             self.ap_title_draft = "Evening Comfort Rule".to_string();
         }
         self.open = AdminModal::AutopilotDesigner;
+    }
+
+    pub fn open_project_diff(
+        &mut self,
+        base_project: Option<&LoxoneProject>,
+        active_project: &LoxoneProject,
+    ) {
+        self.status = None;
+        if let Some(base) = base_project {
+            self.diff_cached_report = Some(loxone_core::compare_projects(base, active_project));
+        } else {
+            self.diff_cached_report =
+                Some(loxone_core::compare_projects(active_project, active_project));
+        }
+        self.open = AdminModal::ProjectDiff;
     }
 
     pub fn close(&mut self) {
@@ -572,6 +595,7 @@ pub fn render_admin_modals(
                 AdminModal::AutopilotDesigner => {
                     render_autopilot_designer(ctx, state, project, &mut out)
                 }
+                AdminModal::ProjectDiff => render_project_diff(ctx, state, project, &mut out),
                 _ => true,
             }
         }
@@ -2994,6 +3018,152 @@ fn render_autopilot_designer(
                         }
                     });
             });
+        },
+    )
+}
+
+fn render_project_diff(
+    ctx: &egui::Context,
+    state: &mut AdminModalsState,
+    project: &LoxoneProject,
+    out: &mut Vec<AdminAction>,
+) -> bool {
+    let status = state.status.clone();
+    modal_window(
+        ctx,
+        "admin_project_diff",
+        "⚖ Compare Projects (Structural Diff)",
+        [920.0, 580.0],
+        status.as_deref(),
+        |ui| {
+            card(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(
+                        RichText::new("Compare against .Loxone file path (optional):")
+                            .size(11.5)
+                            .color(theme::TEXT_SECONDARY),
+                    );
+                    ui.add(
+                        egui::TextEdit::singleline(&mut state.diff_compare_path)
+                            .hint_text("Leave blank to compare against saved baseline")
+                            .desired_width(340.0),
+                    );
+                    if button(ui, "🔄 Compare File", !state.diff_compare_path.trim().is_empty())
+                        .clicked()
+                    {
+                        let p = std::path::Path::new(state.diff_compare_path.trim());
+                        match loxone_core::parser::load_loxone_file(p) {
+                            Ok(other) => {
+                                state.diff_cached_report =
+                                    Some(loxone_core::compare_projects(&other, project));
+                                state.status = Some(format!(
+                                    "Compared active project against '{}'.",
+                                    p.display()
+                                ));
+                            }
+                            Err(e) => {
+                                state.status = Some(format!("Failed to load comparison file: {e}"));
+                            }
+                        }
+                    }
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.add(
+                            egui::TextEdit::singleline(&mut state.diff_filter)
+                                .hint_text("🔎 Filter changes...")
+                                .desired_width(180.0),
+                        );
+                    });
+                });
+            });
+            ui.add_space(6.0);
+            if let Some(report) = &state.diff_cached_report {
+                ui.horizontal(|ui| {
+                    ui.label(
+                        RichText::new(format!(
+                            "Pages: +{} / ~{} / -{}   •   Blocks: +{} / ~{} / -{}   •   Tree Nodes: +{} / ~{} / -{}",
+                            report.added_pages,
+                            report.modified_pages,
+                            report.removed_pages,
+                            report.added_blocks,
+                            report.modified_blocks,
+                            report.removed_blocks,
+                            report.added_tree_nodes,
+                            report.modified_tree_nodes,
+                            report.removed_tree_nodes
+                        ))
+                        .size(12.0)
+                        .strong()
+                        .color(theme::ACCENT_PRIMARY),
+                    );
+                });
+                ui.add_space(4.0);
+                let q = state.diff_filter.trim().to_ascii_lowercase();
+                card(ui, |ui| {
+                    egui::ScrollArea::vertical()
+                        .id_salt("project_diff_entries_scroll")
+                        .max_height(ui.available_height() - 16.0)
+                        .show(ui, |ui| {
+                            if report.entries.is_empty() {
+                                ui.label(
+                                    RichText::new("✓ No structural differences detected.")
+                                        .size(12.0)
+                                        .color(theme::TEXT_SECONDARY),
+                                );
+                            }
+                            for entry in report.entries.iter().filter(|e| {
+                                q.is_empty()
+                                    || e.title.to_ascii_lowercase().contains(&q)
+                                    || e.object_type.to_ascii_lowercase().contains(&q)
+                                    || e.location.to_ascii_lowercase().contains(&q)
+                                    || e.detail.to_ascii_lowercase().contains(&q)
+                            }) {
+                                ui.horizontal(|ui| {
+                                    let badge_color = match entry.change_kind.as_str() {
+                                        "Added" => theme::ACCENT_PRIMARY,
+                                        "Removed" => egui::Color32::from_rgb(0xE8, 0x5D, 0x5D),
+                                        _ => theme::ACCENT_AMBER,
+                                    };
+                                    ui.label(
+                                        RichText::new(format!("[{}]", entry.change_kind))
+                                            .size(11.0)
+                                            .monospace()
+                                            .strong()
+                                            .color(badge_color),
+                                    );
+                                    ui.label(
+                                        RichText::new(format!("{}: {}", entry.object_kind, entry.title))
+                                            .size(12.0)
+                                            .strong()
+                                            .color(theme::TEXT_PRIMARY),
+                                    );
+                                    ui.label(
+                                        RichText::new(format!("({}) • {}", entry.object_type, entry.location))
+                                            .size(11.0)
+                                            .color(theme::TEXT_SECONDARY),
+                                    );
+                                    ui.label(
+                                        RichText::new(format!("— {}", entry.detail))
+                                            .size(11.0)
+                                            .color(theme::TEXT_MUTED),
+                                    );
+                                    if entry.change_kind != "Removed" {
+                                        ui.with_layout(
+                                            egui::Layout::right_to_left(egui::Align::Center),
+                                            |ui| {
+                                                if ui.small_button("↗ Jump").clicked() {
+                                                    out.push(AdminAction::SelectObject(
+                                                        entry.uuid.clone(),
+                                                    ));
+                                                }
+                                            },
+                                        );
+                                    }
+                                });
+                                ui.separator();
+                            }
+                        });
+                });
+            }
         },
     )
 }
