@@ -698,6 +698,17 @@ pub struct HardwareDeviceSummary {
     pub serial: String,
     pub parent_label: String,
     pub io_count: usize,
+    pub description: String,
+    pub distribution_board: String,
+    pub row_position: String,
+    pub lighting_group: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SerialConflictGroup {
+    pub serial: String,
+    pub device_uuids: Vec<String>,
+    pub device_titles: Vec<String>,
 }
 
 fn count_io_leaves(node: &TreeNode) -> usize {
@@ -738,6 +749,23 @@ fn collect_hardware_rec(
             .attr("TId")
             .unwrap_or(node.control_type.as_str())
             .to_string();
+        let description = node.attr("Desc").unwrap_or_default().to_string();
+        let distribution_board = node
+            .attr("DistBoard")
+            .or_else(|| node.attr("DBoard"))
+            .unwrap_or_default()
+            .to_string();
+        let row_position = node
+            .attr("RowPos")
+            .or_else(|| node.attr("BlinkPos"))
+            .unwrap_or_default()
+            .to_string();
+        let lighting_group = node
+            .attr("LightGroup")
+            .or_else(|| node.attr("LGrp"))
+            .unwrap_or_default()
+            .to_string();
+
         out.push(HardwareDeviceSummary {
             uuid: node.uuid.clone(),
             title: node.title.clone(),
@@ -746,6 +774,10 @@ fn collect_hardware_rec(
             serial,
             parent_label: parent_label.to_string(),
             io_count: count_io_leaves(node),
+            description,
+            distribution_board,
+            row_position,
+            lighting_group,
         });
     }
     let next_parent = if !node.title.is_empty() {
@@ -773,6 +805,126 @@ pub fn build_serial_swap_edit(node_uuid: &str, new_serial: &str) -> ProjectEdit 
         attr_name: "Serial".to_string(),
         value: (!clean.is_empty()).then_some(clean),
     }
+}
+
+/// Builds a batch edit to replace a hardware device's serial number and/or update its
+/// commissioning metadata (`Desc`, `DistBoard`, `RowPos`, `LightGroup`).
+pub fn build_replace_device_edit(
+    node_uuid: &str,
+    new_serial: &str,
+    description: Option<&str>,
+    distribution_board: Option<&str>,
+    row_position: Option<&str>,
+    lighting_group: Option<&str>,
+) -> ProjectEdit {
+    let mut edits = vec![build_serial_swap_edit(node_uuid, new_serial)];
+    if let Some(desc) = description {
+        let trimmed = desc.trim();
+        edits.push(ProjectEdit::SetControlAttr {
+            control_uuid: node_uuid.to_string(),
+            attr_name: "Desc".to_string(),
+            value: (!trimmed.is_empty()).then(|| trimmed.to_string()),
+        });
+    }
+    if let Some(db) = distribution_board {
+        let trimmed = db.trim();
+        edits.push(ProjectEdit::SetControlAttr {
+            control_uuid: node_uuid.to_string(),
+            attr_name: "DistBoard".to_string(),
+            value: (!trimmed.is_empty()).then(|| trimmed.to_string()),
+        });
+    }
+    if let Some(rp) = row_position {
+        let trimmed = rp.trim();
+        edits.push(ProjectEdit::SetControlAttr {
+            control_uuid: node_uuid.to_string(),
+            attr_name: "RowPos".to_string(),
+            value: (!trimmed.is_empty()).then(|| trimmed.to_string()),
+        });
+    }
+    if let Some(lg) = lighting_group {
+        let trimmed = lg.trim();
+        edits.push(ProjectEdit::SetControlAttr {
+            control_uuid: node_uuid.to_string(),
+            attr_name: "LightGroup".to_string(),
+            value: (!trimmed.is_empty()).then(|| trimmed.to_string()),
+        });
+    }
+    ProjectEdit::Batch(edits)
+}
+
+/// Detects duplicate serial numbers or unassigned (`00000000`) serials across hardware devices.
+pub fn detect_serial_number_conflicts(project: &LoxoneProject) -> Vec<SerialConflictGroup> {
+    let devices = collect_provisioned_hardware(project);
+    let mut by_serial: std::collections::BTreeMap<String, Vec<HardwareDeviceSummary>> =
+        std::collections::BTreeMap::new();
+    for dev in devices {
+        if dev.node_type == "LoxLIVE" {
+            continue;
+        }
+        let s = if dev.serial.trim().is_empty() {
+            "00000000".to_string()
+        } else {
+            dev.serial.trim().to_ascii_uppercase()
+        };
+        by_serial.entry(s).or_default().push(dev);
+    }
+    let mut conflicts = Vec::new();
+    for (serial, group) in by_serial {
+        if serial == "00000000" || group.len() > 1 {
+            conflicts.push(SerialConflictGroup {
+                serial,
+                device_uuids: group.iter().map(|d| d.uuid.clone()).collect(),
+                device_titles: group.iter().map(|d| d.title.clone()).collect(),
+            });
+        }
+    }
+    conflicts
+}
+
+/// Generates an undoable `ProjectEdit::Batch` that assigns unique serial numbers to all
+/// conflicting or unassigned (`00000000`) hardware devices in the project.
+pub fn build_resolve_serial_conflicts_edit(
+    project: &LoxoneProject,
+) -> (Vec<(String, String, String)>, Option<ProjectEdit>) {
+    let devices = collect_provisioned_hardware(project);
+    let mut used_serials: std::collections::BTreeSet<String> = devices
+        .iter()
+        .map(|d| d.serial.trim().to_ascii_uppercase())
+        .filter(|s| !s.is_empty() && s != "00000000")
+        .collect();
+
+    let mut seen_once: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    let mut reassignments = Vec::new();
+    let mut edits = Vec::new();
+    let mut next_seq: u32 = 0x1001;
+
+    for dev in devices {
+        if dev.node_type == "LoxLIVE" {
+            continue;
+        }
+        let norm = dev.serial.trim().to_ascii_uppercase();
+        let needs_new = norm.is_empty() || norm == "00000000" || !seen_once.insert(norm.clone());
+        if needs_new {
+            let prefix = match dev.node_type.as_str() {
+                "TreeDevice" => "B030",
+                "LoxAIRDevice" => "504F",
+                _ => "14D8",
+            };
+            let new_serial = loop {
+                let cand = format!("{prefix}{next_seq:04X}");
+                next_seq += 1;
+                if used_serials.insert(cand.clone()) {
+                    break cand;
+                }
+            };
+            reassignments.push((dev.uuid.clone(), dev.serial.clone(), new_serial.clone()));
+            edits.push(build_serial_swap_edit(&dev.uuid, &new_serial));
+        }
+    }
+
+    let batch = (!edits.is_empty()).then_some(ProjectEdit::Batch(edits));
+    (reassignments, batch)
 }
 
 // ============================================================================

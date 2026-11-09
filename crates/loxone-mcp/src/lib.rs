@@ -292,5 +292,44 @@ mod tests {
         assert_eq!(az_after["default_vol"], 28);
         assert_eq!(az_after["airplay_enabled"], true);
         assert_eq!(az_after["favorites"][0]["title"], "Chill Lounge");
+
+        // Stage 7: Device replacement & serial conflict resolution
+        let conflicts_preview = call_tool(
+            &mut session,
+            "tree_resolve_serial_conflicts",
+            json!({ "preview_only": true }),
+        );
+        let first_reassigned_uuid = conflicts_preview["reassignments"][0]["device_uuid"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let replaced = call_tool(
+            &mut session,
+            "tree_replace_device",
+            json!({
+                "device_uuid": first_reassigned_uuid,
+                "new_serial": "B030-99AA",
+                "distribution_board": "DB-Main",
+                "row_position": "R2",
+                "lighting_group": "LG-1"
+            }),
+        );
+        assert_eq!(replaced["serial"], "B03099AA");
+        assert_eq!(replaced["distribution_board"], "DB-Main");
+        assert_eq!(replaced["row_position"], "R2");
+        assert_eq!(replaced["lighting_group"], "LG-1");
+
+        let resolved = call_tool(
+            &mut session,
+            "tree_resolve_serial_conflicts",
+            json!({ "preview_only": false }),
+        );
+        assert!(resolved["resolved_count"].as_u64().unwrap() > 0);
+        let after_conflicts = call_tool(
+            &mut session,
+            "tree_resolve_serial_conflicts",
+            json!({ "preview_only": true }),
+        );
+        assert_eq!(after_conflicts["resolved_count"], 0);
     }
 }

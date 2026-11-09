@@ -1,9 +1,9 @@
 use eframe::egui::{self, Color32, CornerRadius, Margin, RichText, ScrollArea, Stroke};
 use loxone_core::model::LoxoneProject;
 use loxone_core::{
-    build_provision_hardware_edit, build_serial_swap_edit, collect_parent_bus_candidates,
-    collect_provisioned_hardware, generate_mock_serial, HardwareCategory, HardwareTemplateKind,
-    ProjectEdit,
+    build_provision_hardware_edit, build_replace_device_edit, build_resolve_serial_conflicts_edit,
+    collect_parent_bus_candidates, collect_provisioned_hardware, detect_serial_number_conflicts,
+    generate_mock_serial, HardwareCategory, HardwareTemplateKind, ProjectEdit,
 };
 
 use crate::i18n::{tr, tr_fmt};
@@ -28,10 +28,14 @@ pub struct PeripheryModalState {
     pub place_uuid_draft: String,
     pub category_uuid_draft: String,
     pub status_message: Option<String>,
-    // Inventory tab
+    // Inventory & Commissioning tab
     pub inventory_filter: String,
     pub editing_serial_uuid: Option<String>,
     pub editing_serial_draft: String,
+    pub editing_desc_draft: String,
+    pub editing_board_draft: String,
+    pub editing_row_pos_draft: String,
+    pub editing_light_group_draft: String,
 }
 
 impl PeripheryModalState {
@@ -67,6 +71,10 @@ impl PeripheryModalState {
             if let Some(found) = items.into_iter().find(|i| i.uuid == uuid) {
                 self.editing_serial_uuid = Some(found.uuid);
                 self.editing_serial_draft = found.serial;
+                self.editing_desc_draft = found.description;
+                self.editing_board_draft = found.distribution_board;
+                self.editing_row_pos_draft = found.row_position;
+                self.editing_light_group_draft = found.lighting_group;
             }
         }
     }
@@ -572,6 +580,7 @@ fn render_inventory_tab(
 ) -> Option<ProjectEdit> {
     let mut emitted_edit = None;
     let items = collect_provisioned_hardware(project);
+    let conflicts = detect_serial_number_conflicts(project);
     let q = state.inventory_filter.trim().to_ascii_lowercase();
 
     ui.horizontal(|ui| {
@@ -584,10 +593,37 @@ fn render_inventory_tab(
             .strong()
             .color(theme::TEXT_PRIMARY),
         );
+        if !conflicts.is_empty() {
+            let conflict_count: usize = conflicts.iter().map(|c| c.device_uuids.len()).sum();
+            if ui
+                .add(
+                    egui::Button::new(
+                        RichText::new(format!(
+                            "⚡ Resolve Address Conflicts ({conflict_count})"
+                        ))
+                        .size(11.5)
+                        .strong()
+                        .color(Color32::BLACK),
+                    )
+                    .fill(theme::ACCENT_AMBER)
+                    .corner_radius(CornerRadius::same(6)),
+                )
+                .clicked()
+            {
+                let (reassigned, batch) = build_resolve_serial_conflicts_edit(project);
+                if let Some(edit) = batch {
+                    state.status_message = Some(format!(
+                        "Assigned unique serial numbers to {} conflicting/unassigned devices.",
+                        reassigned.len()
+                    ));
+                    emitted_edit = Some(edit);
+                }
+            }
+        }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             ui.add(
                 egui::TextEdit::singleline(&mut state.inventory_filter)
-                    .hint_text(tr("🔎 Filter by name, serial, bus, or type..."))
+                    .hint_text(tr("🔎 Filter by name, serial, bus, board, or type..."))
                     .desired_width(260.0),
             );
         });
@@ -596,7 +632,7 @@ fn render_inventory_tab(
     ui.add_space(4.0);
     ui.label(
         RichText::new(tr(
-            "Swap a physical device's Serial Number in-place while preserving all child I/O channels and schematic wire links.",
+            "Replace a physical device's Serial Number and commissioning metadata (Description, Distribution Board, Row Position, Lighting Group) while preserving all child I/O channels and schematic wire links.",
         ))
         .size(11.0)
         .color(theme::TEXT_SECONDARY),
@@ -613,6 +649,8 @@ fn render_inventory_tab(
                     || it.serial.to_ascii_lowercase().contains(&q)
                     || it.node_type.to_ascii_lowercase().contains(&q)
                     || it.parent_label.to_ascii_lowercase().contains(&q)
+                    || it.distribution_board.to_ascii_lowercase().contains(&q)
+                    || it.description.to_ascii_lowercase().contains(&q)
             }) {
                 let is_editing = state.editing_serial_uuid.as_deref() == Some(item.uuid.as_str());
                 let stroke = if is_editing {
@@ -640,8 +678,19 @@ fn render_inventory_tab(
                                     .monospace()
                                     .color(theme::ACCENT_PRIMARY),
                             );
+                            let mut meta_parts =
+                                vec![format!("{} • {} I/O", item.parent_label, item.io_count)];
+                            if !item.distribution_board.is_empty() {
+                                meta_parts.push(format!("Board: {}", item.distribution_board));
+                            }
+                            if !item.row_position.is_empty() {
+                                meta_parts.push(format!("Row: {}", item.row_position));
+                            }
+                            if !item.lighting_group.is_empty() {
+                                meta_parts.push(format!("Grp: {}", item.lighting_group));
+                            }
                             ui.label(
-                                RichText::new(format!("• {} • {} I/O", item.parent_label, item.io_count))
+                                RichText::new(format!("• {}", meta_parts.join(" • ")))
                                     .size(11.0)
                                     .color(theme::TEXT_SECONDARY),
                             );
@@ -665,7 +714,7 @@ fn render_inventory_tab(
                                         if ui
                                             .add(
                                                 egui::Button::new(
-                                                    RichText::new(tr("✓ Save Serial"))
+                                                    RichText::new(tr("✓ Save Device"))
                                                         .size(11.0)
                                                         .strong()
                                                         .color(Color32::BLACK),
@@ -675,30 +724,27 @@ fn render_inventory_tab(
                                             )
                                             .clicked()
                                         {
-                                            let edit = build_serial_swap_edit(
+                                            let edit = build_replace_device_edit(
                                                 &item.uuid,
                                                 &state.editing_serial_draft,
+                                                Some(&state.editing_desc_draft),
+                                                Some(&state.editing_board_draft),
+                                                Some(&state.editing_row_pos_draft),
+                                                Some(&state.editing_light_group_draft),
                                             );
                                             state.status_message = Some(format!(
-                                                "Updated Serial for '{}' to '{}'.",
+                                                "Replaced device '{}' (SN: '{}').",
                                                 item.title,
                                                 state.editing_serial_draft.trim().to_ascii_uppercase()
                                             ));
                                             state.editing_serial_uuid = None;
                                             emitted_edit = Some(edit);
                                         }
-                                        ui.add(
-                                            egui::TextEdit::singleline(
-                                                &mut state.editing_serial_draft,
-                                            )
-                                            .font(egui::TextStyle::Monospace)
-                                            .desired_width(140.0),
-                                        );
                                     } else {
                                         if ui
                                             .add(
                                                 egui::Button::new(
-                                                    RichText::new(tr("⇄ Swap Serial"))
+                                                    RichText::new(tr("⇄ Replace / Commission"))
                                                         .size(11.0)
                                                         .color(theme::TEXT_PRIMARY),
                                                 )
@@ -709,6 +755,13 @@ fn render_inventory_tab(
                                         {
                                             state.editing_serial_uuid = Some(item.uuid.clone());
                                             state.editing_serial_draft = item.serial.clone();
+                                            state.editing_desc_draft = item.description.clone();
+                                            state.editing_board_draft =
+                                                item.distribution_board.clone();
+                                            state.editing_row_pos_draft =
+                                                item.row_position.clone();
+                                            state.editing_light_group_draft =
+                                                item.lighting_group.clone();
                                         }
                                         let serial_text = if item.serial.is_empty() {
                                             tr("(no serial)").to_string()
@@ -729,6 +782,64 @@ fn render_inventory_tab(
                                 },
                             );
                         });
+
+                        if is_editing {
+                            ui.add_space(6.0);
+                            ui.horizontal(|ui| {
+                                ui.label(
+                                    RichText::new("SN:")
+                                        .size(11.0)
+                                        .color(theme::TEXT_SECONDARY),
+                                );
+                                ui.add(
+                                    egui::TextEdit::singleline(&mut state.editing_serial_draft)
+                                        .font(egui::TextStyle::Monospace)
+                                        .desired_width(105.0),
+                                );
+                                ui.label(
+                                    RichText::new("Desc:")
+                                        .size(11.0)
+                                        .color(theme::TEXT_SECONDARY),
+                                );
+                                ui.add(
+                                    egui::TextEdit::singleline(&mut state.editing_desc_draft)
+                                        .hint_text("Description")
+                                        .desired_width(140.0),
+                                );
+                                ui.label(
+                                    RichText::new("Board:")
+                                        .size(11.0)
+                                        .color(theme::TEXT_SECONDARY),
+                                );
+                                ui.add(
+                                    egui::TextEdit::singleline(&mut state.editing_board_draft)
+                                        .hint_text("DB-1")
+                                        .desired_width(80.0),
+                                );
+                                ui.label(
+                                    RichText::new("Row:")
+                                        .size(11.0)
+                                        .color(theme::TEXT_SECONDARY),
+                                );
+                                ui.add(
+                                    egui::TextEdit::singleline(&mut state.editing_row_pos_draft)
+                                        .hint_text("R1")
+                                        .desired_width(60.0),
+                                );
+                                ui.label(
+                                    RichText::new("Group:")
+                                        .size(11.0)
+                                        .color(theme::TEXT_SECONDARY),
+                                );
+                                ui.add(
+                                    egui::TextEdit::singleline(
+                                        &mut state.editing_light_group_draft,
+                                    )
+                                    .hint_text("LG1")
+                                    .desired_width(60.0),
+                                );
+                            });
+                        }
                     });
                 ui.add_space(5.0);
             }
