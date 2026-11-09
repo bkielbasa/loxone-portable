@@ -28,7 +28,10 @@ use loxone_core::project_admin::{
 use loxone_core::room_controller_config::{
     collect_energy_source_candidates, RoomControllerConfig, RoomTempMode,
 };
-use loxone_core::simulator::SimulatedDateTime;
+use loxone_core::simulator::{
+    build_default_project_scenarios, run_simulation_scenario, ScenarioAssertion, ScenarioStep,
+    SimulatedDateTime, SimulationScenario,
+};
 use loxone_core::writer::{
     build_align_blocks_edits, build_page_auto_layout_edits, BlockAlignMode, ProjectEdit,
 };
@@ -1919,6 +1922,165 @@ fn call_advanced_tool_part2(
                     "solar_azimuth_deg": solar.azimuth_deg,
                     "is_daylight": solar.is_daylight,
                     "sunshine_active": solar.sunshine_active
+                }),
+            )
+        }
+        "sim_run_scenario" => {
+            let proj_clone = {
+                let Some(proj) = session.project() else {
+                    return JsonRpcResponse::tool_err(id, "No project loaded");
+                };
+                proj.clone()
+            };
+
+            let scenarios: Vec<SimulationScenario> =
+                if let Some(steps_arr) = args.get("steps").and_then(Value::as_array) {
+                    let name = args
+                        .get("name")
+                        .and_then(Value::as_str)
+                        .unwrap_or("MCP Test Scenario")
+                        .to_string();
+                    let steps: Vec<ScenarioStep> = steps_arr
+                        .iter()
+                        .enumerate()
+                        .map(|(idx, s)| {
+                            let description = s
+                                .get("label")
+                                .or_else(|| s.get("description"))
+                                .and_then(Value::as_str)
+                                .map(str::to_string)
+                                .unwrap_or_else(|| format!("Step {}", idx + 1));
+                            let iso_time = s
+                                .get("set_iso_time")
+                                .or_else(|| s.get("iso_time"))
+                                .and_then(Value::as_str)
+                                .map(str::to_string);
+                            let advance_seconds = s.get("advance_seconds").and_then(Value::as_i64);
+                            let inputs = s
+                                .get("inputs")
+                                .and_then(Value::as_array)
+                                .map(|arr| {
+                                    arr.iter()
+                                        .filter_map(|inp| {
+                                            let cu = inp.get("control_uuid")?.as_str()?.to_string();
+                                            let pk = inp
+                                                .get("pin_key")
+                                                .and_then(Value::as_str)
+                                                .map(str::to_string);
+                                            let val = inp.get("value")?.as_str()?.to_string();
+                                            Some((cu, pk, val))
+                                        })
+                                        .collect()
+                                })
+                                .unwrap_or_default();
+                            let assertions = s
+                                .get("assertions")
+                                .and_then(Value::as_array)
+                                .map(|arr| {
+                                    arr.iter()
+                                        .filter_map(|a| {
+                                            let cu = a.get("control_uuid")?.as_str()?.to_string();
+                                            let pk = a
+                                                .get("pin_key")
+                                                .and_then(Value::as_str)
+                                                .map(str::to_string);
+                                            let op = a
+                                                .get("operator")
+                                                .or_else(|| a.get("comparison"))
+                                                .and_then(Value::as_str)
+                                                .unwrap_or("==")
+                                                .to_string();
+                                            let exp = a
+                                                .get("expected_value")
+                                                .or_else(|| a.get("expected"))
+                                                .and_then(Value::as_str)?
+                                                .to_string();
+                                            Some(ScenarioAssertion {
+                                                control_uuid: cu,
+                                                pin_key: pk,
+                                                operator: op,
+                                                expected_value: exp,
+                                            })
+                                        })
+                                        .collect()
+                                })
+                                .unwrap_or_default();
+
+                            ScenarioStep {
+                                description,
+                                iso_time,
+                                advance_seconds,
+                                inputs,
+                                assertions,
+                            }
+                        })
+                        .collect();
+                    vec![SimulationScenario { name, steps }]
+                } else {
+                    build_default_project_scenarios(&proj_clone)
+                };
+
+            let mut reports_json = Vec::new();
+            let mut all_passed = true;
+            let mut total_assertions = 0usize;
+            let mut failed_assertions = 0usize;
+
+            for sc in &scenarios {
+                let rep = run_simulation_scenario(&proj_clone, sc);
+                if !rep.passed {
+                    all_passed = false;
+                }
+                total_assertions += rep.total_assertions;
+                failed_assertions += rep.failed_assertions;
+
+                let steps_json: Vec<Value> = rep
+                    .steps
+                    .into_iter()
+                    .map(|sr| {
+                        let asserts_json: Vec<Value> = sr
+                            .assertion_results
+                            .into_iter()
+                            .map(|ar| {
+                                json!({
+                                    "control_uuid": ar.control_uuid,
+                                    "control_title": ar.control_title,
+                                    "pin_key": ar.pin_key,
+                                    "operator": ar.operator,
+                                    "expected_value": ar.expected_value,
+                                    "actual_value": ar.actual_value,
+                                    "passed": ar.passed
+                                })
+                            })
+                            .collect();
+                        json!({
+                            "step_index": sr.step_index,
+                            "description": sr.description,
+                            "simulated_time": sr.simulated_time,
+                            "passed": sr.passed,
+                            "assertions": asserts_json
+                        })
+                    })
+                    .collect();
+
+                reports_json.push(json!({
+                    "scenario_name": rep.scenario_name,
+                    "passed": rep.passed,
+                    "total_steps": rep.total_steps,
+                    "total_assertions": rep.total_assertions,
+                    "passed_assertions": rep.passed_assertions,
+                    "failed_assertions": rep.failed_assertions,
+                    "steps": steps_json
+                }));
+            }
+
+            JsonRpcResponse::tool_ok(
+                id,
+                json!({
+                    "passed": all_passed,
+                    "scenario_count": reports_json.len(),
+                    "total_assertions": total_assertions,
+                    "failed_assertions": failed_assertions,
+                    "reports": reports_json
                 }),
             )
         }

@@ -482,5 +482,10 @@ mod tests {
 
         let w_get = call_tool(&mut session, "sim_weather_get", json!({}));
         assert!(w_get["solar_elevation_deg"].as_f64().unwrap() > 50.0);
+
+        // Stage 15: Deterministic Simulation Test Scenarios
+        let sc_res = call_tool(&mut session, "sim_run_scenario", json!({}));
+        assert_eq!(sc_res["passed"], true);
+        assert!(sc_res["scenario_count"].as_u64().unwrap() >= 2);
     }
 }
