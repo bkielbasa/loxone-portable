@@ -1985,10 +1985,21 @@ dependencies = [
  "eframe",
  "egui",
  "loxone-core",
+ "loxone-mcp",
  "png",
  "rfd",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "loxone-mcp"
+version = "0.1.0"
+dependencies = [
+ "loxone-core",
+ "serde",
+ "serde_json",
+ "ureq",
 ]
 
 [[package]]

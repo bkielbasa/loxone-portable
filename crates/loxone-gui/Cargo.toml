@@ -5,6 +5,7 @@ edition.workspace = true
 
 [dependencies]
 loxone-core = { path = "../loxone-core" }
+loxone-mcp = { path = "../loxone-mcp" }
 eframe = "0.31"
 egui = "0.31"
 rfd = "0.15"

@@ -4,6 +4,7 @@ members = [
     "crates/loxone-core",
     "crates/loxone-gui",
     "crates/loxone-format-lab",
+    "crates/loxone-mcp",
 ]
 
 [workspace.package]

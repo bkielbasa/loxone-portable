@@ -257,6 +257,7 @@ pub struct LoxonePortableApp {
     pub language: crate::i18n::Language,
     pub auto_screenshot: Option<AutoScreenshotConfig>,
     pub auto_screenshot_frame_count: u32,
+    pub mcp_bridge: Option<loxone_mcp::transport::GuiMcpBridge>,
     pub worker_tx: Sender<MiniserverWorkerEvent>,
     pub worker_rx: Receiver<MiniserverWorkerEvent>,
 }
@@ -324,6 +325,7 @@ impl Default for LoxonePortableApp {
             language,
             auto_screenshot: None,
             auto_screenshot_frame_count: 0,
+            mcp_bridge: None,
             worker_tx,
             worker_rx,
         }
@@ -338,6 +340,14 @@ impl LoxonePortableApp {
     ) -> Self {
         apply_minimalist_theme(&cc.egui_ctx);
         let mut app = Self::default();
+        let mcp_addr = std::env::var("LOXONE_MCP_ADDR")
+            .unwrap_or_else(|_| loxone_mcp::protocol::DEFAULT_GUI_MCP_ADDR.to_string());
+        if !mcp_addr.eq_ignore_ascii_case("off") && !mcp_addr.is_empty() {
+            let wake_ctx = cc.egui_ctx.clone();
+            app.mcp_bridge = loxone_mcp::transport::GuiMcpBridge::start(&mcp_addr, move || {
+                wake_ctx.request_repaint();
+            });
+        }
         if let Some(path) = initial_path {
             app.load_file(&path);
         }
@@ -572,6 +582,15 @@ impl LoxonePortableApp {
 
     pub fn apply_project_edit(&mut self, edit: ProjectEdit) {
         self.execute_edit(edit);
+    }
+
+    pub fn poll_mcp_bridge(&mut self) -> usize {
+        let Some(bridge) = self.mcp_bridge.take() else {
+            return 0;
+        };
+        let count = bridge.poll(self);
+        self.mcp_bridge = Some(bridge);
+        count
     }
 
     pub fn save_xml_to_path(&mut self, path: &Path) -> Result<(), String> {
@@ -2624,6 +2643,132 @@ fn find_tree_node_by_type_recursive<'a>(
     None
 }
 
+impl loxone_mcp::session::McpSession for LoxonePortableApp {
+    fn mode_name(&self) -> &'static str {
+        "gui_live"
+    }
+
+    fn project(&self) -> Option<&LoxoneProject> {
+        self.project.as_ref()
+    }
+
+    fn project_mut(&mut self) -> Option<&mut LoxoneProject> {
+        self.project.as_mut()
+    }
+
+    fn loaded_path(&self) -> Option<&Path> {
+        self.loaded_path.as_deref()
+    }
+
+    fn is_dirty(&self) -> bool {
+        self.is_dirty
+    }
+
+    fn undo_depth(&self) -> usize {
+        self.undo_stack.len()
+    }
+
+    fn redo_depth(&self) -> usize {
+        self.redo_stack.len()
+    }
+
+    fn open_project_file(&mut self, path: &Path) -> Result<(), String> {
+        self.load_file(path);
+        if let Some(err) = &self.error_banner {
+            Err(err.clone())
+        } else {
+            Ok(())
+        }
+    }
+
+    fn save_project_file(&mut self, path: Option<&Path>) -> Result<PathBuf, String> {
+        let target = path
+            .map(Path::to_path_buf)
+            .or_else(|| self.loaded_path.clone())
+            .ok_or_else(|| "No path specified and no loaded_path set in GUI".to_string())?;
+        self.save_xml_to_path(&target)?;
+        Ok(target)
+    }
+
+    fn create_clean_project(&mut self, title: &str, path: Option<&Path>) -> Result<(), String> {
+        let proj = loxone_mcp::helpers::build_clean_project(title).map_err(|e| e.to_string())?;
+        self.live_store = LiveValueStore::default();
+        self.live_store.seed_project_defaults(&proj);
+        self.base_project = Some(proj.clone());
+        self.last_synced_remote_xml = None;
+        self.project = Some(proj);
+        self.loaded_path = None;
+        self.is_dirty = false;
+        self.undo_stack.clear();
+        self.redo_stack.clear();
+        self.active_page_index = 0;
+        self.selected_uuid = None;
+        self.needs_initial_fit = true;
+        self.error_banner = None;
+        if let Some(p) = path {
+            self.save_xml_to_path(p)?;
+        }
+        Ok(())
+    }
+
+    fn apply_edit(&mut self, edit: ProjectEdit) -> Result<(), String> {
+        if self.project.is_none() {
+            return Err("No project open in GUI".to_string());
+        }
+        self.execute_edit(edit);
+        if let Some(err) = &self.error_banner {
+            Err(err.clone())
+        } else {
+            Ok(())
+        }
+    }
+
+    fn undo(&mut self) -> Result<bool, String> {
+        if !self.can_undo() {
+            return Ok(false);
+        }
+        LoxonePortableApp::undo(self);
+        if let Some(err) = &self.error_banner {
+            Err(err.clone())
+        } else {
+            Ok(true)
+        }
+    }
+
+    fn redo(&mut self) -> Result<bool, String> {
+        if !self.can_redo() {
+            return Ok(false);
+        }
+        LoxonePortableApp::redo(self);
+        if let Some(err) = &self.error_banner {
+            Err(err.clone())
+        } else {
+            Ok(true)
+        }
+    }
+
+    fn simulator(&self) -> &OfflineSimulator {
+        &self.simulator
+    }
+
+    fn simulator_mut(&mut self) -> &mut OfflineSimulator {
+        &mut self.simulator
+    }
+
+    fn notify_select_or_page(&mut self, page_uuid: Option<&str>, object_uuid: Option<&str>) {
+        if let Some(pu) = page_uuid {
+            if let Some(proj) = &self.project {
+                if let Some(idx) = proj.pages.iter().position(|p| p.uuid == pu) {
+                    self.active_page_index = idx;
+                }
+            }
+        }
+        if let Some(ou) = object_uuid {
+            self.selected_uuid = Some(ou.to_string());
+        }
+    }
+}
+
 impl eframe::App for LoxonePortableApp {
     fn update(&mut self, ctx: &Context, _frame: &mut eframe::Frame) {
         crate::i18n::set_language(self.language);
@@ -2636,6 +2781,7 @@ impl eframe::App for LoxonePortableApp {
         }
 
         self.poll_miniserver_worker();
+        self.poll_mcp_bridge();
         if self.connection_status.is_connecting() {
             ctx.request_repaint_after(std::time::Duration::from_millis(80));
         }
@@ -4881,6 +5027,67 @@ mod tests {
         assert!(tech_html.contains("Technical Report"));
         assert!(tech_html.contains("Hardware & Bus Inventory (Link / Tree / Air)"));
         assert!(tech_html.contains("Project Analysis Summary"));
+    }
+
+    #[test]
+    fn test_gui_live_mcp_session_syncs_canvas_and_undo_stack() {
+        use loxone_mcp::protocol::JsonRpcRequest;
+        use loxone_mcp::session::handle_jsonrpc_request;
+        use serde_json::json;
+
+        let mut app = LoxonePortableApp::default();
+        app.load_file(std::path::Path::new("../../Sample.Loxone"));
+        let initial_pages = app.project.as_ref().unwrap().pages.len();
+
+        // 1. Call MCP `page_create` directly against the live GUI app
+        let req_page = JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            id: Some(json!(1)),
+            method: "tools/call".to_string(),
+            params: Some(json!({
+                "name": "page_create",
+                "arguments": { "title": "MCP Agent Page" }
+            })),
+        };
+        let resp_page = handle_jsonrpc_request(&mut app, &req_page).unwrap();
+        let page_uuid = resp_page.result.unwrap()["structuredContent"]["page_uuid"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        // Verify the GUI immediately switched active_page_index to the new page and recorded Undo
+        assert_eq!(app.project.as_ref().unwrap().pages.len(), initial_pages + 1);
+        assert_eq!(app.active_page_index, initial_pages);
+        assert!(app.can_undo());
+
+        // 2. Call MCP `block_add` on the new page
+        let req_blk = JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            id: Some(json!(2)),
+            method: "tools/call".to_string(),
+            params: Some(json!({
+                "name": "block_add",
+                "arguments": {
+                    "page_uuid": page_uuid,
+                    "block_type": "LightController2",
+                    "title": "Agent Light Controller"
+                }
+            })),
+        };
+        let resp_blk = handle_jsonrpc_request(&mut app, &req_blk).unwrap();
+        let blk_uuid = resp_blk.result.unwrap()["structuredContent"]["block_uuid"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert_eq!(app.selected_uuid.as_deref(), Some(blk_uuid.as_str()));
+
+        // 3. GUI Undo reverts the agent's block_add
+        app.undo();
+        assert!(app.project.as_ref().unwrap().pages[initial_pages].blocks.is_empty());
+
+        // 4. GUI Redo restores the agent's block_add
+        app.redo();
+        assert_eq!(app.project.as_ref().unwrap().pages[initial_pages].blocks.len(), 1);
     }
 }
 

@@ -1,0 +1,265 @@
+#![recursion_limit = "512"]
+
+pub mod helpers;
+pub mod protocol;
+pub mod session;
+pub mod tools_advanced;
+pub mod transport;
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use serde_json::{json, Value};
+
+    use crate::protocol::JsonRpcRequest;
+    use crate::session::{handle_jsonrpc_request, HeadlessSession, McpSession};
+
+    fn call_tool(session: &mut dyn McpSession, name: &str, arguments: Value) -> Value {
+        let req = JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            id: Some(json!(1)),
+            method: "tools/call".to_string(),
+            params: Some(json!({
+                "name": name,
+                "arguments": arguments
+            })),
+        };
+        let resp = handle_jsonrpc_request(session, &req).expect("response");
+        assert!(
+            resp.error.is_none(),
+            "JSON-RPC error on {name}: {:?}",
+            resp.error
+        );
+        let result = resp.result.expect("result");
+        assert_eq!(
+            result.get("isError").and_then(Value::as_bool),
+            Some(false),
+            "Tool {name} returned isError=true: {}",
+            result
+        );
+        result
+            .get("structuredContent")
+            .cloned()
+            .unwrap_or(result)
+    }
+
+    #[test]
+    fn test_mcp_initialize_and_tool_catalog() {
+        let mut session = HeadlessSession::default();
+        let init_req = JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            id: Some(json!(1)),
+            method: "initialize".to_string(),
+            params: Some(json!({})),
+        };
+        let init_resp = handle_jsonrpc_request(&mut session, &init_req).unwrap();
+        let res = init_resp.result.unwrap();
+        assert_eq!(res["serverInfo"]["name"], "loxone-mcp");
+
+        let list_req = JsonRpcRequest {
+            jsonrpc: "2.0".to_string(),
+            id: Some(json!(2)),
+            method: "tools/list".to_string(),
+            params: None,
+        };
+        let list_resp = handle_jsonrpc_request(&mut session, &list_req).unwrap();
+        let tools = list_resp.result.unwrap()["tools"]
+            .as_array()
+            .unwrap()
+            .clone();
+        assert!(
+            tools.len() >= 30,
+            "Expected at least 30 MCP tools, got {}",
+            tools.len()
+        );
+    }
+
+    #[test]
+    fn test_headless_end_to_end_authoring_wiring_simulation_and_undo() {
+        let mut session = HeadlessSession::default();
+
+        // 1. Create a clean project
+        let status = call_tool(
+            &mut session,
+            "project_create",
+            json!({ "title": "MCP Smart Villa" }),
+        );
+        assert_eq!(status["loaded"], true);
+        assert_eq!(status["metadata"]["title"], "MCP Smart Villa");
+
+        // 2. Create a room and a page
+        let room = call_tool(
+            &mut session,
+            "room_create",
+            json!({ "title": "Kitchen", "sqm": "24" }),
+        );
+        let room_uuid = room["room_uuid"].as_str().unwrap().to_string();
+
+        let page = call_tool(
+            &mut session,
+            "page_create",
+            json!({ "title": "Kitchen Logic", "room_uuid": room_uuid }),
+        );
+        let page_uuid = page["page_uuid"].as_str().unwrap().to_string();
+
+        // 3. Provision a Touch Pure Tree device in the Periphery tree
+        let dev = call_tool(
+            &mut session,
+            "tree_add_device",
+            json!({
+                "template": "TouchPureTree",
+                "title": "Kitchen Touch",
+                "room_uuid": room_uuid
+            }),
+        );
+        let touch_child_uuid = dev["children"][0]["uuid"].as_str().unwrap().to_string();
+
+        // 4. Place an InputRef for the Touch sensor and a Switch + LightController2 on Kitchen Logic
+        let in_ref = call_tool(
+            &mut session,
+            "block_add_reference",
+            json!({
+                "page_uuid": page_uuid,
+                "target_uuid": touch_child_uuid,
+                "px": 256.0,
+                "py": 256.0
+            }),
+        );
+        let in_ref_uuid = in_ref["block_uuid"].as_str().unwrap().to_string();
+
+        let sw = call_tool(
+            &mut session,
+            "block_add",
+            json!({
+                "page_uuid": page_uuid,
+                "block_type": "Switch",
+                "title": "Island Switch",
+                "room_uuid": room_uuid,
+                "px": 1024.0,
+                "py": 256.0
+            }),
+        );
+        let sw_uuid = sw["block_uuid"].as_str().unwrap().to_string();
+
+        let lc = call_tool(
+            &mut session,
+            "block_add",
+            json!({
+                "page_uuid": page_uuid,
+                "block_type": "LightController2",
+                "title": "Kitchen Lighting",
+                "room_uuid": room_uuid,
+                "px": 1920.0,
+                "py": 256.0
+            }),
+        );
+        let lc_uuid = lc["block_uuid"].as_str().unwrap().to_string();
+
+        // 5. Wire InputRef O -> Switch Tr, and configure LightController2 circuit + scene
+        call_tool(
+            &mut session,
+            "wire_connect",
+            json!({
+                "source_block_uuid": in_ref_uuid,
+                "source_pin_key": "O",
+                "target_block_uuid": sw_uuid,
+                "target_pin_key": "Tr"
+            }),
+        );
+
+        call_tool(
+            &mut session,
+            "config_light_controller_set",
+            json!({
+                "block_uuid": lc_uuid,
+                "circuits": [
+                    { "index": 0, "name": "Island Pendants", "circuit_type": "Dimmer0To100" }
+                ],
+                "scenes": [
+                    { "sid": 1, "name": "Cooking Bright", "circuit_pcts": [90, 0, 0, 0, 0, 0, 0, 0] }
+                ]
+            }),
+        );
+        let lc_cfg = call_tool(
+            &mut session,
+            "config_light_controller_get",
+            json!({ "block_uuid": lc_uuid }),
+        );
+        assert_eq!(lc_cfg["circuits"][0]["name"], "Island Pendants");
+
+        // 6. Run offline simulation and toggle Switch
+        let sim_res = call_tool(
+            &mut session,
+            "sim_control",
+            json!({
+                "action": "set_input",
+                "control_uuid": sw_uuid,
+                "value": "1",
+                "page_uuid": page_uuid
+            }),
+        );
+        assert_eq!(sim_res["enabled"], true);
+
+        // 7. Run Project Analysis and export Component BOM CSV
+        let analysis = call_tool(&mut session, "analysis_run", json!({}));
+        assert!(analysis.get("total_findings").is_some());
+
+        let bom = call_tool(
+            &mut session,
+            "report_export",
+            json!({ "format": "component_bom_csv" }),
+        );
+        assert!(bom["content"]
+            .as_str()
+            .unwrap()
+            .contains("LightController2"));
+
+        // 8. Test Undo & Redo
+        let undo_res = call_tool(&mut session, "project_undo", json!({}));
+        assert_eq!(undo_res["undone"], true);
+        let redo_res = call_tool(&mut session, "project_redo", json!({}));
+        assert_eq!(redo_res["redone"], true);
+    }
+
+    #[test]
+    fn test_sample_loxone_specialized_configs_and_wizards() {
+        let sample_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("Sample.Loxone");
+        let mut session =
+            HeadlessSession::new(Some(&sample_path), false).expect("open Sample.Loxone");
+
+        // Burglar Alarm object assignments
+        let alarm_uuid = "19eb19a9-024d-3a10-ffff51535bcccc04";
+        let obj_cfg = call_tool(
+            &mut session,
+            "config_object_assignments_get",
+            json!({ "block_uuid": alarm_uuid, "only_selected": true }),
+        );
+        assert!(obj_cfg["count"].as_u64().unwrap() >= 30);
+
+        // Auto-Configuration Room Wizard preview + execution
+        let wiz = call_tool(
+            &mut session,
+            "wizard_auto_configure_rooms",
+            json!({ "preview_only": true }),
+        );
+        assert!(wiz["generated_blocks"].as_u64().unwrap() > 0);
+
+        // Bulk Find & Replace preview
+        let fr = call_tool(
+            &mut session,
+            "bulk_find_and_replace",
+            json!({
+                "query": "Oświetlenie",
+                "replacement": "Lighting",
+                "preview_only": true
+            }),
+        );
+        assert!(fr["match_count"].as_u64().unwrap() > 0);
+    }
+}
