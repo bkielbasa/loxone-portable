@@ -997,6 +997,236 @@ pub fn create_cross_page_link_edits(
     ]))
 }
 
+/// Computes a Sugiyama-style topological layered auto-layout for all positioned blocks on `page_uuid`,
+/// snapping every block to the 64-unit Loxone schematic grid with zero overlaps and returning
+/// `(moved_block_count, ProjectEdit::Batch(moves))`.
+pub fn build_page_auto_layout_edits(
+    project: &LoxoneProject,
+    page_uuid: &str,
+) -> Option<(usize, ProjectEdit)> {
+    let page = project.pages.iter().find(|p| p.uuid == page_uuid)?;
+    if page.blocks.is_empty() {
+        return None;
+    }
+
+    let snap64 = |v: f32| -> f32 { (v / 64.0).round() * 64.0 };
+
+    // Map every pin UUID on this page to its owning block UUID
+    let mut pin_to_block: std::collections::HashMap<&str, &str> = std::collections::HashMap::new();
+    for block in &page.blocks {
+        for pin in &block.pins {
+            if !pin.uuid.is_empty() {
+                pin_to_block.insert(pin.uuid.as_str(), block.uuid.as_str());
+            }
+        }
+    }
+
+    // Build directed edges u -> v on this page
+    let mut incoming_from: std::collections::HashMap<&str, Vec<&str>> =
+        std::collections::HashMap::new();
+    let mut outgoing_to: std::collections::HashMap<&str, Vec<&str>> =
+        std::collections::HashMap::new();
+    for block in &page.blocks {
+        for pin in &block.pins {
+            for link in &pin.incoming_links {
+                if let Some(&src_block_uuid) = pin_to_block.get(link.source_pin_uuid.as_str()) {
+                    if src_block_uuid != block.uuid.as_str() {
+                        incoming_from
+                            .entry(block.uuid.as_str())
+                            .or_default()
+                            .push(src_block_uuid);
+                        outgoing_to
+                            .entry(src_block_uuid)
+                            .or_default()
+                            .push(block.uuid.as_str());
+                    }
+                }
+            }
+        }
+    }
+
+    let mut memo_blocks: Vec<&PageBlock> = Vec::new();
+    let mut source_blocks: Vec<&PageBlock> = Vec::new();
+    let mut sink_blocks: Vec<&PageBlock> = Vec::new();
+    let mut middle_blocks: Vec<&PageBlock> = Vec::new();
+
+    for block in &page.blocks {
+        if !block.has_position {
+            continue;
+        }
+        if matches!(block.block_type.as_str(), "Memo" | "Note") {
+            memo_blocks.push(block);
+            continue;
+        }
+        let in_deg = incoming_from
+            .get(block.uuid.as_str())
+            .map(|v| v.len())
+            .unwrap_or(0);
+        let out_deg = outgoing_to
+            .get(block.uuid.as_str())
+            .map(|v| v.len())
+            .unwrap_or(0);
+        let is_pure_input = matches!(
+            block.block_type.as_str(),
+            "InputRef" | "DigitalIn" | "AnalogIn" | "InterpageIn"
+        ) || (block.ref_uuid.is_some() && in_deg == 0 && out_deg > 0);
+        let is_pure_output = matches!(
+            block.block_type.as_str(),
+            "OutputRef"
+                | "Actor"
+                | "Actuator"
+                | "Dimmer"
+                | "InterpageOut"
+                | "Logger"
+                | "Mailer"
+                | "Tracker"
+        ) || (block.ref_uuid.is_some() && in_deg > 0 && out_deg == 0);
+
+        if is_pure_input {
+            source_blocks.push(block);
+        } else if is_pure_output {
+            sink_blocks.push(block);
+        } else {
+            middle_blocks.push(block);
+        }
+    }
+
+    // Compute topological layer (1..=max_layer) for middle_blocks
+    let middle_set: std::collections::HashSet<&str> =
+        middle_blocks.iter().map(|b| b.uuid.as_str()).collect();
+    let mut layers: std::collections::HashMap<&str, usize> = middle_blocks
+        .iter()
+        .map(|b| (b.uuid.as_str(), 1usize))
+        .collect();
+
+    for _ in 0..8 {
+        let mut changed = false;
+        for b in &middle_blocks {
+            if let Some(preds) = incoming_from.get(b.uuid.as_str()) {
+                let mut best = 1usize;
+                for &pred in preds {
+                    if middle_set.contains(pred) {
+                        let pred_layer = layers.get(pred).copied().unwrap_or(1);
+                        best = best.max((pred_layer + 1).min(8));
+                    }
+                }
+                let cur = layers.get(b.uuid.as_str()).copied().unwrap_or(1);
+                if best > cur {
+                    layers.insert(b.uuid.as_str(), best);
+                    changed = true;
+                }
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+
+    let max_middle_layer = layers.values().copied().max().unwrap_or(1);
+    let sink_col = if middle_blocks.is_empty() {
+        1
+    } else {
+        max_middle_layer + 1
+    };
+
+    let mut columns: std::collections::BTreeMap<usize, Vec<&PageBlock>> =
+        std::collections::BTreeMap::new();
+    if !source_blocks.is_empty() {
+        columns.insert(0, source_blocks);
+    }
+    for b in middle_blocks {
+        let col = layers.get(b.uuid.as_str()).copied().unwrap_or(1);
+        columns.entry(col).or_default().push(b);
+    }
+    if !sink_blocks.is_empty() {
+        columns.entry(sink_col).or_default().extend(sink_blocks);
+    }
+
+    let mut moves = Vec::new();
+    let mut assigned_py: std::collections::HashMap<&str, f32> = std::collections::HashMap::new();
+
+    // Place Memo / Note blocks along the top banner row
+    memo_blocks.sort_by(|a, b| {
+        a.px.partial_cmp(&b.px)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.uuid.cmp(&b.uuid))
+    });
+    let mut memo_x = 192.0_f32;
+    let base_y = if memo_blocks.is_empty() {
+        192.0_f32
+    } else {
+        for m in &memo_blocks {
+            let w = (m.px2 - m.px).abs().max(512.0);
+            let target_px = snap64(memo_x);
+            let target_py = 128.0_f32;
+            if (m.px - target_px).abs() > 0.5 || (m.py - target_py).abs() > 0.5 {
+                moves.push(ProjectEdit::MovePageBlock {
+                    page_uuid: page_uuid.to_string(),
+                    block_uuid: m.uuid.clone(),
+                    px: target_px,
+                    py: target_py,
+                });
+            }
+            memo_x += snap64(w + 128.0);
+        }
+        448.0_f32
+    };
+
+    // Compact column indices to 0, 1, 2, ...
+    let ordered_cols: Vec<Vec<&PageBlock>> = columns.into_values().collect();
+    for (col_idx, mut col_blocks) in ordered_cols.into_iter().enumerate() {
+        col_blocks.sort_by(|a, b| {
+            let bary_a = incoming_from
+                .get(a.uuid.as_str())
+                .and_then(|preds| {
+                    let vals: Vec<f32> = preds
+                        .iter()
+                        .filter_map(|p| assigned_py.get(p).copied())
+                        .collect();
+                    (!vals.is_empty()).then(|| vals.iter().sum::<f32>() / (vals.len() as f32))
+                })
+                .unwrap_or(a.py);
+            let bary_b = incoming_from
+                .get(b.uuid.as_str())
+                .and_then(|preds| {
+                    let vals: Vec<f32> = preds
+                        .iter()
+                        .filter_map(|p| assigned_py.get(p).copied())
+                        .collect();
+                    (!vals.is_empty()).then(|| vals.iter().sum::<f32>() / (vals.len() as f32))
+                })
+                .unwrap_or(b.py);
+            bary_a
+                .partial_cmp(&bary_b)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| a.py.partial_cmp(&b.py).unwrap_or(std::cmp::Ordering::Equal))
+                .then_with(|| a.uuid.cmp(&b.uuid))
+        });
+
+        let target_px = snap64(192.0 + (col_idx as f32) * 896.0);
+        let mut cursor_y = base_y;
+        for b in col_blocks {
+            let target_py = snap64(cursor_y);
+            assigned_py.insert(b.uuid.as_str(), target_py);
+            if (b.px - target_px).abs() > 0.5 || (b.py - target_py).abs() > 0.5 {
+                moves.push(ProjectEdit::MovePageBlock {
+                    page_uuid: page_uuid.to_string(),
+                    block_uuid: b.uuid.clone(),
+                    px: target_px,
+                    py: target_py,
+                });
+            }
+            let raw_h = (b.py2 - b.py).abs();
+            let pin_based_h = (b.pins.len().max(2) as f32) * 64.0;
+            let eff_h = raw_h.max(pin_based_h).max(128.0);
+            cursor_y = target_py + snap64(eff_h + 128.0);
+        }
+    }
+
+    let moved_count = moves.len();
+    Some((moved_count, ProjectEdit::Batch(moves)))
+}
+
 fn find_page_block_mut<'a>(
     project: &'a mut LoxoneProject,
     control_uuid: &str,

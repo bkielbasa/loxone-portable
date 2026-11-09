@@ -215,7 +215,26 @@ mod tests {
             .unwrap()
             .contains("LightController2"));
 
-        // 8. Test Undo & Redo
+        // 8. Test Auto-Layout on Kitchen Logic page
+        let layout_res = call_tool(
+            &mut session,
+            "page_auto_layout",
+            json!({ "page_uuid": page_uuid }),
+        );
+        assert!(layout_res["moved_blocks"].as_u64().unwrap() > 0);
+        let page_after = call_tool(
+            &mut session,
+            "page_get",
+            json!({ "page_uuid": page_uuid }),
+        );
+        for blk in page_after["blocks"].as_array().unwrap() {
+            let px = blk["px"].as_f64().unwrap();
+            let py = blk["py"].as_f64().unwrap();
+            assert_eq!((px % 64.0).abs(), 0.0);
+            assert_eq!((py % 64.0).abs(), 0.0);
+        }
+
+        // 9. Test Undo & Redo
         let undo_res = call_tool(&mut session, "project_undo", json!({}));
         assert_eq!(undo_res["undone"], true);
         let redo_res = call_tool(&mut session, "project_redo", json!({}));
