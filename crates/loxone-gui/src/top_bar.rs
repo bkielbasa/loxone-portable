@@ -284,6 +284,7 @@ pub enum TopBarAction {
     OpenProjectDiff,
     NewProjectTab,
     OpenTechReportWizard,
+    OpenMultiplierManager,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2441,6 +2442,13 @@ fn render_ribbon_row_2(
                                 "Inspect DIN-rail panel placement, terminal wiring schedule, and Bill of Materials (CTechReportWizard)",
                                 ACCENT_BLUE,
                                 TopBarAction::OpenTechReportWizard,
+                            ),
+                            (
+                                "🏢",
+                                "Multiplier Project",
+                                "Manage multi-unit Miniserver deployments, unit serial overrides, and per-unit .Loxone exports",
+                                LOXONE_GREEN,
+                                TopBarAction::OpenMultiplierManager,
                             ),
                         ];
                         for (icon, label, tip, tint, act) in admin_tiles {

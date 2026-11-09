@@ -36,6 +36,7 @@ pub enum AdminModal {
     AutopilotDesigner,
     ProjectDiff,
     TechReportWizard,
+    MultiplierManager,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -154,6 +155,13 @@ pub struct AdminModalsState {
     pub tech_report_tab: usize,
     pub tech_report_filter: String,
     pub tech_report_wired_only: bool,
+    // Multiplier Project Manager state (Stage 13)
+    pub mult_selected_uuid: Option<String>,
+    pub mult_title_draft: String,
+    pub mult_serial_draft: String,
+    pub mult_address_draft: String,
+    pub mult_desc_draft: String,
+    pub mult_overrides_draft: Vec<(String, String)>,
 }
 
 impl Default for AdminModalsState {
@@ -202,6 +210,12 @@ impl Default for AdminModalsState {
             tech_report_tab: 0,
             tech_report_filter: String::new(),
             tech_report_wired_only: false,
+            mult_selected_uuid: None,
+            mult_title_draft: String::new(),
+            mult_serial_draft: String::new(),
+            mult_address_draft: String::new(),
+            mult_desc_draft: String::new(),
+            mult_overrides_draft: Vec::new(),
         }
     }
 }
@@ -371,6 +385,27 @@ impl AdminModalsState {
     pub fn open_tech_report_wizard(&mut self) {
         self.status = None;
         self.open = AdminModal::TechReportWizard;
+    }
+
+    pub fn open_multiplier_manager(&mut self, project: &LoxoneProject) {
+        self.status = None;
+        let units = loxone_core::collect_multiplier_units(project);
+        if let Some(first) = units.first() {
+            self.mult_selected_uuid = Some(first.uuid.clone());
+            self.mult_title_draft = first.title.clone();
+            self.mult_serial_draft = first.miniserver_serial.clone();
+            self.mult_address_draft = first.address.clone();
+            self.mult_desc_draft = first.description.clone();
+            self.mult_overrides_draft = first.device_serial_overrides.clone();
+        } else {
+            self.mult_selected_uuid = None;
+            if self.mult_title_draft.is_empty() {
+                self.mult_title_draft = "Unit 101".to_string();
+                self.mult_serial_draft = "504F94FF0101".to_string();
+                self.mult_address_draft = "192.168.1.101".to_string();
+            }
+        }
+        self.open = AdminModal::MultiplierManager;
     }
 
     pub fn close(&mut self) {
@@ -611,6 +646,9 @@ pub fn render_admin_modals(
                 AdminModal::ProjectDiff => render_project_diff(ctx, state, project, &mut out),
                 AdminModal::TechReportWizard => {
                     render_tech_report_wizard(ctx, state, project, &mut out)
+                }
+                AdminModal::MultiplierManager => {
+                    render_multiplier_manager(ctx, state, project, &mut out)
                 }
                 _ => true,
             }
@@ -3457,6 +3495,264 @@ fn render_tech_report_wizard(
                         });
                 });
             }
+        },
+    )
+}
+
+fn render_multiplier_manager(
+    ctx: &egui::Context,
+    state: &mut AdminModalsState,
+    project: &LoxoneProject,
+    out: &mut Vec<AdminAction>,
+) -> bool {
+    let status = state.status.clone();
+    modal_window(
+        ctx,
+        "admin_multiplier_manager",
+        "Multiplier Project Manager (Projekt Multiplikator)",
+        [940.0, 620.0],
+        status.as_deref(),
+        |ui| {
+            let units = loxone_core::collect_multiplier_units(project);
+            let hw_devices = loxone_core::collect_provisioned_hardware(project);
+            let is_mult = loxone_core::is_multiplier_project(project);
+
+            ui.horizontal(|ui| {
+                ui.label(
+                    RichText::new(if is_mult {
+                        "● Multiplier Project Active"
+                    } else {
+                        "○ Standard Single-Miniserver Project (add a unit to convert to Multiplier)"
+                    })
+                    .size(12.5)
+                    .strong()
+                    .color(if is_mult {
+                        theme::ACCENT_PRIMARY
+                    } else {
+                        theme::TEXT_SECONDARY
+                    }),
+                );
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if button(ui, "＋ New Unit Draft", false).clicked() {
+                        state.mult_selected_uuid = None;
+                        state.mult_title_draft = format!("Unit {}", units.len() + 101);
+                        state.mult_serial_draft = format!("504F94FF{:04}", units.len() + 101);
+                        state.mult_address_draft = format!("192.168.1.{}", units.len() + 101);
+                        state.mult_desc_draft.clear();
+                        state.mult_overrides_draft.clear();
+                    }
+                });
+            });
+
+            ui.add_space(6.0);
+            ui.columns(2, |cols| {
+                cols[0].vertical(|ui| {
+                    section_label(ui, &format!("Managed Units ({})", units.len()));
+                    card(ui, |ui| {
+                        egui::ScrollArea::vertical()
+                            .id_salt("multiplier_units_scroll")
+                            .max_height(460.0)
+                            .show(ui, |ui| {
+                                if units.is_empty() {
+                                    ui.label(
+                                        RichText::new(
+                                            "No Multiplier units configured yet. Fill in the form on the right and click Save Unit.",
+                                        )
+                                        .size(11.5)
+                                        .color(theme::TEXT_MUTED),
+                                    );
+                                }
+                                for u in &units {
+                                    let is_sel =
+                                        state.mult_selected_uuid.as_deref() == Some(&u.uuid);
+                                    ui.horizontal(|ui| {
+                                        if ui
+                                            .selectable_label(
+                                                is_sel,
+                                                format!(
+                                                    "{} [{}] ({})",
+                                                    u.title, u.miniserver_serial, u.address
+                                                ),
+                                            )
+                                            .clicked()
+                                        {
+                                            state.mult_selected_uuid = Some(u.uuid.clone());
+                                            state.mult_title_draft = u.title.clone();
+                                            state.mult_serial_draft = u.miniserver_serial.clone();
+                                            state.mult_address_draft = u.address.clone();
+                                            state.mult_desc_draft = u.description.clone();
+                                            state.mult_overrides_draft =
+                                                u.device_serial_overrides.clone();
+                                        }
+                                        ui.with_layout(
+                                            egui::Layout::right_to_left(egui::Align::Center),
+                                            |ui| {
+                                                if ui.small_button("🗑").clicked() {
+                                                    out.push(AdminAction::Edit(
+                                                        loxone_core::build_remove_multiplier_unit_edit(&u.uuid),
+                                                    ));
+                                                    if state.mult_selected_uuid.as_deref()
+                                                        == Some(&u.uuid)
+                                                    {
+                                                        state.mult_selected_uuid = None;
+                                                    }
+                                                }
+                                                if ui
+                                                    .small_button("💾 Export .Loxone")
+                                                    .on_hover_text(
+                                                        "Instantiate and export a concrete .Loxone file for this unit",
+                                                    )
+                                                    .clicked()
+                                                {
+                                                    if let Some(derived) =
+                                                        loxone_core::instantiate_multiplier_unit_project(
+                                                            project, &u.uuid,
+                                                        )
+                                                    {
+                                                        if let Ok(xml) =
+                                                            loxone_core::writer::serialize_loxone_xml(
+                                                                &derived,
+                                                            )
+                                                        {
+                                                            let safe_name = u
+                                                                .title
+                                                                .replace(' ', "_")
+                                                                .replace('/', "_");
+                                                            let out_path = std::env::temp_dir()
+                                                                .join(format!("{safe_name}.Loxone"));
+                                                            if std::fs::write(&out_path, xml).is_ok()
+                                                            {
+                                                                state.status = Some(format!(
+                                                                    "Exported unit project to {}",
+                                                                    out_path.display()
+                                                                ));
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            },
+                                        );
+                                    });
+                                    ui.separator();
+                                }
+                            });
+                    });
+                });
+
+                cols[1].vertical(|ui| {
+                    section_label(
+                        ui,
+                        if state.mult_selected_uuid.is_some() {
+                            "Edit Selected Multiplier Unit"
+                        } else {
+                            "Create New Multiplier Unit"
+                        },
+                    );
+                    card(ui, |ui| {
+                        egui::Grid::new("mult_unit_form_grid")
+                            .num_columns(2)
+                            .spacing([10.0, 6.0])
+                            .show(ui, |ui| {
+                                ui.label("Unit Name:");
+                                ui.add(
+                                    egui::TextEdit::singleline(&mut state.mult_title_draft)
+                                        .desired_width(240.0),
+                                );
+                                ui.end_row();
+
+                                ui.label("Miniserver Serial:");
+                                ui.add(
+                                    egui::TextEdit::singleline(&mut state.mult_serial_draft)
+                                        .desired_width(240.0),
+                                );
+                                ui.end_row();
+
+                                ui.label("IP / Cloud Address:");
+                                ui.add(
+                                    egui::TextEdit::singleline(&mut state.mult_address_draft)
+                                        .desired_width(240.0),
+                                );
+                                ui.end_row();
+
+                                ui.label("Description:");
+                                ui.add(
+                                    egui::TextEdit::singleline(&mut state.mult_desc_draft)
+                                        .desired_width(240.0),
+                                );
+                                ui.end_row();
+                            });
+
+                        ui.add_space(8.0);
+                        ui.label(
+                            RichText::new("Per-Unit Hardware Serial Overrides")
+                                .size(11.5)
+                                .strong()
+                                .color(theme::TEXT_SECONDARY),
+                        );
+                        egui::ScrollArea::vertical()
+                            .id_salt("mult_overrides_scroll")
+                            .max_height(210.0)
+                            .show(ui, |ui| {
+                                for dev in hw_devices.iter().filter(|d| d.node_type != "LoxLIVE") {
+                                    let current_ov = state
+                                        .mult_overrides_draft
+                                        .iter()
+                                        .find(|(du, _)| du == &dev.uuid)
+                                        .map(|(_, s)| s.clone())
+                                        .unwrap_or_default();
+                                    let mut draft_ov = current_ov.clone();
+                                    ui.horizontal(|ui| {
+                                        ui.label(
+                                            RichText::new(format!(
+                                                "{} ({}):",
+                                                dev.title, dev.node_type
+                                            ))
+                                            .size(11.0)
+                                            .color(theme::TEXT_PRIMARY),
+                                        );
+                                        if ui
+                                            .add(
+                                                egui::TextEdit::singleline(&mut draft_ov)
+                                                    .desired_width(120.0)
+                                                    .hint_text(&dev.serial),
+                                            )
+                                            .changed()
+                                        {
+                                            state
+                                                .mult_overrides_draft
+                                                .retain(|(du, _)| du != &dev.uuid);
+                                            if !draft_ov.trim().is_empty() {
+                                                state.mult_overrides_draft.push((
+                                                    dev.uuid.clone(),
+                                                    draft_ov.trim().to_ascii_uppercase(),
+                                                ));
+                                            }
+                                        }
+                                    });
+                                }
+                            });
+
+                        ui.add_space(8.0);
+                        if button(ui, "✓ Save Multiplier Unit", true).clicked()
+                            && !state.mult_title_draft.trim().is_empty()
+                        {
+                            let entry = loxone_core::MultiplierUnitEntry {
+                                uuid: state.mult_selected_uuid.clone().unwrap_or_default(),
+                                title: state.mult_title_draft.clone(),
+                                miniserver_serial: state.mult_serial_draft.clone(),
+                                address: state.mult_address_draft.clone(),
+                                description: state.mult_desc_draft.clone(),
+                                device_serial_overrides: state.mult_overrides_draft.clone(),
+                            };
+                            let (saved_uuid, edit) =
+                                loxone_core::build_upsert_multiplier_unit_edit(project, &entry);
+                            state.mult_selected_uuid = Some(saved_uuid);
+                            out.push(AdminAction::Edit(edit));
+                            state.status = Some("Saved Multiplier unit.".to_string());
+                        }
+                    });
+                });
+            });
         },
     )
 }

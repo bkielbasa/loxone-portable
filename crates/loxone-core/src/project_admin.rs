@@ -672,6 +672,220 @@ pub fn build_autopilot_rule_edits(
     Some((gate_uuid, ProjectEdit::Batch(edits)))
 }
 
+// ---------------------------------------------------------------------------
+// Multiplier Project & Template Inheritance Engine (Stage 13)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MultiplierUnitEntry {
+    pub uuid: String,
+    pub title: String,
+    pub miniserver_serial: String,
+    pub address: String,
+    pub description: String,
+    /// Pairs of `(template_device_uuid, unit_serial)` overridden in this unit.
+    pub device_serial_overrides: Vec<(String, String)>,
+}
+
+pub fn is_multiplier_project(project: &LoxoneProject) -> bool {
+    project
+        .metadata
+        .doc_attr("Multiplier")
+        .map(|v| v.eq_ignore_ascii_case("true") || v == "1")
+        .unwrap_or(false)
+        || !find_nodes_by_type(project, "MultiplierUnit").is_empty()
+}
+
+pub fn collect_multiplier_units(project: &LoxoneProject) -> Vec<MultiplierUnitEntry> {
+    let mut out = Vec::new();
+    for node in find_nodes_by_type(project, "MultiplierUnit") {
+        let mut overrides = Vec::new();
+        for ch in &node.extra_children {
+            if ch.tag == "Override" {
+                if let (Some(r), Some(sn)) = (ch.attr("Ref"), ch.attr("Serial")) {
+                    overrides.push((r.to_string(), sn.to_string()));
+                }
+            }
+        }
+        out.push(MultiplierUnitEntry {
+            uuid: node.uuid.clone(),
+            title: node.title.clone(),
+            miniserver_serial: node.attr("Serial").unwrap_or_default().to_string(),
+            address: node
+                .attr("Address")
+                .or_else(|| node.attr("Host"))
+                .unwrap_or_default()
+                .to_string(),
+            description: node.attr("Desc").unwrap_or_default().to_string(),
+            device_serial_overrides: overrides,
+        });
+    }
+    out
+}
+
+pub fn build_upsert_multiplier_unit_edit(
+    project: &LoxoneProject,
+    unit: &MultiplierUnitEntry,
+) -> (String, ProjectEdit) {
+    let doc_uuid = project
+        .metadata
+        .doc_attr("U")
+        .unwrap_or("doc-1")
+        .to_string();
+    let unit_uuid = if unit.uuid.trim().is_empty() {
+        generate_loxone_uuid()
+    } else {
+        unit.uuid.trim().to_string()
+    };
+
+    let extra_children: Vec<RawNode> = unit
+        .device_serial_overrides
+        .iter()
+        .filter(|(r, s)| !r.trim().is_empty() && !s.trim().is_empty())
+        .map(|(r, s)| RawNode {
+            tag: "Override".to_string(),
+            attributes: vec![
+                ("Ref".to_string(), r.trim().to_string()),
+                ("Serial".to_string(), s.trim().to_ascii_uppercase()),
+            ],
+            text: None,
+            children: Vec::new(),
+        })
+        .collect();
+
+    let mut edits = vec![ProjectEdit::SetControlAttr {
+        control_uuid: doc_uuid,
+        attr_name: "Multiplier".to_string(),
+        value: Some("true".to_string()),
+    }];
+
+    if find_node_by_uuid(project, &unit_uuid).is_some() {
+        edits.push(ProjectEdit::SetControlAttr {
+            control_uuid: unit_uuid.clone(),
+            attr_name: "Title".to_string(),
+            value: Some(unit.title.trim().to_string()),
+        });
+        edits.push(ProjectEdit::SetControlAttr {
+            control_uuid: unit_uuid.clone(),
+            attr_name: "Serial".to_string(),
+            value: Some(unit.miniserver_serial.trim().to_ascii_uppercase()),
+        });
+        edits.push(ProjectEdit::SetControlAttr {
+            control_uuid: unit_uuid.clone(),
+            attr_name: "Address".to_string(),
+            value: Some(unit.address.trim().to_string()),
+        });
+        edits.push(ProjectEdit::SetControlAttr {
+            control_uuid: unit_uuid.clone(),
+            attr_name: "Desc".to_string(),
+            value: (!unit.description.trim().is_empty())
+                .then(|| unit.description.trim().to_string()),
+        });
+        edits.push(ProjectEdit::SetExtraChildren {
+            control_uuid: unit_uuid.clone(),
+            extra_children,
+        });
+    } else {
+        let mut node = new_tree_node("MultiplierUnit", unit.title.trim());
+        node.uuid = unit_uuid.clone();
+        node.raw_attributes = vec![
+            ("Type".to_string(), "MultiplierUnit".to_string()),
+            ("U".to_string(), unit_uuid.clone()),
+            ("Title".to_string(), unit.title.trim().to_string()),
+            (
+                "Serial".to_string(),
+                unit.miniserver_serial.trim().to_ascii_uppercase(),
+            ),
+            ("Address".to_string(), unit.address.trim().to_string()),
+        ];
+        if !unit.description.trim().is_empty() {
+            node.raw_attributes
+                .push(("Desc".to_string(), unit.description.trim().to_string()));
+        }
+        node.extra_children = extra_children;
+        edits.push(ProjectEdit::AddTreeNode {
+            section: TreeSectionKind::System,
+            parent_uuid: None,
+            node,
+        });
+    }
+
+    (unit_uuid, ProjectEdit::Batch(edits))
+}
+
+pub fn build_remove_multiplier_unit_edit(unit_uuid: &str) -> ProjectEdit {
+    ProjectEdit::RemoveTreeNode {
+        node_uuid: unit_uuid.to_string(),
+    }
+}
+
+/// Instantiates a standalone `.Loxone` project for a specific Multiplier unit by cloning
+/// the master template and applying the unit's Miniserver serial/address and device serial overrides.
+pub fn instantiate_multiplier_unit_project(
+    project: &LoxoneProject,
+    unit_uuid: &str,
+) -> Option<LoxoneProject> {
+    let unit = collect_multiplier_units(project)
+        .into_iter()
+        .find(|u| u.uuid == unit_uuid)?;
+
+    let mut derived = project.clone();
+    let doc_uuid = derived
+        .metadata
+        .doc_attr("U")
+        .unwrap_or("doc-1")
+        .to_string();
+    let new_title = if derived.metadata.title.trim().is_empty() {
+        unit.title.clone()
+    } else {
+        format!("{} — {}", derived.metadata.title.trim(), unit.title)
+    };
+
+    let mut edits = vec![
+        ProjectEdit::SetControlAttr {
+            control_uuid: doc_uuid.clone(),
+            attr_name: "Title".to_string(),
+            value: Some(new_title),
+        },
+        ProjectEdit::SetControlAttr {
+            control_uuid: doc_uuid,
+            attr_name: "Multiplier".to_string(),
+            value: None,
+        },
+    ];
+
+    if let Some(ms_node) = find_first_by_type(&derived, "LoxLIVE") {
+        let ms_uuid = ms_node.uuid.clone();
+        if !unit.miniserver_serial.trim().is_empty() {
+            edits.push(ProjectEdit::SetControlAttr {
+                control_uuid: ms_uuid.clone(),
+                attr_name: "Serial".to_string(),
+                value: Some(unit.miniserver_serial.trim().to_ascii_uppercase()),
+            });
+        }
+        if !unit.address.trim().is_empty() {
+            edits.push(ProjectEdit::SetControlAttr {
+                control_uuid: ms_uuid,
+                attr_name: "IntAddr".to_string(),
+                value: Some(unit.address.trim().to_string()),
+            });
+        }
+    }
+
+    for (dev_uuid, unit_serial) in &unit.device_serial_overrides {
+        if find_node_by_uuid(&derived, dev_uuid).is_some() {
+            edits.push(ProjectEdit::SetControlAttr {
+                control_uuid: dev_uuid.clone(),
+                attr_name: "Serial".to_string(),
+                value: Some(unit_serial.trim().to_ascii_uppercase()),
+            });
+        }
+    }
+
+    let _ = crate::writer::apply_edit(&mut derived, &ProjectEdit::Batch(edits));
+    Some(derived)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -731,5 +945,39 @@ mod tests {
         assert!(xml.contains("Title=\"Xmas\""));
         assert!(xml.contains("REF=\"p1\""));
         assert!(xml.contains("User=\"u1\""));
+    }
+
+    #[test]
+    fn multiplier_unit_upsert_and_instantiate_roundtrip() {
+        let mut p = parse_loxone_xml(XML).unwrap();
+        assert!(!is_multiplier_project(&p));
+
+        let unit = MultiplierUnitEntry {
+            uuid: String::new(),
+            title: "Suite 201".to_string(),
+            miniserver_serial: "504f94ff0201".to_string(),
+            address: "192.168.10.201".to_string(),
+            description: "2nd floor corner suite".to_string(),
+            device_serial_overrides: vec![("u1".to_string(), "b0301234".to_string())],
+        };
+        let (unit_uuid, edit) = build_upsert_multiplier_unit_edit(&p, &unit);
+        apply_edit(&mut p, &edit).unwrap();
+
+        assert!(is_multiplier_project(&p));
+        let units = collect_multiplier_units(&p);
+        assert_eq!(units.len(), 1);
+        assert_eq!(units[0].uuid, unit_uuid);
+        assert_eq!(units[0].title, "Suite 201");
+        assert_eq!(units[0].miniserver_serial, "504F94FF0201");
+        assert_eq!(
+            units[0].device_serial_overrides,
+            vec![("u1".to_string(), "B0301234".to_string())]
+        );
+
+        let derived = instantiate_multiplier_unit_project(&p, &unit_uuid)
+            .expect("should instantiate unit project");
+        assert_eq!(derived.metadata.title, "Home — Suite 201");
+        let u1_node = find_node_by_uuid(&derived, "u1").unwrap();
+        assert_eq!(u1_node.attr("Serial"), Some("B0301234"));
     }
 }

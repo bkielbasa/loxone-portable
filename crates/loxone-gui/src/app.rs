@@ -1673,6 +1673,11 @@ impl LoxonePortableApp {
                     self.admin_modals.open_tech_report_wizard();
                 }
             }
+            TopBarAction::OpenMultiplierManager => {
+                if let Some(proj) = &self.project {
+                    self.admin_modals.open_multiplier_manager(proj);
+                }
+            }
             TopBarAction::NewProjectTab => {
                 if let Some(proj) = self.project.take() {
                     self.parked_tabs.push(ParkedProjectTab {
