@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 use loxone_core::model::RawNode;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::corpus::load_file;
 use crate::dom::{node_label, node_title, node_uuid, walk, NodeBrief};
@@ -45,7 +45,7 @@ pub struct DiffReport {
     pub changed: Vec<NodeDiff>,
 }
 
-#[derive(Debug, Default, Serialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct DiffSummary {
     pub added: usize,
     pub removed: usize,
@@ -53,13 +53,13 @@ pub struct DiffSummary {
     pub field_changes: usize,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NodeDiff {
     pub brief: NodeBrief,
     pub changes: Vec<FieldChange>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FieldChange {
     pub field: String,
     pub old: Option<String>,

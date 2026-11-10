@@ -1272,26 +1272,7 @@ impl LoxonePortableApp {
     }
 
     pub fn create_new_blank_project(&mut self) {
-        let blank_xml = r#"<?xml version="1.0" encoding="utf-8"?>
-<ControlList Version="1">
-	<C Type="Document" Title="New Project" U="00000001-0000-0000-0000-000000000001" ConfigVersion="17021021" SL="1">
-		<C Type="PlaceCaption" Title="Rooms" U="00000001-0000-0000-0000-000000000002">
-			<C Type="Place" Title="Living Room" U="00000001-0000-0000-0000-000000000003"/>
-		</C>
-		<C Type="CategoryCaption" Title="Categories" U="00000001-0000-0000-0000-000000000004">
-			<C Type="Category" Title="Lighting" CatGroup="lights" U="00000001-0000-0000-0000-000000000005"/>
-		</C>
-		<C Type="MemoryCaption" Title="Memory Flags" U="00000001-0000-0000-0000-000000000006"/>
-		<C Type="LoxLIVE" Title="Miniserver" U="00000001-0000-0000-0000-000000000007">
-			<C Type="VirtualInCaption" Title="Virtual Inputs" U="00000001-0000-0000-0000-000000000008"/>
-			<C Type="VirtualOutCaption" Title="Virtual Outputs" U="00000001-0000-0000-0000-000000000009"/>
-		</C>
-		<C Type="Program" Title="New Project" U="00000001-0000-0000-0000-000000000010">
-			<C Type="Page" Title="Page 1" U="00000001-0000-0000-0000-000000000011"/>
-		</C>
-	</C>
-</ControlList>"#;
-        if let Ok(proj) = parse_loxone_xml(blank_xml) {
+        if let Ok(proj) = loxone_core::create_new_project(&loxone_core::NewProjectSpec::default()) {
             self.live_store = LiveValueStore::default();
             self.live_store.seed_project_defaults(&proj);
             self.base_project = Some(proj.clone());
@@ -1711,6 +1692,19 @@ impl LoxonePortableApp {
             TopBarAction::OpenSimulationScenarioRunner => {
                 if let Some(proj) = &self.project {
                     self.admin_modals.open_simulation_scenario_runner(proj);
+                }
+            }
+            TopBarAction::OpenNewProjectWizard => {
+                self.admin_modals.open_new_project_wizard(self.project.as_ref());
+            }
+            TopBarAction::OpenMacroLibrary => {
+                if let Some(proj) = &self.project {
+                    self.admin_modals.open_macro_library(proj);
+                }
+            }
+            TopBarAction::OpenVirtualIoManager => {
+                if let Some(proj) = &self.project {
+                    self.admin_modals.open_virtual_io_manager(proj);
                 }
             }
             TopBarAction::NewProjectTab => {
@@ -3448,6 +3442,21 @@ impl eframe::App for LoxonePortableApp {
                         self.show_right_panel = true;
                     }
                 }
+                AdminAction::ReplaceProject(proj) => {
+                    self.live_store = LiveValueStore::default();
+                    self.live_store.seed_project_defaults(&proj);
+                    self.base_project = Some(proj.clone());
+                    self.last_synced_remote_xml = None;
+                    self.project = Some(proj);
+                    self.loaded_path = None;
+                    self.is_dirty = false;
+                    self.undo_stack.clear();
+                    self.redo_stack.clear();
+                    self.active_page_index = 0;
+                    self.selected_uuid = None;
+                    self.needs_initial_fit = true;
+                    self.error_banner = None;
+                }
             }
         }
 
@@ -5008,7 +5017,7 @@ mod tests {
         // 3. Create New Project
         app.execute_top_bar_action(TopBarAction::NewProject);
         assert!(app.project.is_some());
-        assert_eq!(app.project.as_ref().unwrap().pages.len(), 1);
+        assert!(!app.project.as_ref().unwrap().pages.is_empty());
 
         // 4. Close Project returns to Home Screen
         app.execute_top_bar_action(TopBarAction::CloseProject);
@@ -5202,6 +5211,35 @@ mod tests {
         // 4. GUI Redo restores the agent's block_add
         app.redo();
         assert_eq!(app.project.as_ref().unwrap().pages[initial_pages].blocks.len(), 1);
+    }
+
+    #[test]
+    fn test_stages_17_to_20_new_project_wizard_macros_and_virtual_io() {
+        let mut app = LoxonePortableApp::default();
+        app.load_file(std::path::Path::new("../../Sample.Loxone"));
+
+        // Stage 17: Open New Project Wizard
+        app.execute_top_bar_action(TopBarAction::OpenNewProjectWizard);
+        assert_eq!(
+            app.admin_modals.open,
+            crate::admin_modals::AdminModal::NewProjectWizard
+        );
+
+        // Stage 19: Open Macro Library
+        app.execute_top_bar_action(TopBarAction::OpenMacroLibrary);
+        assert_eq!(
+            app.admin_modals.open,
+            crate::admin_modals::AdminModal::MacroLibrary
+        );
+        assert!(app.admin_modals.macro_templates.len() >= 3);
+
+        // Stage 20: Open Virtual HTTP/TCP/UDP Manager
+        app.execute_top_bar_action(TopBarAction::OpenVirtualIoManager);
+        assert_eq!(
+            app.admin_modals.open,
+            crate::admin_modals::AdminModal::VirtualIoManager
+        );
+        assert!(app.admin_modals.vio_selected_out_uuid.is_some());
     }
 }
 

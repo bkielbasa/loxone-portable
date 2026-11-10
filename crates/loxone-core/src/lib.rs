@@ -53,11 +53,16 @@ pub use object_config::{
 pub use parser::parse_raw_dom;
 pub use periphery_provisioning::*;
 pub use project_admin::{
-    build_add_todo_edit, build_autopilot_rule_edits, build_remove_multiplier_unit_edit,
-    build_resolve_todo_edit, build_upsert_multiplier_unit_edit, collect_autopilot_rules,
-    collect_multiplier_units, collect_project_todos, instantiate_multiplier_unit_project,
-    is_multiplier_project, AutopilotRuleInfo, AutopilotRuleSpec, MultiplierUnitEntry,
-    ProjectTodoItem,
+    build_add_todo_edit, build_autopilot_rule_edits, build_convert_miniserver_model_edit,
+    build_instantiate_macro_edits, build_remove_multiplier_unit_edit,
+    build_remove_virtual_io_node_edit, build_resolve_todo_edit, build_upsert_multiplier_unit_edit,
+    build_upsert_virtual_out_cmd_edit, build_upsert_virtual_out_edit, builtin_schematic_macros,
+    collect_autopilot_rules, collect_multiplier_units, collect_project_todos,
+    collect_virtual_out_endpoints, create_new_project, detect_miniserver_model,
+    extract_macro_from_page, instantiate_multiplier_unit_project, is_multiplier_project,
+    AutopilotRuleInfo, AutopilotRuleSpec, MiniserverModel, MultiplierUnitEntry,
+    NewProjectRoomSpec, NewProjectSpec, ProjectTodoItem, SchematicMacroBlock,
+    SchematicMacroTemplate, SchematicMacroWire, VirtualOutCommandEntry, VirtualOutEndpoint,
 };
 pub use room_controller_config::{
     collect_energy_source_candidates, collect_user_operating_modes_for_timer,

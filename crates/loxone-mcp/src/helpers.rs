@@ -1,45 +1,18 @@
-use loxone_core::export::xml_escape;
 use loxone_core::factory::{new_page, new_page_block};
 use loxone_core::model::{
     ConnectorPin, LoxoneProject, Page, PageBlock, PinKind, RawNode, TreeNode, TreeSectionKind,
 };
-use loxone_core::parser::{parse_loxone_xml, LoxoneError};
+use loxone_core::parser::LoxoneError;
 use loxone_core::writer::ProjectEdit;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 pub fn build_clean_project(title: &str) -> Result<LoxoneProject, LoxoneError> {
-    let eff_title = if title.trim().is_empty() {
-        "New Project"
-    } else {
-        title.trim()
-    };
-    let escaped = xml_escape(eff_title);
-    let blank_xml = format!(
-        "<?xml version=\"1.0\" encoding=\"utf-8\"?>\r\n\
-<ControlList Version=\"1\">\r\n\
-\t<C Type=\"Document\" Title=\"{escaped}\" U=\"00000001-0000-0000-0000-000000000001\" ConfigVersion=\"17021021\" SL=\"1\">\r\n\
-\t\t<C Type=\"PlaceCaption\" Title=\"Rooms\" U=\"00000001-0000-0000-0000-000000000002\">\r\n\
-\t\t\t<C Type=\"Place\" Title=\"Living Room\" U=\"00000001-0000-0000-0000-000000000003\"/>\r\n\
-\t\t</C>\r\n\
-\t\t<C Type=\"CategoryCaption\" Title=\"Categories\" U=\"00000001-0000-0000-0000-000000000004\">\r\n\
-\t\t\t<C Type=\"Category\" Title=\"Lighting\" CatGroup=\"lights\" U=\"00000001-0000-0000-0000-000000000005\"/>\r\n\
-\t\t\t<C Type=\"Category\" Title=\"Shading\" CatGroup=\"shading\" U=\"00000001-0000-0000-0000-000000000012\"/>\r\n\
-\t\t\t<C Type=\"Category\" Title=\"Climate\" CatGroup=\"climate\" U=\"00000001-0000-0000-0000-000000000013\"/>\r\n\
-\t\t\t<C Type=\"Category\" Title=\"Multimedia\" CatGroup=\"multimedia\" U=\"00000001-0000-0000-0000-000000000014\"/>\r\n\
-\t\t</C>\r\n\
-\t\t<C Type=\"MemoryCaption\" Title=\"Memory Flags\" U=\"00000001-0000-0000-0000-000000000006\"/>\r\n\
-\t\t<C Type=\"LoxLIVE\" Title=\"Miniserver\" U=\"00000001-0000-0000-0000-000000000007\">\r\n\
-\t\t\t<C Type=\"VirtualInCaption\" Title=\"Virtual Inputs\" U=\"00000001-0000-0000-0000-000000000008\"/>\r\n\
-\t\t\t<C Type=\"VirtualOutCaption\" Title=\"Virtual Outputs\" U=\"00000001-0000-0000-0000-000000000009\"/>\r\n\
-\t\t</C>\r\n\
-\t\t<C Type=\"Program\" Title=\"{escaped}\" U=\"00000001-0000-0000-0000-000000000010\">\r\n\
-\t\t\t<C Type=\"Page\" Title=\"Page 1\" U=\"00000001-0000-0000-0000-000000000011\"/>\r\n\
-\t\t</C>\r\n\
-\t</C>\r\n\
-</ControlList>\r\n"
-    );
-    parse_loxone_xml(&blank_xml)
+    let mut spec = loxone_core::NewProjectSpec::default();
+    if !title.trim().is_empty() {
+        spec.title = title.trim().to_string();
+    }
+    loxone_core::create_new_project(&spec)
 }
 
 pub fn pin_kind_str(k: PinKind) -> &'static str {

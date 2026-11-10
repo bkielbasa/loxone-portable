@@ -107,7 +107,7 @@ pub fn is_structural_type(type_name: &str) -> bool {
 }
 
 /// A compact description of a node, used in diff output.
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct NodeBrief {
     pub uuid: Option<String>,
     pub tag: String,

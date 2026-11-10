@@ -287,6 +287,9 @@ pub enum TopBarAction {
     OpenMultiplierManager,
     SetSimulationWeatherPreset(&'static str),
     OpenSimulationScenarioRunner,
+    OpenNewProjectWizard,
+    OpenMacroLibrary,
+    OpenVirtualIoManager,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2451,6 +2454,27 @@ fn render_ribbon_row_2(
                                 "Manage multi-unit Miniserver deployments, unit serial overrides, and per-unit .Loxone exports",
                                 LOXONE_GREEN,
                                 TopBarAction::OpenMultiplierManager,
+                            ),
+                            (
+                                "🏗",
+                                "New Project / Model",
+                                "Create a new Loxone Config 17 project wizard or convert Miniserver hardware model (Gen 2 / Compact / Go / Gen 1)",
+                                ACCENT_BLUE,
+                                TopBarAction::OpenNewProjectWizard,
+                            ),
+                            (
+                                "🧩",
+                                "Macro Library",
+                                "Insert or save reusable multi-block schematic macros",
+                                LOXONE_GREEN,
+                                TopBarAction::OpenMacroLibrary,
+                            ),
+                            (
+                                "🌐",
+                                "Virtual HTTP/TCP/UDP",
+                                "Configure VirtualOut HTTP/TCP/UDP endpoints and VirtualOutCmd command payloads",
+                                Color32::from_rgb(0xE4, 0xB3, 0x3B),
+                                TopBarAction::OpenVirtualIoManager,
                             ),
                         ];
                         for (icon, label, tip, tint, act) in admin_tiles {

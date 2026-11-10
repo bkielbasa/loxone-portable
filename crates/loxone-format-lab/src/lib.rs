@@ -9,4 +9,5 @@ pub mod diff;
 pub mod dom;
 pub mod gen;
 pub mod report;
+pub mod roundtrip;
 pub mod stats;
