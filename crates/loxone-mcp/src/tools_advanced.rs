@@ -16,14 +16,17 @@ use loxone_core::linter::{
 };
 use loxone_core::object_config::{build_object_config_edits, build_object_config_rows};
 use loxone_core::periphery_provisioning::{
-    build_replace_device_edit, build_resolve_serial_conflicts_edit, collect_provisioned_hardware,
-    detect_serial_number_conflicts,
+    build_provision_bus_device_edit, build_replace_device_edit,
+    build_resolve_serial_conflicts_edit, collect_bus_devices, collect_provisioned_hardware,
+    detect_serial_number_conflicts, BusDeviceKind,
 };
 use loxone_core::project_admin::{
-    build_add_todo_edit, build_autopilot_rule_edits, build_resolve_todo_edit,
-    build_upsert_multiplier_unit_edit, collect_multiplier_units, collect_project_todos,
-    instantiate_multiplier_unit_project, is_multiplier_project, AutopilotRuleSpec,
-    MultiplierUnitEntry,
+    build_add_todo_edit, build_autopilot_rule_edits, build_convert_miniserver_model_edit,
+    build_instantiate_macro_edits, build_resolve_todo_edit, build_upsert_multiplier_unit_edit,
+    build_upsert_virtual_out_cmd_edit, build_upsert_virtual_out_edit, builtin_schematic_macros,
+    collect_multiplier_units, collect_project_todos, collect_virtual_out_endpoints,
+    detect_miniserver_model, instantiate_multiplier_unit_project, is_multiplier_project,
+    AutopilotRuleSpec, MiniserverModel, MultiplierUnitEntry, VirtualOutCommandEntry,
 };
 use loxone_core::room_controller_config::{
     collect_energy_source_candidates, RoomControllerConfig, RoomTempMode,
@@ -2081,6 +2084,361 @@ fn call_advanced_tool_part2(
                     "total_assertions": total_assertions,
                     "failed_assertions": failed_assertions,
                     "reports": reports_json
+                }),
+            )
+        }
+        "miniserver_convert_model" => {
+            let Some(model_str) = args.get("target_model").and_then(Value::as_str) else {
+                return JsonRpcResponse::tool_err(
+                    id,
+                    "Missing required parameter 'target_model'",
+                );
+            };
+            let Some(target_model) = MiniserverModel::from_code(model_str) else {
+                return JsonRpcResponse::tool_err(
+                    id,
+                    format!("Unknown Miniserver model '{model_str}'"),
+                );
+            };
+            let (prev_model, edit_opt) = {
+                let Some(proj) = session.project() else {
+                    return JsonRpcResponse::tool_err(id, "No project loaded");
+                };
+                (
+                    detect_miniserver_model(proj),
+                    build_convert_miniserver_model_edit(proj, target_model),
+                )
+            };
+            let Some(edit) = edit_opt else {
+                return JsonRpcResponse::tool_err(
+                    id,
+                    "No LoxLIVE Miniserver node found in project",
+                );
+            };
+            if let Err(e) = session.apply_edit(edit) {
+                return JsonRpcResponse::tool_err(id, e);
+            }
+            JsonRpcResponse::tool_ok(
+                id,
+                json!({
+                    "previous_model": format!("{:?}", prev_model),
+                    "current_model": format!("{:?}", target_model),
+                    "label": target_model.display_name()
+                }),
+            )
+        }
+        "periphery_bus_devices_list" => {
+            let Some(proj) = session.project() else {
+                return JsonRpcResponse::tool_err(id, "No project loaded");
+            };
+            let devs: Vec<Value> = collect_bus_devices(proj)
+                .into_iter()
+                .map(|d| {
+                    json!({
+                        "uuid": d.uuid,
+                        "title": d.title,
+                        "control_type": d.control_type,
+                        "protocol": d.protocol.label(),
+                        "address": d.address_or_rom,
+                        "parent_uuid": d.parent_extension_uuid,
+                        "parent_title": d.parent_extension_title
+                    })
+                })
+                .collect();
+            JsonRpcResponse::tool_ok(
+                id,
+                json!({
+                    "count": devs.len(),
+                    "devices": devs
+                }),
+            )
+        }
+        "periphery_bus_device_add" => {
+            let (Some(kind_str), Some(parent_uuid), Some(address)) = (
+                args.get("kind").and_then(Value::as_str),
+                args.get("parent_uuid").and_then(Value::as_str),
+                args.get("address").and_then(Value::as_str),
+            ) else {
+                return JsonRpcResponse::tool_err(
+                    id,
+                    "Missing required parameters 'kind', 'parent_uuid', and 'address'",
+                );
+            };
+            let Some(kind) = BusDeviceKind::ALL
+                .iter()
+                .copied()
+                .find(|k| format!("{:?}", k).eq_ignore_ascii_case(kind_str))
+            else {
+                return JsonRpcResponse::tool_err(id, format!("Unsupported bus device kind '{kind_str}'"));
+            };
+            let title = args.get("title").and_then(Value::as_str).unwrap_or("");
+            let room_uuid = args.get("room_uuid").and_then(Value::as_str);
+            let category_uuid = args.get("category_uuid").and_then(Value::as_str);
+
+            let res = {
+                let Some(proj) = session.project() else {
+                    return JsonRpcResponse::tool_err(id, "No project loaded");
+                };
+                build_provision_bus_device_edit(
+                    proj,
+                    parent_uuid,
+                    kind,
+                    title,
+                    address,
+                    room_uuid,
+                    category_uuid,
+                )
+            };
+            match res {
+                Ok((node_uuid, edit)) => {
+                    if let Err(e) = session.apply_edit(edit) {
+                        return JsonRpcResponse::tool_err(id, e);
+                    }
+                    JsonRpcResponse::tool_ok(
+                        id,
+                        json!({
+                            "uuid": node_uuid,
+                            "title": title,
+                            "control_type": kind.control_type(),
+                            "protocol": kind.protocol().label(),
+                            "address": address
+                        }),
+                    )
+                }
+                Err(e) => JsonRpcResponse::tool_err(id, e),
+            }
+        }
+        "macro_list" => {
+            let templates: Vec<Value> = builtin_schematic_macros()
+                .into_iter()
+                .map(|m| {
+                    json!({
+                        "name": m.name,
+                        "category": m.category,
+                        "description": m.description,
+                        "block_count": m.blocks.len(),
+                        "wire_count": m.wires.len()
+                    })
+                })
+                .collect();
+            JsonRpcResponse::tool_ok(
+                id,
+                json!({
+                    "count": templates.len(),
+                    "templates": templates
+                }),
+            )
+        }
+        "macro_instantiate" => {
+            let (Some(tpl_name), Some(page_uuid)) = (
+                args.get("template_name").and_then(Value::as_str),
+                args.get("page_uuid").and_then(Value::as_str),
+            ) else {
+                return JsonRpcResponse::tool_err(
+                    id,
+                    "Missing required parameters 'template_name' and 'page_uuid'",
+                );
+            };
+            let macros = builtin_schematic_macros();
+            let Some(tpl) = macros.iter().find(|m| {
+                m.name.eq_ignore_ascii_case(tpl_name)
+                    || m.name.to_ascii_lowercase().contains(&tpl_name.to_ascii_lowercase())
+            }) else {
+                return JsonRpcResponse::tool_err(
+                    id,
+                    format!("Macro template '{tpl_name}' not found"),
+                );
+            };
+            let origin_px = args
+                .get("origin_px")
+                .and_then(Value::as_f64)
+                .unwrap_or(256.0) as f32;
+            let origin_py = args
+                .get("origin_py")
+                .and_then(Value::as_f64)
+                .unwrap_or(256.0) as f32;
+            let res = {
+                let Some(proj) = session.project() else {
+                    return JsonRpcResponse::tool_err(id, "No project loaded");
+                };
+                build_instantiate_macro_edits(proj, page_uuid, tpl, origin_px, origin_py, None)
+            };
+            let (uuids, edit) = match res {
+                Ok(pair) => pair,
+                Err(e) => return JsonRpcResponse::tool_err(id, e),
+            };
+            if let Err(e) = session.apply_edit(edit) {
+                return JsonRpcResponse::tool_err(id, e);
+            }
+            JsonRpcResponse::tool_ok(
+                id,
+                json!({
+                    "template_name": tpl.name,
+                    "page_uuid": page_uuid,
+                    "instantiated_block_uuids": uuids,
+                    "block_count": uuids.len()
+                }),
+            )
+        }
+        "virtual_io_list" => {
+            let Some(proj) = session.project() else {
+                return JsonRpcResponse::tool_err(id, "No project loaded");
+            };
+            let endpoints: Vec<Value> = collect_virtual_out_endpoints(proj)
+                .into_iter()
+                .map(|ep| {
+                    let cmds: Vec<Value> = ep
+                        .commands
+                        .into_iter()
+                        .map(|c| {
+                            json!({
+                                "uuid": c.uuid,
+                                "io_name": c.i_name,
+                                "title": c.title,
+                                "cmd_on": c.cmd_on,
+                                "cmd_off": c.cmd_off,
+                                "http_method_on": c.cmd_on_method,
+                                "analog": c.analog
+                            })
+                        })
+                        .collect();
+                    json!({
+                        "uuid": ep.uuid,
+                        "io_name": ep.i_name,
+                        "title": ep.title,
+                        "address": ep.address,
+                        "close_after_send": ep.close_after_send,
+                        "command_count": cmds.len(),
+                        "commands": cmds
+                    })
+                })
+                .collect();
+            JsonRpcResponse::tool_ok(
+                id,
+                json!({
+                    "count": endpoints.len(),
+                    "virtual_out_endpoints": endpoints
+                }),
+            )
+        }
+        "virtual_out_upsert" => {
+            let (Some(title), Some(address)) = (
+                args.get("title").and_then(Value::as_str),
+                args.get("address").and_then(Value::as_str),
+            ) else {
+                return JsonRpcResponse::tool_err(
+                    id,
+                    "Missing required parameters 'title' and 'address'",
+                );
+            };
+            let existing_uuid = args
+                .get("existing_uuid")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            let close_after_send = args
+                .get("close_after_send")
+                .and_then(Value::as_bool)
+                .unwrap_or(true);
+            let command_sep = args
+                .get("command_sep")
+                .and_then(Value::as_str)
+                .unwrap_or(";")
+                .to_string();
+            let ep = loxone_core::VirtualOutEndpoint {
+                uuid: existing_uuid,
+                i_name: String::new(),
+                title: title.to_string(),
+                address: address.to_string(),
+                close_after_send,
+                cmd_sep: command_sep,
+                room_uuid: None,
+                commands: Vec::new(),
+            };
+            let res = {
+                let Some(proj) = session.project() else {
+                    return JsonRpcResponse::tool_err(id, "No project loaded");
+                };
+                build_upsert_virtual_out_edit(proj, &ep)
+            };
+            let (uuid, edit) = match res {
+                Ok(pair) => pair,
+                Err(e) => return JsonRpcResponse::tool_err(id, e),
+            };
+            if let Err(e) = session.apply_edit(edit) {
+                return JsonRpcResponse::tool_err(id, e);
+            }
+            JsonRpcResponse::tool_ok(
+                id,
+                json!({
+                    "uuid": uuid,
+                    "title": title,
+                    "address": address
+                }),
+            )
+        }
+        "virtual_out_cmd_upsert" => {
+            let (Some(parent_uuid), Some(title), Some(cmd_on)) = (
+                args.get("parent_virtual_out_uuid").and_then(Value::as_str),
+                args.get("title").and_then(Value::as_str),
+                args.get("cmd_on").and_then(Value::as_str),
+            ) else {
+                return JsonRpcResponse::tool_err(
+                    id,
+                    "Missing required parameters 'parent_virtual_out_uuid', 'title', and 'cmd_on'",
+                );
+            };
+            let entry = VirtualOutCommandEntry {
+                uuid: args
+                    .get("existing_uuid")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string(),
+                parent_vo_uuid: parent_uuid.to_string(),
+                i_name: String::new(),
+                title: title.to_string(),
+                analog: args.get("analog").and_then(Value::as_bool).unwrap_or(false),
+                cmd_on: cmd_on.to_string(),
+                cmd_on_post: args
+                    .get("http_body_on")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string(),
+                cmd_on_method: args
+                    .get("http_method_on")
+                    .and_then(Value::as_str)
+                    .unwrap_or("0")
+                    .to_string(),
+                cmd_off: args
+                    .get("cmd_off")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string(),
+                cmd_off_post: String::new(),
+                repeat_sec: 0,
+                room_uuid: None,
+                category_uuid: None,
+            };
+            let res = {
+                let Some(proj) = session.project() else {
+                    return JsonRpcResponse::tool_err(id, "No project loaded");
+                };
+                build_upsert_virtual_out_cmd_edit(proj, &entry)
+            };
+            let (cmd_uuid, edit) = match res {
+                Ok(pair) => pair,
+                Err(e) => return JsonRpcResponse::tool_err(id, e),
+            };
+            if let Err(e) = session.apply_edit(edit) {
+                return JsonRpcResponse::tool_err(id, e);
+            }
+            JsonRpcResponse::tool_ok(
+                id,
+                json!({
+                    "uuid": cmd_uuid,
+                    "parent_virtual_out_uuid": parent_uuid,
+                    "title": title,
+                    "cmd_on": cmd_on
                 }),
             )
         }

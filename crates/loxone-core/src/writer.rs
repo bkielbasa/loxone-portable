@@ -1554,6 +1554,11 @@ fn sync_raw_node(
             }
             "PlaceCaption" => {
                 node.children.retain(|c| {
+                    if c.tag == "nd" {
+                        return c
+                            .attr("ctrlUuid")
+                            .is_none_or(|u| project.places.contains_key(u));
+                    }
                     c.tag != "C"
                         || c.attr("Type") != Some("Place")
                         || c.attr("U").is_some_and(|u| project.places.contains_key(u))
@@ -1573,8 +1578,33 @@ fn sync_raw_node(
                     .filter(|c| c.tag == "C" && c.attr("Type") == Some("Place"))
                     .filter_map(|c| c.attr("U").map(str::to_string))
                     .collect();
+                let seen_nds: HashSet<String> = node
+                    .children
+                    .iter()
+                    .filter(|c| c.tag == "nd")
+                    .filter_map(|c| c.attr("ctrlUuid").map(str::to_string))
+                    .collect();
+                let has_nd_list = node.children.iter().any(|c| c.tag == "nd");
                 for (place_uuid, place) in &project.places {
                     if !place_uuid.is_empty() && !seen_places.contains(place_uuid) {
+                        if has_nd_list && !seen_nds.contains(place_uuid) {
+                            let nd = RawNode {
+                                tag: "nd".to_string(),
+                                attributes: vec![
+                                    ("u".to_string(), crate::factory::generate_loxone_uuid()),
+                                    ("t".to_string(), "1".to_string()),
+                                    ("ctrlUuid".to_string(), place_uuid.clone()),
+                                ],
+                                text: None,
+                                children: Vec::new(),
+                            };
+                            let insert_pos = node
+                                .children
+                                .iter()
+                                .position(|c| c.tag == "C")
+                                .unwrap_or(node.children.len());
+                            node.children.insert(insert_pos, nd);
+                        }
                         node.children.push(place_to_raw_node(place));
                     }
                 }
@@ -1601,9 +1631,11 @@ fn sync_raw_node(
                     .filter(|c| c.tag == "C" && c.attr("Type") == Some("Page"))
                     .filter_map(|c| c.attr("U").map(str::to_string))
                     .collect();
+                let default_cat = project.categories.keys().next().map(String::as_str);
+                let default_place = project.places.keys().next().map(String::as_str);
                 for page in &project.pages {
                     if !page.uuid.is_empty() && !seen_pages.contains(&page.uuid) {
-                        node.children.push(page_to_raw_node(page));
+                        node.children.push(page_to_raw_node(page, default_cat, default_place));
                     }
                 }
                 return;
@@ -1861,19 +1893,21 @@ fn page_block_to_raw_node(block: &PageBlock) -> RawNode {
     }
 }
 
-fn page_to_raw_node(page: &Page) -> RawNode {
+fn page_to_raw_node(
+    page: &Page,
+    default_cat_uuid: Option<&str>,
+    default_place_uuid: Option<&str>,
+) -> RawNode {
     let mut children = Vec::new();
-    if page.room_uuid.is_some() || page.category_uuid.is_some() {
-        let mut io = RawNode {
-            tag: "IoData".to_string(),
-            attributes: Vec::new(),
-            text: None,
-            children: Vec::new(),
-        };
-        io.set_attr("Cr", page.category_uuid.as_deref());
-        io.set_attr("Pr", page.room_uuid.as_deref());
-        children.push(io);
-    }
+    let mut io = RawNode {
+        tag: "IoData".to_string(),
+        attributes: Vec::new(),
+        text: None,
+        children: Vec::new(),
+    };
+    io.set_attr("Cr", page.category_uuid.as_deref().or(default_cat_uuid));
+    io.set_attr("Pr", page.room_uuid.as_deref().or(default_place_uuid));
+    children.push(io);
     for block in &page.blocks {
         children.push(page_block_to_raw_node(block));
     }
@@ -1881,8 +1915,10 @@ fn page_to_raw_node(page: &Page) -> RawNode {
         tag: "C".to_string(),
         attributes: vec![
             ("Type".to_string(), "Page".to_string()),
-            ("Title".to_string(), page.title.clone()),
+            ("V".to_string(), "178".to_string()),
             ("U".to_string(), page.uuid.clone()),
+            ("Title".to_string(), page.title.clone()),
+            ("WF".to_string(), "16384".to_string()),
         ],
         text: None,
         children,
@@ -1894,15 +1930,23 @@ fn place_to_raw_node(place: &Place) -> RawNode {
         tag: "C".to_string(),
         attributes: vec![
             ("Type".to_string(), "Place".to_string()),
-            ("Title".to_string(), place.title.clone()),
+            ("V".to_string(), "178".to_string()),
             ("U".to_string(), place.uuid.clone()),
+            ("Title".to_string(), place.title.clone()),
+            ("WF".to_string(), "16384".to_string()),
         ],
         text: None,
         children: Vec::new(),
     };
     node.set_attr("Sqm", place.sqm.as_deref());
-    node.set_attr("PType", place.p_type.as_deref());
-    node.set_attr("Icon", place.icon.as_deref());
+    node.set_attr("PType", place.p_type.as_deref().or(Some("2")));
+    node.set_attr(
+        "Icon",
+        place
+            .icon
+            .as_deref()
+            .or(Some("00000220-00ff-0000-0000000000000000")),
+    );
     node
 }
 
@@ -1911,8 +1955,11 @@ fn category_to_raw_node(cat: &Category) -> RawNode {
         tag: "C".to_string(),
         attributes: vec![
             ("Type".to_string(), "Category".to_string()),
-            ("Title".to_string(), cat.title.clone()),
+            ("V".to_string(), "178".to_string()),
             ("U".to_string(), cat.uuid.clone()),
+            ("Title".to_string(), cat.title.clone()),
+            ("WF".to_string(), "16384".to_string()),
+            ("PType".to_string(), "2".to_string()),
         ],
         text: None,
         children: Vec::new(),
@@ -1921,8 +1968,28 @@ fn category_to_raw_node(cat: &Category) -> RawNode {
         .bk_color
         .map(|[r, g, b]| format!("{},{},{}", r, g, b));
     node.set_attr("BkColor", bk.as_deref());
-    node.set_attr("CatGroup", cat.cat_group.as_deref());
-    node.set_attr("Icon", cat.icon.as_deref());
+    // Loxone Config expects numeric CatGroup ("2" for lighting, etc.)
+    let cg = cat.cat_group.as_deref().map(|g| {
+        if g.chars().all(|c| c.is_ascii_digit()) {
+            g
+        } else {
+            match g {
+                "lighting" | "lights" => "2",
+                "shading" => "1",
+                "climate" | "heating" => "5",
+                "audio" => "4",
+                "energy" => "51",
+                _ => "2",
+            }
+        }
+    });
+    node.set_attr("CatGroup", cg);
+    node.set_attr(
+        "Icon",
+        cat.icon
+            .as_deref()
+            .or(Some("00000153-00ff-0000-0000000000000000")),
+    );
     node
 }
 

@@ -40,6 +40,9 @@ pub enum HardwareTemplateKind {
     DimmerExtension,
     AudioServer,
     ModbusExtension,
+    DaliExtension,
+    DmxExtension,
+    OneWireExtension,
     // Tree Devices
     TouchPureTree,
     PresenceSensorTree,
@@ -55,13 +58,16 @@ pub enum HardwareTemplateKind {
 }
 
 impl HardwareTemplateKind {
-    pub const ALL: [HardwareTemplateKind; 16] = [
+    pub const ALL: [HardwareTemplateKind; 19] = [
         Self::TreeExtension,
         Self::AirBaseExtension,
         Self::RelayExtension,
         Self::DimmerExtension,
         Self::AudioServer,
         Self::ModbusExtension,
+        Self::DaliExtension,
+        Self::DmxExtension,
+        Self::OneWireExtension,
         Self::TouchPureTree,
         Self::PresenceSensorTree,
         Self::RgbwDimmerTree,
@@ -81,7 +87,10 @@ impl HardwareTemplateKind {
             | Self::RelayExtension
             | Self::DimmerExtension
             | Self::AudioServer
-            | Self::ModbusExtension => HardwareCategory::LinkExtension,
+            | Self::ModbusExtension
+            | Self::DaliExtension
+            | Self::DmxExtension
+            | Self::OneWireExtension => HardwareCategory::LinkExtension,
             Self::TouchPureTree
             | Self::PresenceSensorTree
             | Self::RgbwDimmerTree
@@ -103,6 +112,9 @@ impl HardwareTemplateKind {
             Self::DimmerExtension => "Dimmer Extension (4x AQ, 8x DI)",
             Self::AudioServer => "Audioserver (4x Stereo Out)",
             Self::ModbusExtension => "Modbus Extension (RS485)",
+            Self::DaliExtension => "DALI Extension (64 ECGs / 16 Groups)",
+            Self::DmxExtension => "DMX Extension (128 Channels)",
+            Self::OneWireExtension => "1-Wire Extension (Sensors & iButton)",
             Self::TouchPureTree => "Touch Pure Tree",
             Self::PresenceSensorTree => "Presence Sensor Tree",
             Self::RgbwDimmerTree => "RGBW 24V Dimmer Tree",
@@ -124,6 +136,9 @@ impl HardwareTemplateKind {
             Self::DimmerExtension => "LoxDIMM",
             Self::AudioServer => "AudioServer",
             Self::ModbusExtension => "Comm485",
+            Self::DaliExtension => "LoxDALI",
+            Self::DmxExtension => "LoxDMX",
+            Self::OneWireExtension => "Lox1Wire",
             Self::TouchPureTree
             | Self::PresenceSensorTree
             | Self::RgbwDimmerTree
@@ -145,6 +160,9 @@ impl HardwareTemplateKind {
             Self::DimmerExtension => "LoxDIMM",
             Self::AudioServer => "AudioServer_1",
             Self::ModbusExtension => "ModbusExtension",
+            Self::DaliExtension => "DaliExtension",
+            Self::DmxExtension => "DMXExtension",
+            Self::OneWireExtension => "1WireExtension",
             Self::TouchPureTree => "TouchPureTree",
             Self::PresenceSensorTree => "PresenceSensorTree",
             Self::RgbwDimmerTree => "RGBW24VDimmerTree",
@@ -166,6 +184,9 @@ impl HardwareTemplateKind {
             Self::DimmerExtension => "0C00",
             Self::AudioServer => "504F94F0",
             Self::ModbusExtension => "0E00",
+            Self::DaliExtension => "0A00",
+            Self::DmxExtension => "0900",
+            Self::OneWireExtension => "0600",
             Self::TouchPureTree
             | Self::PresenceSensorTree
             | Self::RgbwDimmerTree
@@ -187,6 +208,9 @@ impl HardwareTemplateKind {
             Self::DimmerExtension => "4x universal 230V dimmer channels (AQ1..AQ4) + 8x digital inputs",
             Self::AudioServer => "4x amplified stereo outputs + Tree Turbo & network audio streaming",
             Self::ModbusExtension => "RS-485 Modbus RTU bus interface for meters, HVAC & inverters",
+            Self::DaliExtension => "DALI bus master for up to 64 ECG ballasts (0..63) and 16 DALI groups (0..15)",
+            Self::DmxExtension => "DMX512 lighting interface for up to 128 channels / RGBW fixtures",
+            Self::OneWireExtension => "1-Wire bus master for DS18B20 temperature sensors and iButton readers",
             Self::TouchPureTree => "5-point capacitive touch switch + integrated temperature & humidity sensor",
             Self::PresenceSensorTree => "PIR + acoustic presence sensor + brightness lux meter",
             Self::RgbwDimmerTree => "4-channel PWM LED dimmer (Red, Green, Blue, White / Smart Actuator)",
@@ -302,6 +326,7 @@ fn make_io_leaf(
         ("V".to_string(), "178".to_string()),
         ("U".to_string(), uuid.clone()),
         ("Title".to_string(), title.to_string()),
+        ("WF".to_string(), "16384".to_string()),
     ];
     for (k, v) in extra_attrs {
         raw_attributes.push(((*k).to_string(), (*v).to_string()));
@@ -339,6 +364,7 @@ fn make_caption_node(
         ("V".to_string(), "178".to_string()),
         ("U".to_string(), uuid.clone()),
         ("Title".to_string(), title.to_string()),
+        ("WF".to_string(), "16384".to_string()),
     ];
     for (k, v) in extra_attrs {
         raw_attributes.push(((*k).to_string(), (*v).to_string()));
@@ -385,6 +411,7 @@ pub fn build_hardware_tree_node(
         ("V".to_string(), "178".to_string()),
         ("U".to_string(), uuid.clone()),
         ("Title".to_string(), effective_title.to_string()),
+        ("WF".to_string(), "16384".to_string()),
         ("Serial".to_string(), clean_serial),
     ];
     if kind == HardwareTemplateKind::AudioServer {
@@ -497,6 +524,57 @@ pub fn build_hardware_tree_node(
                 room_uuid,
                 category_uuid,
                 &[],
+            ));
+        }
+        HardwareTemplateKind::DaliExtension => {
+            children.push(make_io_leaf(
+                "DALIDimmer",
+                &format!("{effective_title} ECG #0"),
+                "I",
+                PinKind::Input,
+                room_uuid,
+                category_uuid,
+                &[("Address", "0"), ("IName", "AQ1"), ("Percent", "true")],
+            ));
+            children.push(make_io_leaf(
+                "DALIGroup",
+                &format!("{effective_title} Group #0"),
+                "I",
+                PinKind::Input,
+                room_uuid,
+                category_uuid,
+                &[("Address", "0"), ("IName", "AQG1"), ("Percent", "true")],
+            ));
+        }
+        HardwareTemplateKind::DmxExtension => {
+            children.push(make_io_leaf(
+                "DMXActor",
+                &format!("{effective_title} CH 1"),
+                "I",
+                PinKind::Input,
+                room_uuid,
+                category_uuid,
+                &[("Channel", "1"), ("IName", "AQ1"), ("Percent", "true")],
+            ));
+            children.push(make_io_leaf(
+                "DMXActor",
+                &format!("{effective_title} RGBW CH 2..5"),
+                "I",
+                PinKind::Input,
+                room_uuid,
+                category_uuid,
+                &[("Channel", "2"), ("SubType", "RGBW"), ("IName", "AQ2")],
+            ));
+        }
+        HardwareTemplateKind::OneWireExtension => {
+            children.push(make_io_leaf(
+                "OneWireSensor",
+                &format!("{effective_title} DS18B20 Temp #1"),
+                "AQ",
+                PinKind::Output,
+                room_uuid,
+                category_uuid,
+                &[("Serial", "28.A1B2C3D40001"), ("IName", "AI1"), ("Analog", "true")],
             ));
         }
         HardwareTemplateKind::TouchPureTree | HardwareTemplateKind::TouchPureAir => {
@@ -726,6 +804,9 @@ fn is_hardware_device_type(control_type: &str) -> bool {
             | "LoxDIMM"
             | "LoxREL"
             | "Comm485"
+            | "LoxDALI"
+            | "LoxDMX"
+            | "Lox1Wire"
             | "TreeDevice"
             | "LoxAIRDevice"
             | "IntercomDevice"
@@ -1094,6 +1175,394 @@ pub fn resolve_device_identify_target(
     None
 }
 
+// ============================================================================
+// STAGE 18: DALI, DMX & 1-WIRE BUS DEVICE PROVISIONING & ADDRESSING
+// ============================================================================
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum BusDeviceProtocol {
+    #[default]
+    Dali,
+    Dmx,
+    OneWire,
+    Modbus,
+}
+
+impl BusDeviceProtocol {
+    pub const ALL: [BusDeviceProtocol; 4] = [
+        Self::Dali,
+        Self::Dmx,
+        Self::OneWire,
+        Self::Modbus,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Dali => "DALI Bus",
+            Self::Dmx => "DMX512 Bus",
+            Self::OneWire => "1-Wire Bus",
+            Self::Modbus => "Modbus RS-485",
+        }
+    }
+
+    pub fn code(self) -> &'static str {
+        match self {
+            Self::Dali => "dali",
+            Self::Dmx => "dmx",
+            Self::OneWire => "onewire",
+            Self::Modbus => "modbus",
+        }
+    }
+
+    pub fn from_code(s: &str) -> Option<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "dali" | "loxdali" => Some(Self::Dali),
+            "dmx" | "dmx512" | "loxdmx" => Some(Self::Dmx),
+            "onewire" | "1wire" | "1-wire" | "lox1wire" => Some(Self::OneWire),
+            "modbus" | "rs485" | "comm485" => Some(Self::Modbus),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum BusDeviceKind {
+    #[default]
+    DaliDimmerChannel,
+    DaliGroupDimmer,
+    DmxDimmerChannel,
+    DmxRgbwActuator,
+    OneWireTemperatureSensor,
+    OneWireIButtonReader,
+}
+
+impl BusDeviceKind {
+    pub const ALL: [BusDeviceKind; 6] = [
+        Self::DaliDimmerChannel,
+        Self::DaliGroupDimmer,
+        Self::DmxDimmerChannel,
+        Self::DmxRgbwActuator,
+        Self::OneWireTemperatureSensor,
+        Self::OneWireIButtonReader,
+    ];
+
+    pub fn protocol(self) -> BusDeviceProtocol {
+        match self {
+            Self::DaliDimmerChannel | Self::DaliGroupDimmer => BusDeviceProtocol::Dali,
+            Self::DmxDimmerChannel | Self::DmxRgbwActuator => BusDeviceProtocol::Dmx,
+            Self::OneWireTemperatureSensor | Self::OneWireIButtonReader => BusDeviceProtocol::OneWire,
+        }
+    }
+
+    pub fn code(self) -> &'static str {
+        match self {
+            Self::DaliDimmerChannel => "dali_ecg",
+            Self::DaliGroupDimmer => "dali_group",
+            Self::DmxDimmerChannel => "dmx_channel",
+            Self::DmxRgbwActuator => "dmx_rgbw",
+            Self::OneWireTemperatureSensor => "onewire_temp",
+            Self::OneWireIButtonReader => "onewire_ibutton",
+        }
+    }
+
+    pub fn from_code(s: &str) -> Option<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "dali_ecg" | "dalidimmer" | "dali_dimmer" => Some(Self::DaliDimmerChannel),
+            "dali_group" | "daligroup" => Some(Self::DaliGroupDimmer),
+            "dmx_channel" | "dmxactor" | "dmx_dimmer" => Some(Self::DmxDimmerChannel),
+            "dmx_rgbw" | "dmxrgbw" => Some(Self::DmxRgbwActuator),
+            "onewire_temp" | "onewiresensor" | "ds18b20" => Some(Self::OneWireTemperatureSensor),
+            "onewire_ibutton" | "ibutton" => Some(Self::OneWireIButtonReader),
+            _ => None,
+        }
+    }
+
+    pub fn display_name(self) -> &'static str {
+        match self {
+            Self::DaliDimmerChannel => "DALI ECG Dimmer (Short Addr 0..63)",
+            Self::DaliGroupDimmer => "DALI Group Actuator (Group 0..15)",
+            Self::DmxDimmerChannel => "DMX Single Channel Dimmer (CH 1..512)",
+            Self::DmxRgbwActuator => "DMX 4-Ch RGBW Fixture (Start CH 1..509)",
+            Self::OneWireTemperatureSensor => "1-Wire DS18B20 Temp Sensor (ROM ID)",
+            Self::OneWireIButtonReader => "1-Wire iButton Reader (ROM ID)",
+        }
+    }
+
+    pub fn control_type(self) -> &'static str {
+        match self {
+            Self::DaliDimmerChannel => "DALIDimmer",
+            Self::DaliGroupDimmer => "DALIGroup",
+            Self::DmxDimmerChannel | Self::DmxRgbwActuator => "DMXActor",
+            Self::OneWireTemperatureSensor => "OneWireSensor",
+            Self::OneWireIButtonReader => "OneWireiButton",
+        }
+    }
+
+    pub fn default_address_hint(self) -> &'static str {
+        match self {
+            Self::DaliDimmerChannel => "0",
+            Self::DaliGroupDimmer => "0",
+            Self::DmxDimmerChannel => "1",
+            Self::DmxRgbwActuator => "1",
+            Self::OneWireTemperatureSensor => "28.A1B2C3D40001",
+            Self::OneWireIButtonReader => "01.F0E1D2C30001",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProvisionedBusDevice {
+    pub uuid: String,
+    pub parent_extension_uuid: String,
+    pub parent_extension_title: String,
+    pub protocol: BusDeviceProtocol,
+    pub control_type: String,
+    pub title: String,
+    pub address_or_rom: String,
+    pub room_uuid: Option<String>,
+    pub category_uuid: Option<String>,
+}
+
+fn extension_protocol(node: &TreeNode) -> Option<BusDeviceProtocol> {
+    match node.control_type.as_str() {
+        "LoxDALI" => Some(BusDeviceProtocol::Dali),
+        "LoxDMX" => Some(BusDeviceProtocol::Dmx),
+        "Lox1Wire" => Some(BusDeviceProtocol::OneWire),
+        "Comm485" => Some(BusDeviceProtocol::Modbus),
+        _ => None,
+    }
+}
+
+fn collect_bus_ext_parents_rec(
+    node: &TreeNode,
+    filter: Option<BusDeviceProtocol>,
+    out: &mut Vec<ParentBusCandidate>,
+) {
+    if let Some(proto) = extension_protocol(node) {
+        if filter.is_none() || filter == Some(proto) {
+            out.push(ParentBusCandidate {
+                uuid: node.uuid.clone(),
+                label: format!("{} ({})", node.title, proto.label()),
+                node_type: node.control_type.clone(),
+            });
+        }
+    }
+    for ch in &node.children {
+        collect_bus_ext_parents_rec(ch, filter, out);
+    }
+}
+
+pub fn collect_bus_extension_parents(
+    project: &LoxoneProject,
+    protocol: Option<BusDeviceProtocol>,
+) -> Vec<ParentBusCandidate> {
+    let mut out = Vec::new();
+    for root in project
+        .periphery_tree
+        .iter()
+        .chain(project.system_tree.iter())
+    {
+        collect_bus_ext_parents_rec(root, protocol, &mut out);
+    }
+    out
+}
+
+fn collect_bus_devices_rec(
+    node: &TreeNode,
+    enclosing_ext: Option<(&TreeNode, BusDeviceProtocol)>,
+    out: &mut Vec<ProvisionedBusDevice>,
+) {
+    let current_ext = if let Some(proto) = extension_protocol(node) {
+        Some((node, proto))
+    } else {
+        enclosing_ext
+    };
+
+    if matches!(
+        node.control_type.as_str(),
+        "DALIDimmer" | "DALIGroup" | "DMXActor" | "OneWireSensor" | "OneWireiButton"
+    ) || (enclosing_ext.is_some()
+        && matches!(node.control_type.as_str(), "Sensor" | "Actor" | "Dimmer" | "Actuator"))
+    {
+        let (parent_uuid, parent_title, proto) = match current_ext {
+            Some((ext, p)) => (ext.uuid.clone(), ext.title.clone(), p),
+            None => (
+                String::new(),
+                "Bus Extension".to_string(),
+                match node.control_type.as_str() {
+                    "DALIDimmer" | "DALIGroup" => BusDeviceProtocol::Dali,
+                    "DMXActor" => BusDeviceProtocol::Dmx,
+                    "OneWireSensor" | "OneWireiButton" => BusDeviceProtocol::OneWire,
+                    _ => BusDeviceProtocol::Modbus,
+                },
+            ),
+        };
+        let address_or_rom = node
+            .attr("Address")
+            .or_else(|| node.attr("Channel"))
+            .or_else(|| node.attr("Serial"))
+            .unwrap_or("0")
+            .to_string();
+        out.push(ProvisionedBusDevice {
+            uuid: node.uuid.clone(),
+            parent_extension_uuid: parent_uuid,
+            parent_extension_title: parent_title,
+            protocol: proto,
+            control_type: node.control_type.clone(),
+            title: node.title.clone(),
+            address_or_rom,
+            room_uuid: node.room_uuid.clone(),
+            category_uuid: node.category_uuid.clone(),
+        });
+    }
+
+    for ch in &node.children {
+        collect_bus_devices_rec(ch, current_ext, out);
+    }
+}
+
+pub fn collect_bus_devices(project: &LoxoneProject) -> Vec<ProvisionedBusDevice> {
+    let mut out = Vec::new();
+    for root in project
+        .periphery_tree
+        .iter()
+        .chain(project.system_tree.iter())
+    {
+        collect_bus_devices_rec(root, None, &mut out);
+    }
+    out
+}
+
+pub fn build_provision_bus_device_edit(
+    project: &LoxoneProject,
+    parent_extension_uuid: &str,
+    kind: BusDeviceKind,
+    title: &str,
+    address_or_rom: &str,
+    room_uuid: Option<&str>,
+    category_uuid: Option<&str>,
+) -> Result<(String, ProjectEdit), String> {
+    let addr_trim = address_or_rom.trim();
+    let effective_addr = if addr_trim.is_empty() {
+        kind.default_address_hint().to_string()
+    } else {
+        addr_trim.to_string()
+    };
+
+    match kind {
+        BusDeviceKind::DaliDimmerChannel => {
+            let n: u32 = effective_addr
+                .parse()
+                .map_err(|_| format!("DALI ECG short address must be 0..63, got '{effective_addr}'"))?;
+            if n > 63 {
+                return Err(format!("DALI ECG short address must be in 0..=63 (got {n})"));
+            }
+        }
+        BusDeviceKind::DaliGroupDimmer => {
+            let n: u32 = effective_addr
+                .parse()
+                .map_err(|_| format!("DALI group address must be 0..15, got '{effective_addr}'"))?;
+            if n > 15 {
+                return Err(format!("DALI group address must be in 0..=15 (got {n})"));
+            }
+        }
+        BusDeviceKind::DmxDimmerChannel => {
+            let n: u32 = effective_addr
+                .parse()
+                .map_err(|_| format!("DMX channel must be 1..512, got '{effective_addr}'"))?;
+            if !(1..=512).contains(&n) {
+                return Err(format!("DMX channel must be in 1..=512 (got {n})"));
+            }
+        }
+        BusDeviceKind::DmxRgbwActuator => {
+            let n: u32 = effective_addr
+                .parse()
+                .map_err(|_| format!("DMX RGBW start channel must be 1..509, got '{effective_addr}'"))?;
+            if !(1..=509).contains(&n) {
+                return Err(format!("DMX RGBW start channel must be in 1..=509 (got {n})"));
+            }
+        }
+        BusDeviceKind::OneWireTemperatureSensor | BusDeviceKind::OneWireIButtonReader => {
+            if effective_addr.len() < 4 {
+                return Err("1-Wire ROM ID must be at least 4 characters (e.g. 28.A1B2C3D40001)".to_string());
+            }
+        }
+    }
+
+    let resolved_parent = if !parent_extension_uuid.trim().is_empty() {
+        parent_extension_uuid.trim().to_string()
+    } else {
+        collect_bus_extension_parents(project, Some(kind.protocol()))
+            .into_iter()
+            .next()
+            .map(|c| c.uuid)
+            .ok_or_else(|| {
+                format!(
+                    "No {} extension found in project; provision the extension first",
+                    kind.protocol().label()
+                )
+            })?
+    };
+
+    let effective_title = if title.trim().is_empty() {
+        format!("{} ({})", kind.display_name(), effective_addr)
+    } else {
+        title.trim().to_string()
+    };
+
+    let (pin_key, pin_kind, extra_attrs): (&str, PinKind, Vec<(&str, &str)>) = match kind {
+        BusDeviceKind::DaliDimmerChannel => (
+            "I",
+            PinKind::Input,
+            vec![("Address", &effective_addr), ("Percent", "true")],
+        ),
+        BusDeviceKind::DaliGroupDimmer => (
+            "I",
+            PinKind::Input,
+            vec![("Address", &effective_addr), ("Percent", "true")],
+        ),
+        BusDeviceKind::DmxDimmerChannel => (
+            "I",
+            PinKind::Input,
+            vec![("Channel", &effective_addr), ("Percent", "true")],
+        ),
+        BusDeviceKind::DmxRgbwActuator => (
+            "I",
+            PinKind::Input,
+            vec![("Channel", &effective_addr), ("SubType", "RGBW")],
+        ),
+        BusDeviceKind::OneWireTemperatureSensor => (
+            "AQ",
+            PinKind::Output,
+            vec![("Serial", &effective_addr), ("Analog", "true")],
+        ),
+        BusDeviceKind::OneWireIButtonReader => (
+            "Q",
+            PinKind::Output,
+            vec![("Serial", &effective_addr)],
+        ),
+    };
+
+    let node = make_io_leaf(
+        kind.control_type(),
+        &effective_title,
+        pin_key,
+        pin_kind,
+        room_uuid,
+        category_uuid,
+        &extra_attrs,
+    );
+    let node_uuid = node.uuid.clone();
+    Ok((
+        node_uuid,
+        ProjectEdit::AddTreeNode {
+            section: TreeSectionKind::Periphery,
+            parent_uuid: Some(resolved_parent),
+            node,
+        },
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1187,5 +1656,92 @@ mod tests {
             .expect("TreeDevice should resolve as identifiable");
         assert_eq!(tree_target.bus_kind, DeviceBusKind::Tree);
         assert_eq!(tree_target.serial, tree_dev.serial);
+    }
+
+    #[test]
+    fn test_dali_dmx_and_onewire_bus_provisioning_and_addressing() {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../Sample.Loxone");
+        let mut proj = load_loxone_file(&path).expect("load Sample.Loxone");
+
+        // Provision DALI, DMX, and 1-Wire extensions
+        for (kind, title, serial) in [
+            (HardwareTemplateKind::DaliExtension, "DALI Line 1", "0A001001"),
+            (HardwareTemplateKind::DmxExtension, "DMX Stage 1", "09001002"),
+            (HardwareTemplateKind::OneWireExtension, "1-Wire Boiler", "06001003"),
+        ] {
+            let edit = build_provision_hardware_edit(&proj, kind, title, serial, None, None, None);
+            apply_edit_with_inverse(&mut proj, &edit).expect("provision bus extension");
+        }
+
+        let dali_parents = collect_bus_extension_parents(&proj, Some(BusDeviceProtocol::Dali));
+        assert_eq!(dali_parents.len(), 1);
+        let dmx_parents = collect_bus_extension_parents(&proj, Some(BusDeviceProtocol::Dmx));
+        assert_eq!(dmx_parents.len(), 1);
+        let ow_parents = collect_bus_extension_parents(&proj, Some(BusDeviceProtocol::OneWire));
+        assert_eq!(ow_parents.len(), 1);
+
+        // Address validation checks
+        assert!(build_provision_bus_device_edit(
+            &proj,
+            &dali_parents[0].uuid,
+            BusDeviceKind::DaliDimmerChannel,
+            "Invalid ECG",
+            "64",
+            None,
+            None
+        )
+        .is_err());
+        assert!(build_provision_bus_device_edit(
+            &proj,
+            &dmx_parents[0].uuid,
+            BusDeviceKind::DmxDimmerChannel,
+            "Invalid DMX",
+            "513",
+            None,
+            None
+        )
+        .is_err());
+
+        // Provision valid bus devices
+        let (_, dali_edit) = build_provision_bus_device_edit(
+            &proj,
+            &dali_parents[0].uuid,
+            BusDeviceKind::DaliDimmerChannel,
+            "Kitchen Island Spot ECG #7",
+            "7",
+            None,
+            None,
+        )
+        .unwrap();
+        apply_edit_with_inverse(&mut proj, &dali_edit).unwrap();
+
+        let (_, dmx_edit) = build_provision_bus_device_edit(
+            &proj,
+            &dmx_parents[0].uuid,
+            BusDeviceKind::DmxRgbwActuator,
+            "Cove Strip RGBW CH 10..13",
+            "10",
+            None,
+            None,
+        )
+        .unwrap();
+        apply_edit_with_inverse(&mut proj, &dmx_edit).unwrap();
+
+        let (_, ow_edit) = build_provision_bus_device_edit(
+            &proj,
+            &ow_parents[0].uuid,
+            BusDeviceKind::OneWireTemperatureSensor,
+            "Return Pipe DS18B20",
+            "28.FFEEDDCC0011",
+            None,
+            None,
+        )
+        .unwrap();
+        apply_edit_with_inverse(&mut proj, &ow_edit).unwrap();
+
+        let bus_devs = collect_bus_devices(&proj);
+        assert!(bus_devs.iter().any(|d| d.title == "Kitchen Island Spot ECG #7" && d.address_or_rom == "7"));
+        assert!(bus_devs.iter().any(|d| d.title == "Cove Strip RGBW CH 10..13" && d.address_or_rom == "10"));
+        assert!(bus_devs.iter().any(|d| d.title == "Return Pipe DS18B20" && d.address_or_rom == "28.FFEEDDCC0011"));
     }
 }

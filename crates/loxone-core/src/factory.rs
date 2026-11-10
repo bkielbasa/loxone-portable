@@ -16,23 +16,29 @@ fn splitmix64(mut x: u64) -> u64 {
 }
 
 /// Generates a Loxone-compatible UUID in `8-4-4-16` lowercase hex format
-/// (`xxxxxxxx-xxxx-xxxx-xxxxxxxxxxxxxxxx`).
+/// (`xxxxxxxx-xxxx-xxxx-ffff51535bcccc04`) that Loxone Config 17 accepts without resetting to 0.
 pub fn generate_loxone_uuid() -> String {
     let seq = UUID_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs() as u32)
+        .unwrap_or(0x1f00_0000);
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_nanos() as u64)
-        .unwrap_or(0x0196_36db_0000_0000);
+        .map(|d| d.subsec_nanos() as u64)
+        .unwrap_or(0x0196_36db);
     let pid = std::process::id() as u64;
     let hi = splitmix64(nanos ^ seq.rotate_left(17) ^ (pid << 32));
-    let lo = splitmix64(hi ^ seq.wrapping_mul(0x517c_c1b7_2722_0a95) ^ nanos.rotate_right(13));
+    let lo = splitmix64(hi ^ seq.wrapping_mul(0x517c_c1b7_2722_0a95));
 
-    let p0 = (hi >> 32) as u32;
-    let p1 = ((hi >> 16) & 0xffff) as u16;
-    let p2 = (hi & 0xffff) as u16;
-    let p3 = lo;
+    // Loxone Config 17 validates that the upper byte of segment 0 is <= 0x3F (timestamp range)
+    // and segment 1 is <= 0x03FF, with segment 3 prefixed by `ffff`.
+    let p0 = (secs & 0x0fff_ffff) | 0x1a00_0000 ^ ((hi as u32) & 0x00ff_ffff);
+    let p1 = ((hi >> 32) as u16) & 0x03ff;
+    let p2 = (((hi >> 48) as u16).wrapping_add(seq as u16)) | 0x1000;
+    let p3_tail = lo & 0x0000_ffff_ffff_ffff;
 
-    format!("{p0:08x}-{p1:04x}-{p2:04x}-{p3:016x}")
+    format!("{p0:08x}-{p1:04x}-{p2:04x}-ffff{p3_tail:012x}")
 }
 
 /// Returns a standard Loxone RGB color (`Cl`) for a given KB category group.
@@ -163,8 +169,9 @@ pub fn new_page_block(type_name: &str, title: &str, px: f32, py: f32) -> PageBlo
 
     let mut raw_attributes = vec![
         ("Type".to_string(), type_name.to_string()),
-        ("Title".to_string(), effective_title.clone()),
+        ("V".to_string(), "178".to_string()),
         ("U".to_string(), uuid.clone()),
+        ("Title".to_string(), effective_title.clone()),
         ("Px".to_string(), format!("{}", px.round() as i32)),
         ("Py".to_string(), format!("{}", py.round() as i32)),
         ("Px2".to_string(), format!("{}", px2.round() as i32)),
@@ -173,6 +180,7 @@ pub fn new_page_block(type_name: &str, title: &str, px: f32, py: f32) -> PageBlo
             "Cl".to_string(),
             format!("{},{},{}", color[0], color[1], color[2]),
         ),
+        ("WF".to_string(), "16384".to_string()),
     ];
 
     if let Some(s) = schema {
@@ -445,8 +453,10 @@ pub fn new_tree_node(type_name: &str, title: &str) -> TreeNode {
 
     let mut raw_attributes = vec![
         ("Type".to_string(), type_name.to_string()),
-        ("Title".to_string(), effective_title.clone()),
+        ("V".to_string(), "178".to_string()),
         ("U".to_string(), uuid.clone()),
+        ("Title".to_string(), effective_title.clone()),
+        ("WF".to_string(), "16384".to_string()),
     ];
 
     let mut pins = Vec::new();

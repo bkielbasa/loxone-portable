@@ -487,5 +487,74 @@ mod tests {
         let sc_res = call_tool(&mut session, "sim_run_scenario", json!({}));
         assert_eq!(sc_res["passed"], true);
         assert!(sc_res["scenario_count"].as_u64().unwrap() >= 2);
+
+        // Stage 17: Miniserver Hardware Model Conversion
+        let conv_res = call_tool(
+            &mut session,
+            "miniserver_convert_model",
+            json!({ "target_model": "Compact" }),
+        );
+        assert_eq!(conv_res["current_model"], "Compact");
+
+        // Stage 18: DALI / DMX / 1-Wire Bus Actuator & Sensor Provisioning
+        let dali_ext = call_tool(
+            &mut session,
+            "tree_add_device",
+            json!({
+                "template": "DaliExtension",
+                "title": "DALI Line 1"
+            }),
+        );
+        let dali_ext_uuid = dali_ext["uuid"].as_str().unwrap().to_string();
+        let bus_add = call_tool(
+            &mut session,
+            "periphery_bus_device_add",
+            json!({
+                "kind": "DaliDimmerChannel",
+                "parent_uuid": dali_ext_uuid,
+                "title": "DALI Spotlight",
+                "address": "7"
+            }),
+        );
+        assert_eq!(bus_add["protocol"], "DALI Bus");
+        let bus_list = call_tool(&mut session, "periphery_bus_devices_list", json!({}));
+        assert!(bus_list["count"].as_u64().unwrap() >= 1);
+
+        // Stage 19: Reusable Schematic Macros
+        let macros = call_tool(&mut session, "macro_list", json!({}));
+        assert!(macros["count"].as_u64().unwrap() >= 3);
+        let first_page_uuid = session.project().unwrap().pages[0].uuid.clone();
+        let inst_macro = call_tool(
+            &mut session,
+            "macro_instantiate",
+            json!({
+                "template_name": "Lighting",
+                "page_uuid": first_page_uuid
+            }),
+        );
+        assert_eq!(inst_macro["block_count"], 3);
+
+        // Stage 20: Virtual HTTP / TCP / UDP Outputs & Command Editor
+        let vio_before = call_tool(&mut session, "virtual_io_list", json!({}));
+        assert!(vio_before["count"].as_u64().unwrap() >= 1);
+        let vout = call_tool(
+            &mut session,
+            "virtual_out_upsert",
+            json!({
+                "title": "Home Assistant Webhook",
+                "address": "http://192.168.1.50:8123"
+            }),
+        );
+        let vout_uuid = vout["uuid"].as_str().unwrap().to_string();
+        let vcmd = call_tool(
+            &mut session,
+            "virtual_out_cmd_upsert",
+            json!({
+                "parent_virtual_out_uuid": vout_uuid,
+                "title": "Trigger Scene",
+                "cmd_on": "/api/webhook/scene_1"
+            }),
+        );
+        assert_eq!(vcmd["title"], "Trigger Scene");
     }
 }

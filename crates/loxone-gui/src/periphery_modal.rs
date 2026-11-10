@@ -1,9 +1,10 @@
 use eframe::egui::{self, Color32, CornerRadius, Margin, RichText, ScrollArea, Stroke};
 use loxone_core::model::LoxoneProject;
 use loxone_core::{
-    build_provision_hardware_edit, build_replace_device_edit, build_resolve_serial_conflicts_edit,
+    build_provision_bus_device_edit, build_provision_hardware_edit, build_replace_device_edit,
+    build_resolve_serial_conflicts_edit, collect_bus_devices, collect_bus_extension_parents,
     collect_parent_bus_candidates, collect_provisioned_hardware, detect_serial_number_conflicts,
-    generate_mock_serial, HardwareCategory, HardwareTemplateKind, ProjectEdit,
+    generate_mock_serial, BusDeviceKind, HardwareCategory, HardwareTemplateKind, ProjectEdit,
 };
 
 use crate::i18n::{tr, tr_fmt};
@@ -14,6 +15,7 @@ pub enum PeripheryModalTab {
     #[default]
     ProvisionDevice,
     HardwareInventory,
+    BusAddressing,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -36,6 +38,11 @@ pub struct PeripheryModalState {
     pub editing_board_draft: String,
     pub editing_row_pos_draft: String,
     pub editing_light_group_draft: String,
+    // Stage 18: Bus Addressing (DALI / DMX / 1-Wire)
+    pub bus_kind_selected: BusDeviceKind,
+    pub bus_parent_uuid: String,
+    pub bus_title_draft: String,
+    pub bus_address_draft: String,
 }
 
 impl PeripheryModalState {
@@ -181,6 +188,10 @@ pub fn render_periphery_modal(
                         PeripheryModalTab::HardwareInventory,
                         tr("🔢 Hardware Serial Inventory & Swap"),
                     ),
+                    (
+                        PeripheryModalTab::BusAddressing,
+                        tr("🎛 DALI / DMX / 1-Wire Bus Addressing"),
+                    ),
                 ] {
                     let active = state.active_tab == tab;
                     let fill = if active {
@@ -237,6 +248,11 @@ pub fn render_periphery_modal(
                 }
                 PeripheryModalTab::HardwareInventory => {
                     if let Some(edit) = render_inventory_tab(ui, state, project) {
+                        edits.push(edit);
+                    }
+                }
+                PeripheryModalTab::BusAddressing => {
+                    if let Some(edit) = render_bus_addressing_tab(ui, state, project) {
                         edits.push(edit);
                     }
                 }
@@ -844,6 +860,201 @@ fn render_inventory_tab(
                 ui.add_space(5.0);
             }
         });
+
+    emitted_edit
+}
+
+fn render_bus_addressing_tab(
+    ui: &mut egui::Ui,
+    state: &mut PeripheryModalState,
+    project: &LoxoneProject,
+) -> Option<ProjectEdit> {
+    let mut emitted_edit = None;
+    let bus_devices = collect_bus_devices(project);
+    let parents = collect_bus_extension_parents(project, Some(state.bus_kind_selected.protocol()));
+    if !parents.iter().any(|p| p.uuid == state.bus_parent_uuid) {
+        state.bus_parent_uuid = parents
+            .first()
+            .map(|p| p.uuid.clone())
+            .unwrap_or_default();
+    }
+
+    ui.columns(2, |cols| {
+        cols[0].vertical(|ui| {
+            ui.label(
+                RichText::new(tr("Provision DALI / DMX / 1-Wire Actuator or Sensor"))
+                    .size(13.0)
+                    .strong()
+                    .color(theme::TEXT_PRIMARY),
+            );
+            ui.add_space(6.0);
+            for kind in BusDeviceKind::ALL {
+                let sel = state.bus_kind_selected == kind;
+                if ui
+                    .selectable_label(
+                        sel,
+                        format!(
+                            "[{}] {} (default: {})",
+                            kind.protocol().label(),
+                            kind.display_name(),
+                            kind.default_address_hint()
+                        ),
+                    )
+                    .clicked()
+                {
+                    state.bus_kind_selected = kind;
+                    state.bus_title_draft = kind.display_name().to_string();
+                }
+            }
+
+            ui.add_space(10.0);
+            ui.label(
+                RichText::new(tr("Parent Extension / Bus:"))
+                    .size(11.5)
+                    .color(theme::TEXT_SECONDARY),
+            );
+            let current_parent_lbl = parents
+                .iter()
+                .find(|p| p.uuid == state.bus_parent_uuid)
+                .map(|p| format!("{} [{}]", p.label, p.node_type))
+                .unwrap_or_else(|| tr("Select Extension…").to_string());
+            egui::ComboBox::from_id_salt("bus_addr_parent_select")
+                .selected_text(current_parent_lbl)
+                .width(260.0)
+                .show_ui(ui, |ui| {
+                    for p in &parents {
+                        ui.selectable_value(
+                            &mut state.bus_parent_uuid,
+                            p.uuid.clone(),
+                            format!("{} [{}]", p.label, p.node_type),
+                        );
+                    }
+                });
+
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                ui.label(
+                    RichText::new(tr("Device Title:"))
+                        .size(11.5)
+                        .color(theme::TEXT_SECONDARY),
+                );
+                ui.add(
+                    egui::TextEdit::singleline(&mut state.bus_title_draft)
+                        .hint_text(state.bus_kind_selected.display_name())
+                        .desired_width(180.0),
+                );
+            });
+            ui.horizontal(|ui| {
+                ui.label(
+                    RichText::new(tr("Bus Address:"))
+                        .size(11.5)
+                        .color(theme::TEXT_SECONDARY),
+                );
+                ui.add(
+                    egui::TextEdit::singleline(&mut state.bus_address_draft)
+                        .hint_text(state.bus_kind_selected.default_address_hint())
+                        .font(egui::TextStyle::Monospace)
+                        .desired_width(180.0),
+                );
+            });
+
+            ui.add_space(8.0);
+            if ui
+                .add(
+                    egui::Button::new(
+                        RichText::new(tr("➕ Add Bus Actuator / Sensor"))
+                            .size(12.0)
+                            .strong()
+                            .color(Color32::BLACK),
+                    )
+                    .fill(theme::ACCENT_PRIMARY)
+                    .corner_radius(CornerRadius::same(6)),
+                )
+                .clicked()
+            {
+                match build_provision_bus_device_edit(
+                    project,
+                    &state.bus_parent_uuid,
+                    state.bus_kind_selected,
+                    &state.bus_title_draft,
+                    &state.bus_address_draft,
+                    None,
+                    None,
+                ) {
+                    Ok((node_uuid, edit)) => {
+                        state.status_message = Some(format!(
+                            "Added {} '{}' ({}) at address '{}'.",
+                            state.bus_kind_selected.protocol().label(),
+                            state.bus_title_draft.trim(),
+                            node_uuid,
+                            state.bus_address_draft.trim()
+                        ));
+                        emitted_edit = Some(edit);
+                    }
+                    Err(e) => {
+                        state.status_message = Some(format!("Error: {e}"));
+                    }
+                }
+            }
+        });
+
+        cols[1].vertical(|ui| {
+            ui.label(
+                RichText::new(format!(
+                    "Commissioned Bus Channels ({} total)",
+                    bus_devices.len()
+                ))
+                .size(13.0)
+                .strong()
+                .color(theme::TEXT_PRIMARY),
+            );
+            ui.add_space(6.0);
+            ScrollArea::vertical()
+                .id_salt("bus_devices_list_scroll")
+                .max_height(410.0)
+                .show(ui, |ui| {
+                    for dev in &bus_devices {
+                        egui::Frame::NONE
+                            .fill(theme::BG_DARK)
+                            .stroke(Stroke::new(1.0_f32, theme::BORDER_SUBTLE))
+                            .corner_radius(CornerRadius::same(6))
+                            .inner_margin(Margin::symmetric(10, 6))
+                            .show(ui, |ui| {
+                                ui.horizontal(|ui| {
+                                    ui.label(
+                                        RichText::new(format!("[{}]", dev.protocol.label()))
+                                            .size(11.0)
+                                            .monospace()
+                                            .color(theme::ACCENT_PRIMARY),
+                                    );
+                                    ui.label(
+                                        RichText::new(&dev.title)
+                                            .size(12.0)
+                                            .strong()
+                                            .color(theme::TEXT_PRIMARY),
+                                    );
+                                    ui.label(
+                                        RichText::new(format!(
+                                            "Addr: {} • {} • {}",
+                                            if dev.address_or_rom.is_empty() {
+                                                "—"
+                                            } else {
+                                                &dev.address_or_rom
+                                            },
+                                            dev.control_type,
+                                            dev.parent_extension_title
+                                        ))
+                                        .size(11.0)
+                                        .monospace()
+                                        .color(theme::TEXT_SECONDARY),
+                                    );
+                                });
+                            });
+                        ui.add_space(4.0);
+                    }
+                });
+        });
+    });
 
     emitted_edit
 }

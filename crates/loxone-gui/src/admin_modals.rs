@@ -38,6 +38,9 @@ pub enum AdminModal {
     TechReportWizard,
     MultiplierManager,
     SimulationScenarioRunner,
+    NewProjectWizard,
+    MacroLibrary,
+    VirtualIoManager,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -52,6 +55,7 @@ pub enum AdminAction {
     UseMiniserver(String),
     RestoreBackupFile(std::path::PathBuf),
     SelectObject(String),
+    ReplaceProject(LoxoneProject),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -167,6 +171,24 @@ pub struct AdminModalsState {
     pub sim_scenarios: Vec<loxone_core::SimulationScenario>,
     pub sim_selected_scenario_idx: usize,
     pub sim_scenario_reports: Vec<loxone_core::ScenarioRunReport>,
+    // Stage 17: New Project Creation Wizard & Miniserver Model Conversion
+    pub new_proj_spec: loxone_core::NewProjectSpec,
+    pub new_proj_room_title: String,
+    pub convert_model_target: loxone_core::MiniserverModel,
+    // Stage 19: Custom Block Templates & Reusable Schematic Macros
+    pub macro_templates: Vec<loxone_core::SchematicMacroTemplate>,
+    pub macro_selected_idx: usize,
+    pub macro_page_uuid: String,
+    // Stage 20: Virtual HTTP / TCP / UDP Input & Output Command Editor
+    pub vio_selected_out_uuid: Option<String>,
+    pub vio_out_title_draft: String,
+    pub vio_out_address_draft: String,
+    pub vio_out_close_after_send: bool,
+    pub vio_cmd_title_draft: String,
+    pub vio_cmd_on_draft: String,
+    pub vio_cmd_off_draft: String,
+    pub vio_cmd_http_method_draft: String,
+    pub vio_cmd_analog: bool,
 }
 
 impl Default for AdminModalsState {
@@ -224,6 +246,21 @@ impl Default for AdminModalsState {
             sim_scenarios: Vec::new(),
             sim_selected_scenario_idx: 0,
             sim_scenario_reports: Vec::new(),
+            new_proj_spec: loxone_core::NewProjectSpec::default(),
+            new_proj_room_title: String::new(),
+            convert_model_target: loxone_core::MiniserverModel::Gen2,
+            macro_templates: loxone_core::builtin_schematic_macros(),
+            macro_selected_idx: 0,
+            macro_page_uuid: String::new(),
+            vio_selected_out_uuid: None,
+            vio_out_title_draft: "HTTP Webhook".to_string(),
+            vio_out_address_draft: "http://192.168.1.50:8080/api".to_string(),
+            vio_out_close_after_send: true,
+            vio_cmd_title_draft: "Turn On Relay".to_string(),
+            vio_cmd_on_draft: "/relay/on?v=<v>".to_string(),
+            vio_cmd_off_draft: "/relay/off".to_string(),
+            vio_cmd_http_method_draft: "GET".to_string(),
+            vio_cmd_analog: false,
         }
     }
 }
@@ -427,6 +464,39 @@ impl AdminModalsState {
             .map(|sc| loxone_core::run_simulation_scenario(project, sc))
             .collect();
         self.open = AdminModal::SimulationScenarioRunner;
+    }
+
+    pub fn open_new_project_wizard(&mut self, current_project: Option<&LoxoneProject>) {
+        self.status = None;
+        if let Some(proj) = current_project {
+            self.convert_model_target = loxone_core::detect_miniserver_model(proj);
+        }
+        self.open = AdminModal::NewProjectWizard;
+    }
+
+    pub fn open_macro_library(&mut self, project: &LoxoneProject) {
+        self.status = None;
+        if self.macro_templates.is_empty() {
+            self.macro_templates = loxone_core::builtin_schematic_macros();
+        }
+        if self.macro_page_uuid.is_empty() {
+            if let Some(p) = project.pages.first() {
+                self.macro_page_uuid = p.uuid.clone();
+            }
+        }
+        self.open = AdminModal::MacroLibrary;
+    }
+
+    pub fn open_virtual_io_manager(&mut self, project: &LoxoneProject) {
+        self.status = None;
+        let outs = loxone_core::collect_virtual_out_endpoints(project);
+        if let Some(first) = outs.first() {
+            self.vio_selected_out_uuid = Some(first.uuid.clone());
+            self.vio_out_title_draft = first.title.clone();
+            self.vio_out_address_draft = first.address.clone();
+            self.vio_out_close_after_send = first.close_after_send;
+        }
+        self.open = AdminModal::VirtualIoManager;
     }
 
     pub fn close(&mut self) {
@@ -645,6 +715,7 @@ pub fn render_admin_modals(
     let keep = match state.open {
         AdminModal::None => true,
         AdminModal::Network => render_network(ctx, state, &mut out),
+        AdminModal::NewProjectWizard => render_new_project_wizard(ctx, state, project, &mut out),
         modal => {
             let Some(project) = project else {
                 state.close();
@@ -673,6 +744,10 @@ pub fn render_admin_modals(
                 }
                 AdminModal::SimulationScenarioRunner => {
                     render_simulation_scenario_runner(ctx, state, project, &mut out)
+                }
+                AdminModal::MacroLibrary => render_macro_library(ctx, state, project, &mut out),
+                AdminModal::VirtualIoManager => {
+                    render_virtual_io_manager(ctx, state, project, &mut out)
                 }
                 _ => true,
             }
@@ -3958,6 +4033,446 @@ fn render_simulation_scenario_runner(
                                         ui.separator();
                                     }
                                 });
+                        }
+                    });
+                });
+            });
+        },
+    )
+}
+
+fn render_new_project_wizard(
+    ctx: &egui::Context,
+    state: &mut AdminModalsState,
+    project: Option<&LoxoneProject>,
+    out: &mut Vec<AdminAction>,
+) -> bool {
+    let status = state.status.clone();
+    let mut close_after = false;
+    let keep = modal_window(
+        ctx,
+        "admin_new_project_wizard",
+        "🏗 New Project Wizard & Miniserver Model Conversion",
+        [880.0, 580.0],
+        status.as_deref(),
+        |ui| {
+            ui.columns(2, |cols| {
+                cols[0].vertical(|ui| {
+                    section_label(ui, "1. Create New Loxone Config 17 Project");
+                    card(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.label("Project Title:");
+                            ui.add(
+                                egui::TextEdit::singleline(&mut state.new_proj_spec.title)
+                                    .desired_width(210.0),
+                            );
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label("Creator:");
+                            ui.add(
+                                egui::TextEdit::singleline(&mut state.new_proj_spec.creator)
+                                    .desired_width(210.0),
+                            );
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label("Miniserver IP:");
+                            ui.add(
+                                egui::TextEdit::singleline(&mut state.new_proj_spec.miniserver_ip)
+                                    .desired_width(210.0),
+                            );
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label("Miniserver Model:");
+                            egui::ComboBox::from_id_salt("new_proj_ms_model")
+                                .selected_text(state.new_proj_spec.miniserver_model.display_name())
+                                .width(220.0)
+                                .show_ui(ui, |ui| {
+                                    for m in loxone_core::MiniserverModel::ALL {
+                                        ui.selectable_value(
+                                            &mut state.new_proj_spec.miniserver_model,
+                                            m,
+                                            m.display_name(),
+                                        );
+                                    }
+                                });
+                        });
+                        ui.add_space(6.0);
+                        ui.label(
+                            RichText::new(format!(
+                                "Starter Rooms ({})",
+                                state.new_proj_spec.rooms.len()
+                            ))
+                            .size(11.5)
+                            .strong(),
+                        );
+                        egui::ScrollArea::vertical()
+                            .id_salt("new_proj_rooms_scroll")
+                            .max_height(150.0)
+                            .show(ui, |ui| {
+                                for r in &state.new_proj_spec.rooms {
+                                    ui.label(format!("• {} ({} m²)", r.title, r.sqm));
+                                }
+                            });
+                        ui.horizontal(|ui| {
+                            ui.add(
+                                egui::TextEdit::singleline(&mut state.new_proj_room_title)
+                                    .hint_text("Add room name…")
+                                    .desired_width(170.0),
+                            );
+                            if button(ui, "➕ Room", false).clicked()
+                                && !state.new_proj_room_title.trim().is_empty()
+                            {
+                                state.new_proj_spec.rooms.push(
+                                    loxone_core::NewProjectRoomSpec {
+                                        title: state.new_proj_room_title.trim().to_string(),
+                                        sqm: 20,
+                                        create_page: true,
+                                    },
+                                );
+                                state.new_proj_room_title.clear();
+                            }
+                        });
+                        ui.add_space(8.0);
+                        if button(ui, "🚀 Create & Open New Project", true).clicked() {
+                            match loxone_core::create_new_project(&state.new_proj_spec) {
+                                Ok(new_proj) => {
+                                    out.push(AdminAction::ReplaceProject(new_proj));
+                                    close_after = true;
+                                }
+                                Err(e) => {
+                                    state.status = Some(format!("Failed: {e}"));
+                                }
+                            }
+                        }
+                    });
+                });
+
+                cols[1].vertical(|ui| {
+                    section_label(ui, "2. Convert Active Project Miniserver Hardware Model");
+                    card(ui, |ui| {
+                        if let Some(proj) = project {
+                            let cur_model = loxone_core::detect_miniserver_model(proj);
+                            ui.label(
+                                RichText::new(format!(
+                                    "Current Hardware: {}",
+                                    cur_model.display_name()
+                                ))
+                                .size(12.5)
+                                .strong()
+                                .color(theme::ACCENT_PRIMARY),
+                            );
+                            ui.add_space(6.0);
+                            for m in loxone_core::MiniserverModel::ALL {
+                                ui.radio_value(
+                                    &mut state.convert_model_target,
+                                    m,
+                                    m.display_name(),
+                                );
+                            }
+                            ui.add_space(8.0);
+                            if button(ui, "⇄ Convert Active Miniserver Model", true).clicked() {
+                                if let Some(edit) = loxone_core::build_convert_miniserver_model_edit(
+                                    proj,
+                                    state.convert_model_target,
+                                ) {
+                                    out.push(AdminAction::Edit(edit));
+                                    state.status = Some(format!(
+                                        "Converted Miniserver to {}.",
+                                        state.convert_model_target.display_name()
+                                    ));
+                                }
+                            }
+                        } else {
+                            ui.label("Open a project to convert its Miniserver model.");
+                        }
+                    });
+                });
+            });
+        },
+    );
+    keep && !close_after
+}
+
+fn render_macro_library(
+    ctx: &egui::Context,
+    state: &mut AdminModalsState,
+    project: &LoxoneProject,
+    out: &mut Vec<AdminAction>,
+) -> bool {
+    let status = state.status.clone();
+    modal_window(
+        ctx,
+        "admin_macro_library",
+        "🧩 Custom Block Templates & Schematic Macros",
+        [880.0, 560.0],
+        status.as_deref(),
+        |ui| {
+            ui.columns(2, |cols| {
+                cols[0].vertical(|ui| {
+                    section_label(ui, "Macro Templates");
+                    card(ui, |ui| {
+                        for (idx, tpl) in state.macro_templates.iter().enumerate() {
+                            let sel = state.macro_selected_idx == idx;
+                            if ui
+                                .selectable_label(
+                                    sel,
+                                    format!(
+                                        "[{}] {} ({} blocks, {} wires)",
+                                        tpl.category,
+                                        tpl.name,
+                                        tpl.blocks.len(),
+                                        tpl.wires.len()
+                                    ),
+                                )
+                                .clicked()
+                            {
+                                state.macro_selected_idx = idx;
+                            }
+                        }
+                    });
+                });
+
+                cols[1].vertical(|ui| {
+                    section_label(ui, "Instantiate Macro onto Schematic Page");
+                    card(ui, |ui| {
+                        if let Some(tpl) = state.macro_templates.get(state.macro_selected_idx) {
+                            ui.label(
+                                RichText::new(&tpl.name)
+                                    .size(13.0)
+                                    .strong()
+                                    .color(theme::TEXT_PRIMARY),
+                            );
+                            ui.label(
+                                RichText::new(&tpl.description)
+                                    .size(11.5)
+                                    .color(theme::TEXT_SECONDARY),
+                            );
+                            ui.add_space(8.0);
+                            if state.macro_page_uuid.is_empty() {
+                                if let Some(first_p) = project.pages.first() {
+                                    state.macro_page_uuid = first_p.uuid.clone();
+                                }
+                            }
+                            let page_lbl = project
+                                .pages
+                                .iter()
+                                .find(|p| p.uuid == state.macro_page_uuid)
+                                .map(|p| p.title.clone())
+                                .unwrap_or_else(|| "Select Page…".to_string());
+                            egui::ComboBox::from_id_salt("macro_target_page")
+                                .selected_text(page_lbl)
+                                .width(220.0)
+                                .show_ui(ui, |ui| {
+                                    for p in &project.pages {
+                                        ui.selectable_value(
+                                            &mut state.macro_page_uuid,
+                                            p.uuid.clone(),
+                                            &p.title,
+                                        );
+                                    }
+                                });
+                            ui.add_space(8.0);
+                            if button(ui, "➕ Instantiate Macro on Page", true).clicked()
+                                && !state.macro_page_uuid.is_empty()
+                            {
+                                match loxone_core::build_instantiate_macro_edits(
+                                    project,
+                                    &state.macro_page_uuid,
+                                    tpl,
+                                    192.0,
+                                    192.0,
+                                    None,
+                                ) {
+                                    Ok((uuids, edit)) => {
+                                        out.push(AdminAction::Edit(edit));
+                                        state.status = Some(format!(
+                                            "Instantiated macro '{}' ({} blocks).",
+                                            tpl.name,
+                                            uuids.len()
+                                        ));
+                                    }
+                                    Err(e) => {
+                                        state.status = Some(format!("Error: {e}"));
+                                    }
+                                }
+                            }
+                        }
+                    });
+                });
+            });
+        },
+    )
+}
+
+fn render_virtual_io_manager(
+    ctx: &egui::Context,
+    state: &mut AdminModalsState,
+    project: &LoxoneProject,
+    out: &mut Vec<AdminAction>,
+) -> bool {
+    let status = state.status.clone();
+    let endpoints = loxone_core::collect_virtual_out_endpoints(project);
+    modal_window(
+        ctx,
+        "admin_virtual_io_manager",
+        "🌐 Virtual HTTP / TCP / UDP Outputs & Command Editor",
+        [940.0, 600.0],
+        status.as_deref(),
+        |ui| {
+            ui.columns(2, |cols| {
+                cols[0].vertical(|ui| {
+                    section_label(
+                        ui,
+                        &format!("Virtual Output Endpoints ({})", endpoints.len()),
+                    );
+                    card(ui, |ui| {
+                        egui::ScrollArea::vertical()
+                            .id_salt("vio_endpoints_scroll")
+                            .max_height(260.0)
+                            .show(ui, |ui| {
+                                for ep in &endpoints {
+                                    let sel = state.vio_selected_out_uuid.as_deref()
+                                        == Some(ep.uuid.as_str());
+                                    if ui
+                                        .selectable_label(
+                                            sel,
+                                            format!(
+                                                "[{}] {} — {} ({} cmds)",
+                                                ep.i_name,
+                                                ep.title,
+                                                ep.address,
+                                                ep.commands.len()
+                                            ),
+                                        )
+                                        .clicked()
+                                    {
+                                        state.vio_selected_out_uuid = Some(ep.uuid.clone());
+                                        state.vio_out_title_draft = ep.title.clone();
+                                        state.vio_out_address_draft = ep.address.clone();
+                                        state.vio_out_close_after_send = ep.close_after_send;
+                                    }
+                                }
+                            });
+                        ui.separator();
+                        ui.horizontal(|ui| {
+                            ui.label("Title:");
+                            ui.add(
+                                egui::TextEdit::singleline(&mut state.vio_out_title_draft)
+                                    .desired_width(180.0),
+                            );
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label("Address:");
+                            ui.add(
+                                egui::TextEdit::singleline(&mut state.vio_out_address_draft)
+                                    .hint_text("http://host:port or tcp://host:port")
+                                    .desired_width(220.0),
+                            );
+                        });
+                        ui.checkbox(
+                            &mut state.vio_out_close_after_send,
+                            "Close connection after send",
+                        );
+                        if button(ui, "➕ Add VirtualOut Endpoint", true).clicked() {
+                            let ep = loxone_core::VirtualOutEndpoint {
+                                uuid: String::new(),
+                                i_name: String::new(),
+                                title: state.vio_out_title_draft.clone(),
+                                address: state.vio_out_address_draft.clone(),
+                                close_after_send: state.vio_out_close_after_send,
+                                cmd_sep: ";".to_string(),
+                                room_uuid: None,
+                                commands: Vec::new(),
+                            };
+                            match loxone_core::build_upsert_virtual_out_edit(project, &ep) {
+                                Ok((uuid, edit)) => {
+                                    state.vio_selected_out_uuid = Some(uuid);
+                                    out.push(AdminAction::Edit(edit));
+                                    state.status = Some("Created VirtualOut endpoint.".to_string());
+                                }
+                                Err(e) => {
+                                    state.status = Some(format!("Error: {e}"));
+                                }
+                            }
+                        }
+                    });
+                });
+
+                cols[1].vertical(|ui| {
+                    section_label(ui, "VirtualOutCmd Commands");
+                    card(ui, |ui| {
+                        if let Some(sel_uuid) = state.vio_selected_out_uuid.clone() {
+                            if let Some(ep) = endpoints.iter().find(|e| e.uuid == sel_uuid) {
+                                egui::ScrollArea::vertical()
+                                    .id_salt("vio_cmds_scroll")
+                                    .max_height(240.0)
+                                    .show(ui, |ui| {
+                                        for cmd in &ep.commands {
+                                            ui.label(
+                                                RichText::new(format!(
+                                                    "[{}] {} → ON: {}",
+                                                    cmd.i_name, cmd.title, cmd.cmd_on
+                                                ))
+                                                .size(11.5)
+                                                .monospace(),
+                                            );
+                                        }
+                                    });
+                            }
+                            ui.separator();
+                            ui.horizontal(|ui| {
+                                ui.label("Command Title:");
+                                ui.add(
+                                    egui::TextEdit::singleline(&mut state.vio_cmd_title_draft)
+                                        .desired_width(180.0),
+                                );
+                            });
+                            ui.horizontal(|ui| {
+                                ui.label("Command for ON:");
+                                ui.add(
+                                    egui::TextEdit::singleline(&mut state.vio_cmd_on_draft)
+                                        .desired_width(200.0),
+                                );
+                            });
+                            ui.horizontal(|ui| {
+                                ui.label("Command for OFF:");
+                                ui.add(
+                                    egui::TextEdit::singleline(&mut state.vio_cmd_off_draft)
+                                        .desired_width(200.0),
+                                );
+                            });
+                            ui.checkbox(&mut state.vio_cmd_analog, "Analog Actuator (<v>)");
+                            if button(ui, "➕ Add VirtualOutCmd", true).clicked() {
+                                let cmd_entry = loxone_core::VirtualOutCommandEntry {
+                                    uuid: String::new(),
+                                    parent_vo_uuid: sel_uuid.clone(),
+                                    i_name: String::new(),
+                                    title: state.vio_cmd_title_draft.clone(),
+                                    analog: state.vio_cmd_analog,
+                                    cmd_on: state.vio_cmd_on_draft.clone(),
+                                    cmd_on_post: String::new(),
+                                    cmd_on_method: state.vio_cmd_http_method_draft.clone(),
+                                    cmd_off: state.vio_cmd_off_draft.clone(),
+                                    cmd_off_post: String::new(),
+                                    repeat_sec: 0,
+                                    room_uuid: None,
+                                    category_uuid: None,
+                                };
+                                match loxone_core::build_upsert_virtual_out_cmd_edit(
+                                    project,
+                                    &cmd_entry,
+                                ) {
+                                    Ok((_, edit)) => {
+                                        out.push(AdminAction::Edit(edit));
+                                        state.status = Some("Added VirtualOutCmd.".to_string());
+                                    }
+                                    Err(e) => {
+                                        state.status = Some(format!("Error: {e}"));
+                                    }
+                                }
+                            }
+                        } else {
+                            ui.label("Select a VirtualOut endpoint on the left.");
                         }
                     });
                 });

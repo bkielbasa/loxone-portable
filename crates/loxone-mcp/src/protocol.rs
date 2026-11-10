@@ -1061,6 +1061,114 @@ pub fn tool_definitions() -> Value {
                         }
                     }
                 }
+            },
+            {
+                "name": "miniserver_convert_model",
+                "description": "Converts the active project's Miniserver hardware model between Gen2, Compact, Go, and Gen1 while preserving periphery devices and schematic logic.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "target_model": {
+                            "type": "string",
+                            "enum": ["Gen2", "Compact", "Go", "Gen1"],
+                            "description": "Target Miniserver hardware model."
+                        }
+                    },
+                    "required": ["target_model"]
+                }
+            },
+            {
+                "name": "periphery_bus_devices_list",
+                "description": "Lists all commissioned DALI, DMX, and 1-Wire bus actuators/sensors in the Periphery tree along with their addresses and parent extensions.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {}
+                }
+            },
+            {
+                "name": "periphery_bus_device_add",
+                "description": "Provisions a DALI, DMX, or 1-Wire bus actuator or sensor under an extension with bus-address validation (DALI short address 0..63, DALI group 0..15, DMX channel 1..512, 1-Wire ROM ID).",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "kind": {
+                            "type": "string",
+                            "enum": ["DaliDimmerChannel", "DaliGroupDimmer", "DmxDimmerChannel", "DmxRgbwActuator", "OneWireTemperatureSensor", "OneWireIButtonReader"],
+                            "description": "Bus actuator/sensor kind."
+                        },
+                        "parent_uuid": { "type": "string", "description": "UUID of the parent DALI, DMX, or 1-Wire Extension." },
+                        "title": { "type": "string", "description": "Display name." },
+                        "address": { "type": "string", "description": "Bus address (e.g. '5' for DALI ECG, '10' for DMX channel, or 16-hex ROM ID for 1-Wire)." },
+                        "room_uuid": { "type": "string" },
+                        "category_uuid": { "type": "string" }
+                    },
+                    "required": ["kind", "parent_uuid", "address"]
+                }
+            },
+            {
+                "name": "macro_list",
+                "description": "Lists available multi-block schematic macro templates (Lighting+Presence, Shading+Weather Lock, Room Climate+Window Contact).",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {}
+                }
+            },
+            {
+                "name": "macro_instantiate",
+                "description": "Instantiates a multi-block schematic macro template onto a schematic page with internal wires automatically connected.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "template_name": { "type": "string", "description": "Macro template name or index." },
+                        "page_uuid": { "type": "string", "description": "Target schematic page UUID." },
+                        "origin_px": { "type": "number", "description": "X coordinate on page (default: 256)." },
+                        "origin_py": { "type": "number", "description": "Y coordinate on page (default: 256)." },
+                        "room_uuid": { "type": "string" },
+                        "category_uuid": { "type": "string" }
+                    },
+                    "required": ["template_name", "page_uuid"]
+                }
+            },
+            {
+                "name": "virtual_io_list",
+                "description": "Lists all VirtualOut HTTP/TCP/UDP endpoints and their child VirtualOutCmd command payloads.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {}
+                }
+            },
+            {
+                "name": "virtual_out_upsert",
+                "description": "Creates or updates a VirtualOut HTTP/TCP/UDP endpoint under VirtualOutCaption.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "existing_uuid": { "type": "string" },
+                        "title": { "type": "string" },
+                        "address": { "type": "string", "description": "Endpoint URL or URI (e.g. 'http://192.168.1.50:8080' or 'tcp://192.168.1.60:5000')." },
+                        "close_after_send": { "type": "boolean" },
+                        "command_sep": { "type": "string" }
+                    },
+                    "required": ["title", "address"]
+                }
+            },
+            {
+                "name": "virtual_out_cmd_upsert",
+                "description": "Creates or updates a VirtualOutCmd command payload child under a VirtualOut endpoint.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "parent_virtual_out_uuid": { "type": "string" },
+                        "existing_uuid": { "type": "string" },
+                        "title": { "type": "string" },
+                        "cmd_on": { "type": "string", "description": "Command or URI path for ON / analog <v>." },
+                        "cmd_off": { "type": "string", "description": "Command or URI path for OFF." },
+                        "http_method_on": { "type": "string", "description": "HTTP method (GET, POST, PUT)." },
+                        "http_body_on": { "type": "string", "description": "HTTP POST/PUT body." },
+                        "analog": { "type": "boolean" }
+                    },
+                    "required": ["parent_virtual_out_uuid", "title", "cmd_on"]
+                }
             }
         ]
     })

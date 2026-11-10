@@ -11,6 +11,10 @@ use loxone_format_lab::gen::{generate_rust, GenOptions};
 use loxone_format_lab::report::{
     render_check, render_markdown, CheckReport, Coverage, MarkdownOptions,
 };
+use loxone_format_lab::roundtrip::{
+    build_comprehensive_mutation_project, render_roundtrip_markdown, verify_roundtrip,
+    MutationManifest,
+};
 use loxone_format_lab::stats::{scan, Totals, TypeStats};
 use serde::Serialize;
 
@@ -39,6 +43,8 @@ enum Command {
     Check(CheckArgs),
     /// Generate starter Rust `schema!` snippets for unknown types.
     Gen(GenArgs),
+    /// Apply comprehensive E2E mutations, verify lossless round-trip, and compare with a Loxone Config 17 re-saved file.
+    Roundtrip(RoundtripArgs),
 }
 
 #[derive(Args)]
@@ -145,6 +151,28 @@ struct GenArgs {
     out: Option<PathBuf>,
 }
 
+#[derive(Args)]
+struct RoundtripArgs {
+    /// Source .Loxone project to mutate and verify (default: Sample.Loxone).
+    #[arg(default_value = "Sample.Loxone")]
+    source: PathBuf,
+    /// Directory to write mutated.Loxone and manifest.json (default: target/e2e-roundtrip).
+    #[arg(long, default_value = "target/e2e-roundtrip")]
+    out_dir: PathBuf,
+    /// Optional path to a file re-saved by Loxone Config 17 inside Parallels for comparison.
+    #[arg(long)]
+    config_saved: Option<PathBuf>,
+    /// Emit JSON instead of Markdown.
+    #[arg(long)]
+    json: bool,
+    /// Write the verification report to a file instead of stdout.
+    #[arg(long)]
+    out: Option<PathBuf>,
+    /// Exit with status 1 if any authored object was dropped.
+    #[arg(long)]
+    fail: bool,
+}
+
 fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
@@ -153,6 +181,7 @@ fn main() -> Result<()> {
         Command::Diff(args) => run_diff(args),
         Command::Check(args) => run_check(args),
         Command::Gen(args) => run_gen(args),
+        Command::Roundtrip(args) => run_roundtrip(args),
     }
 }
 
@@ -225,6 +254,58 @@ fn run_diff(args: DiffArgs) -> Result<()> {
         render_diff(&report)
     };
     write_or_print(args.out.as_deref(), &content)
+}
+
+fn run_roundtrip(args: RoundtripArgs) -> Result<()> {
+    std::fs::create_dir_all(&args.out_dir)
+        .with_context(|| format!("failed to create {}", args.out_dir.display()))?;
+    let mutated_path = args.out_dir.join("mutated.Loxone");
+    let manifest_path = args.out_dir.join("manifest.json");
+
+    let (mutated, manifest) = if args.config_saved.is_some() && mutated_path.exists() && manifest_path.exists() {
+        let proj = loxone_core::parser::load_loxone_file(&mutated_path)
+            .with_context(|| format!("failed to load {}", mutated_path.display()))?;
+        let mf_raw = std::fs::read_to_string(&manifest_path)
+            .with_context(|| format!("failed to read {}", manifest_path.display()))?;
+        let mf: MutationManifest = serde_json::from_str(&mf_raw)?;
+        (proj, mf)
+    } else {
+        let base = loxone_core::parser::load_loxone_file(&args.source)
+            .with_context(|| format!("failed to load {}", args.source.display()))?;
+        let (mutated, manifest) = build_comprehensive_mutation_project(&base)?;
+        let xml = loxone_core::writer::serialize_loxone_xml(&mutated)?;
+        std::fs::write(&mutated_path, xml)
+            .with_context(|| format!("failed to write {}", mutated_path.display()))?;
+        std::fs::write(&manifest_path, serde_json::to_string_pretty(&manifest)?)
+            .with_context(|| format!("failed to write {}", manifest_path.display()))?;
+        (mutated, manifest)
+    };
+
+    let report = verify_roundtrip(
+        &mutated,
+        &manifest,
+        Some(&mutated_path),
+        args.config_saved.as_deref(),
+    )?;
+
+    let content = if args.json {
+        serde_json::to_string_pretty(&report)?
+    } else {
+        render_roundtrip_markdown(&report)
+    };
+    write_or_print(args.out.as_deref(), &content)?;
+
+    if args.fail {
+        if !report.internal_roundtrip_passed {
+            std::process::exit(1);
+        }
+        if let Some(cfg) = &report.config_roundtrip {
+            if !cfg.config_accepted_all_authored {
+                std::process::exit(1);
+            }
+        }
+    }
+    Ok(())
 }
 
 fn run_dump(args: DumpArgs) -> Result<()> {
